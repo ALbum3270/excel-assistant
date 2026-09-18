@@ -310,3 +310,9 @@ flowchart TD
 新增 `tests/lifecycle.test.mjs` 的20项回归及 `tests/taskpane.test.mjs` 的1项IME回归。它们覆盖提示文件/最近目录失败、迟到初始化、逐轮断流、未消费输入、同步立即重试、Stop、New chat、resume查找、目录解析/切换、慢回放、多pane隔离、真实WebSocket hello后立即发送、SDK error result和SDK异常。全量测试从34项增加到55项，55/55通过；四个改动代码文件通过Prettier检查，`git diff --check`无错误。
 
 这些验证使用真实bridge和当前源码抽取的daemon生命周期，SDK query及外部I/O使用可控替身；没有调用付费模型，也没有启动Excel宿主。Claude对话中此前已有初始化失败恢复和hello立即消息的真实daemon/模型探针，但本次新增代次与取消行为仍需在实际侧边栏做一次免费手工回归。R1工作簿持久会话身份、R5会话存储并发，以及工具写入保护等后续批次尚未由本批解决。
+
+**二十、会话记录并发与原子写入**
+
+R5已实施：`daemon/sessions.mjs` 将每次修改的完整“读取—修改—写入”放进同一进程内的串行队列，读取会等待先前已发起的修改完成。文件先写到同目录的唯一临时文件，再通过rename替换 `sessions.json`；失败会清理临时文件，队列也能继续执行后续操作。
+
+新增6项回归，覆盖不同目录/host并发保存、未await写入后的立即读取、touch与save交错、clear与save顺序、临时文件清理，以及一次替换失败后后续写入恢复。该修复解决当前daemon内的丢失更新，并使进程在写入中断时保留旧的完整JSON。应用仍以单daemon为运行约束：固定监听端口会阻止第二个daemon正常服务；Electron多次启动和重启代次应在后续应用生命周期批次显式收口。本批尚未改变会话按host+cwd持久化的R1身份模型。

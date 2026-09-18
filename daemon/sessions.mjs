@@ -24,13 +24,15 @@
 //     }
 //   }
 
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join, dirname, basename } from "node:path";
 import { isSystemHomeChild } from "./system-paths.mjs";
 
 const FILE = join(homedir(), ".claude", "office-addins", "sessions.json");
 const VERSION = 2;
+let mutationChain = Promise.resolve();
 
 // Don't persist or surface OS-managed $HOME children (e.g. ~/Library) as
 // a recent workspace.
@@ -69,8 +71,37 @@ async function readState() {
 }
 
 async function writeState(state) {
-  await mkdir(dirname(FILE), { recursive: true });
-  await writeFile(FILE, JSON.stringify(state, null, 2) + "\n", "utf8");
+  const directory = dirname(FILE);
+  await mkdir(directory, { recursive: true });
+  const temp = join(directory, `.sessions-${process.pid}-${randomUUID()}.tmp`);
+  try {
+    await writeFile(temp, JSON.stringify(state, null, 2) + "\n", {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await rename(temp, FILE);
+  } catch (error) {
+    await unlink(temp).catch(() => {});
+    throw error;
+  }
+}
+
+// Every mutation owns the complete read-modify-write cycle. Callers can
+// issue operations concurrently without the later writer persisting a stale
+// snapshot. The chain recovers after an individual failure so future writes
+// are not permanently blocked.
+function mutateState(mutator) {
+  const operation = mutationChain.then(async () => {
+    const state = await readState();
+    if (await mutator(state)) await writeState(state);
+  });
+  mutationChain = operation.catch(() => {});
+  return operation;
+}
+
+async function readCurrentState() {
+  await mutationChain;
+  return readState();
 }
 
 function ensureFolder(state, cwd) {
@@ -87,7 +118,7 @@ function ensureFolder(state, cwd) {
 export async function getSessionId(host, cwd) {
   const h = normalizeHost(host);
   if (!h) return null;
-  const state = await readState();
+  const state = await readCurrentState();
   return state.folders[cwd]?.sessions?.[h] ?? null;
 }
 
@@ -95,12 +126,13 @@ export async function getSessionId(host, cwd) {
 export async function saveSessionId(host, cwd, sessionId) {
   const h = normalizeHost(host);
   if (!h) return;
-  const state = await readState();
-  const f = ensureFolder(state, cwd);
-  f.sessions[h] = sessionId;
-  f.last_used = new Date().toISOString();
-  f.display_name = basename(cwd);
-  await writeState(state);
+  await mutateState((state) => {
+    const f = ensureFolder(state, cwd);
+    f.sessions[h] = sessionId;
+    f.last_used = new Date().toISOString();
+    f.display_name = basename(cwd);
+    return true;
+  });
 }
 
 // Forget the resumable session for (host, cwd) so the next message starts a
@@ -108,10 +140,11 @@ export async function saveSessionId(host, cwd, sessionId) {
 export async function clearSessionId(host, cwd) {
   const h = normalizeHost(host);
   if (!h) return;
-  const state = await readState();
-  if (!state.folders[cwd]?.sessions?.[h]) return;
-  delete state.folders[cwd].sessions[h];
-  await writeState(state);
+  await mutateState((state) => {
+    if (!state.folders[cwd]?.sessions?.[h]) return false;
+    delete state.folders[cwd].sessions[h];
+    return true;
+  });
 }
 
 // Touch a folder's bookkeeping (last_used / display_name) without changing
@@ -119,9 +152,10 @@ export async function clearSessionId(host, cwd) {
 // store. Skips OS-managed $HOME children so they never get persisted.
 export async function touchFolder(cwd) {
   if (!isAllowedMatterPath(cwd)) return;
-  const state = await readState();
-  const f = ensureFolder(state, cwd);
-  f.last_used = new Date().toISOString();
-  f.display_name = basename(cwd);
-  await writeState(state);
+  await mutateState((state) => {
+    const f = ensureFolder(state, cwd);
+    f.last_used = new Date().toISOString();
+    f.display_name = basename(cwd);
+    return true;
+  });
 }

@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -80,6 +80,76 @@ test("touchFolder does not clobber a saved session id", async () => {
       "w1",
       "touch must not blow away a saved session id",
     );
+  });
+});
+
+test("concurrent saves preserve every folder and host", async () => {
+  await withFakeHome(async ({ saveSessionId, getSessionId }, fakeHome) => {
+    await Promise.all([
+      saveSessionId("excel", "/tmp/folderA", "a-excel"),
+      saveSessionId("word", "/tmp/folderA", "a-word"),
+      saveSessionId("excel", "/tmp/folderB", "b-excel"),
+    ]);
+
+    assert.equal(await getSessionId("excel", "/tmp/folderA"), "a-excel");
+    assert.equal(await getSessionId("word", "/tmp/folderA"), "a-word");
+    assert.equal(await getSessionId("excel", "/tmp/folderB"), "b-excel");
+    const state = await readStateFile(fakeHome);
+    assert.deepEqual(Object.keys(state.folders).sort(), ["/tmp/folderA", "/tmp/folderB"]);
+  });
+});
+
+test("reads wait for an earlier unawaited mutation", async () => {
+  await withFakeHome(async ({ saveSessionId, getSessionId }) => {
+    const saving = saveSessionId("excel", "/tmp/folderA", "new-id");
+    assert.equal(await getSessionId("excel", "/tmp/folderA"), "new-id");
+    await saving;
+  });
+});
+
+test("concurrent touch and saves do not clobber session ids", async () => {
+  await withFakeHome(async ({ touchFolder, saveSessionId, getSessionId }) => {
+    await saveSessionId("excel", "/tmp/folderA", "old-id");
+    await Promise.all([
+      touchFolder("/tmp/folderA"),
+      saveSessionId("excel", "/tmp/folderA", "new-id"),
+      saveSessionId("excel", "/tmp/folderB", "other-id"),
+    ]);
+    assert.equal(await getSessionId("excel", "/tmp/folderA"), "new-id");
+    assert.equal(await getSessionId("excel", "/tmp/folderB"), "other-id");
+  });
+});
+
+test("clear is ordered with concurrent saves", async () => {
+  await withFakeHome(async ({ saveSessionId, clearSessionId, getSessionId }) => {
+    const saveExcel = saveSessionId("excel", "/tmp/folderA", "excel-id");
+    const saveWord = saveSessionId("word", "/tmp/folderA", "word-id");
+    const clearExcel = clearSessionId("excel", "/tmp/folderA");
+    await Promise.all([saveExcel, saveWord, clearExcel]);
+    assert.equal(await getSessionId("excel", "/tmp/folderA"), null);
+    assert.equal(await getSessionId("word", "/tmp/folderA"), "word-id");
+  });
+});
+
+test("atomic writes leave no temporary session files", async () => {
+  await withFakeHome(async ({ saveSessionId }, fakeHome) => {
+    await saveSessionId("excel", "/tmp/folderA", "id");
+    const directory = join(fakeHome, ".claude", "office-addins");
+    assert.deepEqual((await readdir(directory)).sort(), ["sessions.json"]);
+  });
+});
+
+test("a failed atomic replace does not poison later mutations", async () => {
+  await withFakeHome(async ({ saveSessionId, getSessionId }, fakeHome) => {
+    const directory = join(fakeHome, ".claude", "office-addins");
+    const target = join(directory, "sessions.json");
+    await mkdir(target, { recursive: true });
+    await assert.rejects(saveSessionId("excel", "/tmp/folderA", "blocked"));
+
+    await rm(target, { recursive: true, force: true });
+    await saveSessionId("excel", "/tmp/folderA", "recovered");
+    assert.equal(await getSessionId("excel", "/tmp/folderA"), "recovered");
+    assert.deepEqual((await readdir(directory)).sort(), ["sessions.json"]);
   });
 });
 
