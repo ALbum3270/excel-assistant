@@ -289,10 +289,8 @@ function pickPathFromMain({ include_files, default_path, title, button_label }) 
 // paneKey identifies one open document (host + doc path), so two Word
 // docs (or two workbooks) open at once each get their own independent
 // loop/session/queue/workspace. The host is still carried for the tool
-// family + per-host behavior. SDK-transcript resume is still keyed by
-// (host, cwd) — two documents in the same folder share a resume hint;
-// that's a deliberate, documented simplification, far better than the
-// ping-pong of sharing a pane.
+// family + per-host behavior. Persisted SDK transcript resume uses the
+// same document identity independently from its workspace folder.
 const sessions = new Map();
 const workspaceByKey = new Map();
 const sessionGenerationByKey = new Map();
@@ -362,15 +360,24 @@ function cwdForKey(key) {
   return sessionFor(key)?.cwd ?? workspaceByKey.get(key) ?? matterFolder;
 }
 
+// The bridge key is host + NUL + document URL (or anon:<pane id> for an
+// unsaved document). Persist conversations by that document portion; cwd is
+// only the workspace used for files and context.
+function documentKeyForPane(key) {
+  if (typeof key !== "string") return null;
+  const separator = key.indexOf("\0");
+  return separator === -1 ? key : key.slice(separator + 1);
+}
+
 // Resolve the session id to replay for this pane. Prefer the pane's live
 // session id (set once the SDK reports init); otherwise the id persisted
-// for (host, cwd) — covers the window before the SDK has re-inited.
+// for (host, document) — covers the window before the SDK has re-inited.
 async function resolveReplaySessionId(key, host, cwd) {
   const live = sessionFor(key);
   if (live?.sessionId) return live.sessionId;
   if (!host || !cwd) return null;
   try {
-    return (await getSessionId(host, cwd)) ?? null;
+    return (await getSessionId(host, documentKeyForPane(key))) ?? null;
   } catch {
     return null;
   }
@@ -535,7 +542,7 @@ function onPaneClose(key) {
 // Called when a user message arrives from a pane, BEFORE it's queued.
 // Each pane has its OWN loop — independent of every other pane. If this
 // pane's loop is already live, do nothing (its userMessageStream will
-// consume the message). Otherwise start it, resuming this (host, cwd)
+// consume the message). Otherwise start it, resuming this workbook's
 // conversation. Deferred via setImmediate so it lands after the message
 // is queued and after any in-flight finally; the new loop then drains
 // this pane's queue. No other pane's loop is ever touched.
@@ -549,7 +556,7 @@ function startNewConversation(key, host) {
   bridge.sendAssistantEvent({ event: "turn_complete", interrupted: true }, key);
   return updateWorkspace(key, async () => {
     const cwd = cwdForKey(key);
-    await clearSessionId(host, cwd);
+    await clearSessionId(host, documentKeyForPane(key));
     if (sessionGenerationByKey.get(key) !== generation) return;
     if (replayTokenByKey.get(key) === token) {
       bridge.sendToTaskpane(
@@ -574,7 +581,7 @@ async function ensureLoopForMessage(key, host) {
   }
   let resumeId = null;
   try {
-    resumeId = await getSessionId(host, cwd);
+    resumeId = await getSessionId(host, documentKeyForPane(key));
   } catch {
     /* fresh session if lookup fails */
   }
@@ -1374,10 +1381,9 @@ async function switchFolder(rawCwd, key, host = null) {
   // Validate the path is a directory.
   const s = await stat(cwd);
   if (!s.isDirectory()) throw new Error(`Not a directory: ${cwd}`);
-  // Switch ONLY the requesting pane to the target folder; resume that
-  // (host, cwd)'s prior conversation if one is on record. Every other
-  // pane stays in its own workspace, untouched.
-  const resumeId = host ? await getSessionId(host, cwd) : null;
+  // Switch ONLY the requesting pane to the target folder. Its workbook
+  // conversation remains the same; every other pane stays untouched.
+  const resumeId = host ? await getSessionId(host, documentKeyForPane(key)) : null;
   cancelPaneSession(key);
   workspaceByKey.set(key, cwd);
   bridge.sendAssistantEvent({ event: "turn_complete", interrupted: true }, key);
@@ -1430,13 +1436,16 @@ function handleAgentMessage(msg, session) {
           },
           session?.key,
         );
-        // Record this session_id for THIS (host, cwd) so the next time
-        // this pane connects (or you switch back) it resumes here.
+        // Record this session_id for THIS workbook so a reconnect resumes
+        // it independently of the workspace folder.
         if (session && msg.session_id && msg.session_id !== session.sessionId) {
           session.sessionId = msg.session_id;
-          saveSessionId(session.host, session.cwd, msg.session_id).catch((err) =>
-            console.warn("[daemon] Could not save session id:", err.message),
-          );
+          saveSessionId(
+            session.host,
+            documentKeyForPane(session.key),
+            session.cwd,
+            msg.session_id,
+          ).catch((err) => console.warn("[daemon] Could not save session id:", err.message));
         }
       } else {
         console.log(`[agent] system/${msg.subtype}`);

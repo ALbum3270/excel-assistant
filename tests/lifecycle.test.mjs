@@ -387,6 +387,40 @@ test("cancelling one pane does not drop another pane's input", async (t) => {
   assert.match(h.received[0], /other$/);
 });
 
+test("two workbooks in one workspace resume independent document sessions", async (t) => {
+  const lookups = [];
+  const h = harness(t, {
+    getSessionId: async (host, documentKey) => {
+      lookups.push([host, documentKey]);
+      return documentKey === "book-a" ? "session-a" : "session-b";
+    },
+  });
+  const keyA = "excel\0book-a";
+  const keyB = "excel\0book-b";
+  await h.send("from a", keyA);
+  await until(() => h.queries.length === 1);
+  await h.send("from b", keyB);
+  await until(() => h.queries.length === 2);
+  assert.deepEqual(lookups, [
+    ["excel", "book-a"],
+    ["excel", "book-b"],
+  ]);
+  assert.deepEqual(
+    h.queries.map((queryArgs) => queryArgs.options.resume),
+    ["session-a", "session-b"],
+  );
+  assert.equal(h.queries[0].options.cwd, h.queries[1].options.cwd);
+});
+
+test("New chat clears only the requesting workbook's saved session", async (t) => {
+  const cleared = [];
+  const h = harness(t, {
+    clearSessionId: async (...args) => cleared.push(args),
+  });
+  await h.api.startNewConversation("excel\0book-a", "excel");
+  assert.deepEqual(cleared, [["excel", "book-a"]]);
+});
+
 test("actual WebSocket hello plus immediate message waits for the document folder", async (t) => {
   const directory = deferred();
   const h = harness(t, { resolveWorkspaceRoot: () => directory.promise });

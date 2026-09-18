@@ -330,3 +330,13 @@ office-agents Excel API 的本地修复已进入可重复构建流程。`scripts
 本批新增工具 schema、生成补丁和 taskpane 工具回归；全量自动化测试为78/78通过，相关代码通过语法检查和Prettier检查，连续生成的 vendor 哈希一致。验证使用生成后的真实 vendor 模块与 Office.js 可控替身，没有启动真实 Excel。当前仍需保留的工具层问题包括：多次 context.sync 之间的通用部分提交语义、copyToRange 的公式结果只覆盖基础范围、宿主 API capability gating，以及更完整的结构操作边界。它们不由本批测试通过所替代。
 
 项目直接使用 Node 的 `process.loadEnvFile`，因此 package 与 lockfile 的 engines 已从不准确的 Node 18 调整为 `>=20.12.0`，使安装约束和实际启动要求一致。
+
+**二十二、工作簿会话身份与 workspace 解耦**
+
+R1已实施。会话存储升级到version 3，恢复键从 `host + cwd` 改为 `host + document key`；cwd只记录该工作簿当前使用的workspace并维护最近目录。同一文件夹中的两个工作簿现在分别恢复自己的SDK session，一个工作簿执行New chat只清除自己的记录；同一工作簿显式切换workspace时继续原会话。
+
+document key沿用bridge已经用于运行时隔离的身份：有文档地址时使用地址，没有地址时使用 `anon:<pane id>`。保存到 `sessions.json` 前会做SHA-256，云端文档URL及其查询参数不会原样落盘。v1/v2按目录保存的旧session id无法安全归属给某一个工作簿，因此迁移时保留最近目录、丢弃这些有歧义的恢复记录；第一次新会话初始化后写回version 3。
+
+身份规则选择数据隔离优先：本地文件改名、移动或另存为后，新的文档地址在pane重新加载时视为新工作簿，不自动继承旧聊天；未保存工作簿在当前pane及WebSocket重连期间保持身份，关闭pane后不承诺恢复。当前taskpane只在启动时读取文档地址，所以同一pane内完成另存为后会继续当前内存会话，重新加载后按新地址开始。这样不会把复制出的工作簿静默绑定到原文件历史；若以后需要跨移动迁移，应增加用户可见的显式迁移操作，而不是按文件夹猜测。
+
+新增回归覆盖同workspace双工作簿分别resume、daemon模块重载后仍独立、单工作簿New chat、workspace切换保持会话、v2安全迁移和URL不明文持久化；全量自动化测试为84/84通过。验证仍使用SDK替身；真实Excel中的改名、移动、另存为和云端URL稳定性需要宿主手工回归。

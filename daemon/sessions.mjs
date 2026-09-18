@@ -1,41 +1,41 @@
-// Per-(host, workspace) Agent SDK session bookkeeping.
+// Per-(host, document) Agent SDK session bookkeeping.
 //
-// The SDK persists each session's transcript to
-// ~/.claude/projects/<hash>/<session_id>.jsonl. To resume via
-// query({ options: { resume } }) we need that session_id. Word and Excel
-// are independent surfaces — opening the same folder in Word vs Excel is
-// a different conversation — so the session_id is keyed by **host AND
-// cwd**, not cwd alone. (A single cwd-keyed session is why Excel used to
-// replay Word's history.)
+// A workspace controls filesystem context. It is not a workbook identity:
+// two workbooks can live in one folder, and one workbook can use a different
+// explicitly selected workspace. The caller therefore supplies an opaque
+// document key (normally the document URL from the bridge, or a pane id for
+// an unsaved workbook) independently from cwd.
 //
-// The folder list itself (for the workspace switcher UI) stays
-// cwd-deduped and host-agnostic — you pick a folder, not a folder+host.
-//
-// Stored at ~/.claude/office-addins/sessions.json (version 2):
+// Stored at ~/.claude/office-addins/sessions.json (version 3):
 //
 //   {
-//     "version": 2,
+//     "version": 3,
 //     "folders": {
-//       "/Users/x/Proj": {
-//         "last_used": "2026-05-16T…Z",
-//         "display_name": "Proj",
-//         "sessions": { "word": "uuid…", "excel": "uuid…" }
+//       "C:/Work": { "last_used": "…", "display_name": "Work" }
+//     },
+//     "conversations": {
+//       "excel": {
+//         "<sha256 of document key>": {
+//           "session_id": "uuid…", "cwd": "C:/Work", "last_used": "…"
+//         }
 //       }
 //     }
 //   }
 
 import { readFile, writeFile, mkdir, rename, unlink } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join, dirname, basename } from "node:path";
 import { isSystemHomeChild } from "./system-paths.mjs";
 
 const FILE = join(homedir(), ".claude", "office-addins", "sessions.json");
-const VERSION = 2;
+const VERSION = 3;
 let mutationChain = Promise.resolve();
 
-// Don't persist or surface OS-managed $HOME children (e.g. ~/Library) as
-// a recent workspace.
+function emptyState() {
+  return { version: VERSION, folders: {}, conversations: {} };
+}
+
 function isAllowedMatterPath(cwd) {
   return !isSystemHomeChild(cwd);
 }
@@ -44,30 +44,43 @@ function normalizeHost(host) {
   return host === "word" || host === "excel" ? host : null;
 }
 
+function documentStorageKey(documentKey) {
+  if (typeof documentKey !== "string" || !documentKey.trim()) return null;
+  // Cloud document URLs can contain tenant-specific paths or query data.
+  // Hash the opaque identity so sessions.json does not persist that URL.
+  return createHash("sha256").update(documentKey).digest("hex");
+}
+
 async function readState() {
   let parsed;
   try {
     parsed = JSON.parse(await readFile(FILE, "utf8"));
   } catch (e) {
-    if (e.code === "ENOENT") return { version: VERSION, folders: {} };
+    if (e.code === "ENOENT") return emptyState();
     throw e;
   }
-  if (!parsed || typeof parsed.folders !== "object") {
-    return { version: VERSION, folders: {} };
+  if (!parsed || typeof parsed.folders !== "object" || parsed.folders === null) {
+    return emptyState();
   }
-  if (parsed.version === VERSION) return parsed;
-  // Migrate v1 ({ session_id } per folder): the old id can't be attributed
-  // to a host, so drop it (one conversation lost across the upgrade), but
-  // keep the folder so it still shows in recents.
+  if (parsed.version === VERSION) {
+    if (typeof parsed.conversations !== "object" || parsed.conversations === null) {
+      parsed.conversations = {};
+    }
+    return parsed;
+  }
+
+  // v1 and v2 session ids were keyed by workspace (and, in v2, host).
+  // No old entry can be safely assigned to one workbook when multiple files
+  // share that folder, so retain recent folders and deliberately drop those
+  // ambiguous resumable ids.
   const folders = {};
   for (const [cwd, info] of Object.entries(parsed.folders ?? {})) {
     folders[cwd] = {
       last_used: info?.last_used ?? new Date(0).toISOString(),
       display_name: info?.display_name ?? basename(cwd),
-      sessions: {},
     };
   }
-  return { version: VERSION, folders };
+  return { version: VERSION, folders, conversations: {} };
 }
 
 async function writeState(state) {
@@ -86,10 +99,6 @@ async function writeState(state) {
   }
 }
 
-// Every mutation owns the complete read-modify-write cycle. Callers can
-// issue operations concurrently without the later writer persisting a stale
-// snapshot. The chain recovers after an individual failure so future writes
-// are not permanently blocked.
 function mutateState(mutator) {
   const operation = mutationChain.then(async () => {
     const state = await readState();
@@ -105,57 +114,67 @@ async function readCurrentState() {
 }
 
 function ensureFolder(state, cwd) {
-  let f = state.folders[cwd];
-  if (!f) {
-    f = { last_used: new Date(0).toISOString(), display_name: basename(cwd), sessions: {} };
-    state.folders[cwd] = f;
+  let folder = state.folders[cwd];
+  if (!folder) {
+    folder = { last_used: new Date(0).toISOString(), display_name: basename(cwd) };
+    state.folders[cwd] = folder;
   }
-  if (typeof f.sessions !== "object" || f.sessions === null) f.sessions = {};
-  return f;
+  delete folder.sessions;
+  return folder;
 }
 
-// The resumable session_id for this host in this folder, or null.
-export async function getSessionId(host, cwd) {
+function ensureHostConversations(state, host) {
+  let conversations = state.conversations[host];
+  if (!conversations || typeof conversations !== "object") {
+    conversations = {};
+    state.conversations[host] = conversations;
+  }
+  return conversations;
+}
+
+export async function getSessionId(host, documentKey) {
   const h = normalizeHost(host);
-  if (!h) return null;
+  const key = documentStorageKey(documentKey);
+  if (!h || !key) return null;
   const state = await readCurrentState();
-  return state.folders[cwd]?.sessions?.[h] ?? null;
+  return state.conversations?.[h]?.[key]?.session_id ?? null;
 }
 
-// Record the session_id for (host, cwd) and bump last_used.
-export async function saveSessionId(host, cwd, sessionId) {
+export async function saveSessionId(host, documentKey, cwd, sessionId) {
   const h = normalizeHost(host);
-  if (!h) return;
+  const key = documentStorageKey(documentKey);
+  if (!h || !key || typeof sessionId !== "string" || !sessionId) return;
   await mutateState((state) => {
-    const f = ensureFolder(state, cwd);
-    f.sessions[h] = sessionId;
-    f.last_used = new Date().toISOString();
-    f.display_name = basename(cwd);
+    const now = new Date().toISOString();
+    ensureHostConversations(state, h)[key] = { session_id: sessionId, cwd, last_used: now };
+    if (cwd && isAllowedMatterPath(cwd)) {
+      const folder = ensureFolder(state, cwd);
+      folder.last_used = now;
+      folder.display_name = basename(cwd);
+    }
     return true;
   });
 }
 
-// Forget the resumable session for (host, cwd) so the next message starts a
-// fresh conversation. The transcript .jsonl stays on disk.
-export async function clearSessionId(host, cwd) {
+export async function clearSessionId(host, documentKey) {
   const h = normalizeHost(host);
-  if (!h) return;
+  const key = documentStorageKey(documentKey);
+  if (!h || !key) return;
   await mutateState((state) => {
-    if (!state.folders[cwd]?.sessions?.[h]) return false;
-    delete state.folders[cwd].sessions[h];
+    const conversations = state.conversations?.[h];
+    if (!conversations?.[key]) return false;
+    delete conversations[key];
+    if (Object.keys(conversations).length === 0) delete state.conversations[h];
     return true;
   });
 }
 
-// Touch a folder's bookkeeping (last_used / display_name) without changing
-// any session id. Ensures the folder entry exists for the per-host session
-// store. Skips OS-managed $HOME children so they never get persisted.
 export async function touchFolder(cwd) {
-  if (!isAllowedMatterPath(cwd)) return;
+  if (!cwd || !isAllowedMatterPath(cwd)) return;
   await mutateState((state) => {
-    const f = ensureFolder(state, cwd);
-    f.last_used = new Date().toISOString();
-    f.display_name = basename(cwd);
+    const folder = ensureFolder(state, cwd);
+    folder.last_used = new Date().toISOString();
+    folder.display_name = basename(cwd);
     return true;
   });
 }
