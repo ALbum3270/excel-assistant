@@ -5,12 +5,12 @@
   xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
   xsi:type="TaskPaneApp">
 
-  <Id>4b5861d6-18ee-4d4a-b9ee-d43d7da80ff4</Id>
-  <Version>0.1.2.0</Version>
-  <ProviderName>Draftspect</ProviderName>
+  <Id>0d77363a-9bff-4441-8304-56502d607d86</Id>
+  <Version>0.2.0.0</Version>
+  <ProviderName>Excel Assistant</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
-  <DisplayName DefaultValue="Draftspect for Excel" />
-  <Description DefaultValue="Draftspect brings Claude into Excel — read and edit the active workbook and pull in workspace context files. Powered by Claude." />
+  <DisplayName DefaultValue="Excel Assistant" />
+  <Description DefaultValue="A local AI agent in the Excel side panel: reads and edits the open workbook with your choice of model." />
   <IconUrl DefaultValue="http://127.0.0.1:47834/icon-32.png" />
   <HighResolutionIconUrl DefaultValue="http://127.0.0.1:47834/icon-64.png" />
   <SupportUrl DefaultValue="http://127.0.0.1:47834/" />

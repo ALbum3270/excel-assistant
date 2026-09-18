@@ -1,0 +1,14 @@
+[project]
+name = "excel-assistant-evals"
+version = "0.1.0"
+description = "Runs SpreadsheetBench tasks against Excel Assistant in a live Excel instance."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "openpyxl",
+    "pywin32; sys_platform == 'win32'",
+    "tqdm",
+]
+
+[tool.uv]
+package = false

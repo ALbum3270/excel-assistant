@@ -1,60 +1,31 @@
-/* global Office, Word, Excel */
+/* global Office, Excel */
 
 import {
-  toolGetSelection,
-  toolReadParagraphs,
-  toolInsertParagraphs,
-  toolReplaceParagraphs,
-  toolReplaceText,
-  toolReplaceSection,
-  toolDeleteParagraphs,
-  toolHighlight,
-  toolClearHighlights,
-  toolAddComment,
-  toolClearComments,
-  toolApplyStyle,
-  toolSetFont,
-  toolSetParagraphFormatting,
-  toolInsertTable,
-  toolSetTableCell,
-  toolGetDocumentText,
-  toolGetOutline,
-  toolSetList,
-  toolInsertImage,
-  toolInsertHyperlink,
-  toolInsertBookmark,
-  toolFind,
-  toolListComments,
-  toolReplyToComment,
-  toolResolveComment,
-  toolHeaderFooter,
-} from "./tools-word.js";
-import {
   toolExcelGetSelectedRange,
-  toolExcelListSheets,
-  toolExcelReadRange,
-  toolExcelWriteRange,
-  toolExcelFindValue,
-  toolExcelInsertRows,
-  toolExcelDeleteRows,
   toolExcelSelectRange,
-  toolExcelWriteFormula,
   toolExcelSetFormat,
-  toolExcelInsertColumns,
-  toolExcelDeleteColumns,
-  toolExcelAddSheet,
-  toolExcelDeleteSheet,
-  toolExcelRenameSheet,
-  toolExcelClearRange,
   toolExcelSortRange,
   toolExcelAutoFilter,
   toolExcelCreateTable,
   toolExcelAddTableRows,
-  toolExcelCreateChart,
-  toolExcelSetColumnWidth,
-  toolExcelSetRowHeight,
 } from "./tools-excel.js";
+import {
+  clearCellRange,
+  copyTo,
+  getAllObjects,
+  getCellRanges,
+  getRangeAsCsv,
+  getWorkbookMetadata,
+  modifyObject,
+  modifySheetStructure,
+  modifyWorkbookStructure,
+  resizeRange,
+  searchData,
+  setCellRange,
+} from "./vendor/office-agents-excel-api.js";
 import { isInOrUnder, docDirFromActiveUrl } from "./paths.js";
+import { marked } from "/npm/marked.esm.js";
+import DOMPurify from "/npm/purify.es.mjs";
 
 // Daemon endpoints. The HTTP server that loaded this taskpane is on
 // HTTP_PORT; the WebSocket bridge is on WS_PORT (one less by daemon convention).
@@ -81,10 +52,8 @@ let wsReady = false;
 let lastSelection = null;
 let activeDocUrl = null;
 
-// Host: "word" or "excel". Set from <body data-host="..."> (the Word and
-// Excel taskpanes each load their own index.html which sets this), with a
-// fallback to Office.context.host when Office.onReady fires.
-let HOST = document.body.dataset.host === "excel" ? "excel" : "word";
+// The only supported host. Office.onReady rejects anything else.
+const HOST = "excel";
 
 // ---------------------------------------------------------------------------
 // UI helpers
@@ -143,17 +112,40 @@ let connLabel = "Connecting…";
 let liveModel = null; // SDK-reported model id of the running loop
 let pendingModelShort = null; // target short name while a switch restarts
 
+// Tier alias → real model id when the daemon runs a non-Claude provider.
+let tierModels = {};
+
 function shortModelName(idOrAlias) {
   const s = String(idOrAlias || "");
+  if (tierModels[s]) return tierModels[s];
   if (/opus/i.test(s)) return "Opus";
   if (/sonnet/i.test(s)) return "Sonnet";
   if (/haiku/i.test(s)) return "Haiku";
+  if (!/^claude-/i.test(s)) return s.split("[")[0];
   return s.replace(/^claude-/, "").split(/[-[]/)[0] || s;
+}
+
+const TIER_HINTS = { haiku: "fastest", sonnet: "balanced", opus: "most capable" };
+
+async function refreshModelLabels() {
+  try {
+    const r = await sendRequest("get_models");
+    if (!r.ok) return;
+    tierModels = Object.fromEntries(Object.entries(r.models).filter(([, id]) => id));
+    for (const option of document.querySelectorAll("#composer-model option")) {
+      const id = tierModels[option.value];
+      const tier = option.value.charAt(0).toUpperCase() + option.value.slice(1);
+      option.textContent = `${id ?? tier} · ${TIER_HINTS[option.value]}`;
+    }
+    renderConnection();
+  } catch {
+    /* older daemon without get_models — keep the static labels */
+  }
 }
 
 function renderConnection() {
   let text = connLabel;
-  let title = "Connection to the Draftspect daemon";
+  let title = "Connection to the Excel Assistant daemon";
   if (connState === "ok") {
     if (pendingModelShort) {
       text = `↻ ${pendingModelShort}`;
@@ -195,6 +187,18 @@ $stopAgent?.addEventListener("click", () => {
   wsSend({ type: "stop_agent" });
 });
 
+// New chat — the daemon drops this pane's conversation and replays an empty
+// transcript (clearing the panel); the next message starts a fresh session.
+document.getElementById("new-chat")?.addEventListener("click", async () => {
+  try {
+    const r = await sendRequest("new_session");
+    if (!r.ok) throw new Error(r.error || "Could not start a new chat");
+    setAgentStatus("idle", "Ready");
+  } catch (e) {
+    appendError(e.message);
+  }
+});
+
 // Auth-failure banner. Shown across the top of the panel when the daemon
 // emits event: "auth_error". Persists until the user dismisses it; recovery
 // is to sign in to Claude Code (or set ANTHROPIC_API_KEY) and relaunch the
@@ -216,7 +220,7 @@ function showAuthErrorBanner(rawError) {
           <li>Sign in to Claude Code in a terminal — run <code>claude</code> and follow the prompts.</li>
           <li>Or set <code>ANTHROPIC_API_KEY</code> in your shell and relaunch the app.</li>
         </ul>
-        After signing in, quit Draftspect (tray icon) and reopen it.
+        After signing in, quit Excel Assistant (tray icon) and reopen it.
       </div>
       <details class="auth-error-raw">
         <summary>Raw error</summary>
@@ -236,58 +240,26 @@ function showAuthErrorBanner(rawError) {
 // while the agent is mid-turn. Falls back to a generic "Working…" for tools
 // the user hasn't seen named before — most filesystem/Bash/MCP tools.
 const TOOL_STATUS_LABELS = {
-  // Word
-  office_get_selection: "Reading your selection…",
-  office_read_paragraphs: "Reading the document…",
-  office_insert_paragraphs: "Inserting paragraphs…",
-  office_replace_text: "Editing text…",
-  office_replace_paragraphs: "Replacing paragraphs…",
-  office_replace_section: "Rewriting section…",
-  office_delete_paragraphs: "Deleting paragraphs…",
-  office_highlight: "Highlighting…",
-  office_clear_highlights: "Clearing highlights…",
-  office_add_comment: "Adding comment…",
-  office_clear_comments: "Clearing comments…",
-  office_apply_style: "Applying style…",
-  office_set_font: "Formatting text…",
-  office_set_paragraph_formatting: "Formatting paragraphs…",
-  office_insert_table: "Inserting a table…",
-  office_set_table_cell: "Editing a table cell…",
-  office_get_document_text: "Reading the document…",
-  office_get_outline: "Reading the outline…",
-  office_set_list: "Formatting a list…",
-  office_insert_image: "Inserting an image…",
-  office_insert_hyperlink: "Adding a link…",
-  office_insert_bookmark: "Adding a bookmark…",
-  office_find: "Searching the document…",
-  office_list_comments: "Reading comments…",
-  office_reply_to_comment: "Replying to a comment…",
-  office_resolve_comment: "Resolving a comment…",
-  office_header_footer: "Editing header/footer…",
-  // Excel
+  // Excel task-pane tools
+  excel_get_workbook_metadata: "Reading the workbook…",
   excel_get_selected_range: "Reading your selection…",
-  excel_list_sheets: "Listing sheets…",
-  excel_read_range: "Reading cells…",
-  excel_write_range: "Writing cells…",
-  excel_find_value: "Searching…",
-  excel_insert_rows: "Inserting rows…",
-  excel_delete_rows: "Deleting rows…",
+  excel_get_cell_ranges: "Reading cells…",
+  excel_get_range_as_csv: "Reading cells…",
+  excel_search_data: "Searching…",
+  excel_get_all_objects: "Listing charts and pivots…",
+  excel_set_cell_range: "Writing cells…",
+  excel_clear_cell_range: "Clearing cells…",
+  excel_copy_to: "Copying cells…",
+  excel_modify_sheet_structure: "Changing rows or columns…",
+  excel_modify_workbook_structure: "Changing sheets…",
+  excel_resize_range: "Resizing…",
+  excel_modify_object: "Updating a chart or pivot…",
   excel_select_range: "Selecting cells…",
-  excel_write_formula: "Writing formulas…",
   excel_set_format: "Formatting cells…",
-  excel_insert_columns: "Inserting columns…",
-  excel_delete_columns: "Deleting columns…",
-  excel_add_sheet: "Adding a sheet…",
-  excel_delete_sheet: "Deleting a sheet…",
-  excel_rename_sheet: "Renaming a sheet…",
-  excel_clear_range: "Clearing cells…",
   excel_sort_range: "Sorting…",
   excel_autofilter: "Filtering…",
   excel_create_table: "Creating a table…",
   excel_add_table_rows: "Adding table rows…",
-  excel_create_chart: "Creating a chart…",
-  excel_set_column_width: "Resizing columns…",
-  excel_set_row_height: "Resizing rows…",
   // Common Claude Code tools
   Read: "Reading a file…",
   Write: "Writing a file…",
@@ -300,11 +272,9 @@ const TOOL_STATUS_LABELS = {
   WebSearch: "Searching the web…",
 };
 // Raw MCP server name → user-facing display name. The in-process bridge
-// server is named "office" in our code, but to the user it's the active
-// host's add-in — "Word" or "Excel". Computed per-call (not cached) since
-// HOST is finalized in Office.onReady, after module load.
+// server is named "office" in our code; to the user it's Excel.
 function mcpServerDisplayName(raw) {
-  if (raw === "office") return HOST === "excel" ? "Excel" : "Word";
+  if (raw === "office") return "Excel";
   return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 function statusForTool(name) {
@@ -355,13 +325,19 @@ function appendUserMessage(text) {
   assistantTurnElem = null;
 }
 
+// Model output is untrusted: render Markdown, then sanitize before inserting.
+function renderMarkdown(el, text) {
+  el.rawText = text;
+  el.innerHTML = DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: true }));
+}
+
 function appendAssistantDelta(delta) {
   if (!assistantTurnElem) {
     assistantTurnElem = document.createElement("div");
     assistantTurnElem.className = "msg assistant";
     $messages.appendChild(assistantTurnElem);
   }
-  assistantTurnElem.textContent += delta;
+  renderMarkdown(assistantTurnElem, (assistantTurnElem.rawText ?? "") + delta);
   maybeScrollToBottom();
 }
 
@@ -419,7 +395,7 @@ function appendToolUse(name, args) {
 function appendAssistantMessage(text) {
   const el = document.createElement("div");
   el.className = "msg assistant";
-  el.textContent = text;
+  renderMarkdown(el, text);
   $messages.appendChild(el);
   maybeScrollToBottom();
   assistantTurnElem = null;
@@ -483,7 +459,6 @@ const SETTINGS_KEY = "claude-code-office-settings-v1";
 function defaultSettings() {
   return {
     showDiagnostics: false,
-    trackChangesMode: "always", // "always" | "modifications" | "never"
     // Global, sticky. Cheaper models use less of your monthly Claude
     // programmatic credit. "default" defers to the Claude Code CLI config.
     model: "sonnet", // "haiku" | "sonnet" | "opus" | "default"
@@ -518,8 +493,6 @@ function applySettings() {
   $messages.dataset.showDiagnostics = String(settings.showDiagnostics);
   const $showDiag = document.getElementById("setting-show-diagnostics");
   if ($showDiag) $showDiag.checked = settings.showDiagnostics;
-  const $tcMode = document.getElementById("setting-track-changes-mode");
-  if ($tcMode) $tcMode.value = settings.trackChangesMode || "always";
   const $model = document.getElementById("composer-model");
   if ($model) $model.value = settings.model || "sonnet";
 }
@@ -535,17 +508,6 @@ document.getElementById("setting-show-diagnostics").addEventListener("change", (
   settings.showDiagnostics = e.target.checked;
   saveSettings(settings);
   applySettings();
-});
-
-// Word-only control; the Excel pane omits this element entirely.
-document.getElementById("setting-track-changes-mode")?.addEventListener("change", (e) => {
-  settings.trackChangesMode = e.target.value;
-  saveSettings(settings);
-  applySettings();
-  // Push to daemon so the agent sees the new mode on the next turn.
-  if (wsReady) {
-    wsSend({ type: "context_update", track_changes_mode: settings.trackChangesMode });
-  }
 });
 
 document.getElementById("composer-model")?.addEventListener("change", (e) => {
@@ -640,7 +602,6 @@ function sendHello() {
     active_doc: activeDocUrl,
     pane_id: panePersistId,
     selection: attachSelection ? lastSelection : null,
-    track_changes_mode: settings.trackChangesMode || "always",
   });
 }
 
@@ -650,6 +611,7 @@ async function handleServerMessage(msg) {
       setConnectionStatus("ok", "Connected");
       setAgentStatus("idle", "Ready");
       refreshWorkspaceFromDaemon();
+      refreshModelLabels();
       break;
 
     case "transcript_replay":
@@ -746,174 +708,93 @@ function sendRequest(type, payload = {}) {
 // ---------------------------------------------------------------------------
 // Tool dispatcher
 // ---------------------------------------------------------------------------
-// Apply the user's track-changes mode setting on top of whatever the agent
-// passed. The agent's schema-default value can't be trusted as the final
-// arbiter: the user's mode setting is the policy.
-//   - "always": force true regardless of what the agent passed.
-//   - "never":  force false regardless.
-//   - "modifications": honor the agent's flag — the system prompt tells the
-//                      agent to pass false only for fresh-section drafts.
-function effectiveTrackChanges(provided) {
-  const mode = (typeof settings !== "undefined" && settings?.trackChangesMode) || "always";
-  if (mode === "never") return false;
-  if (mode === "always") return true;
-  return provided !== false;
-}
-
 async function runOfficeTool(msg) {
   const { id, name, args } = msg;
   try {
-    // Host guard: refuse wrong-host tools with a clear message so the
-    // agent can self-correct on its next turn. The daemon registers both
-    // tool families on every session, so this is the only place we can
-    // catch mismatches.
-    if (HOST === "excel" && name.startsWith("office_")) {
-      throw new Error(
-        `Tool ${name} is Word-only; the active host is Excel. Use excel_* tools instead.`,
-      );
-    }
-    if (HOST === "word" && name.startsWith("excel_")) {
-      throw new Error(
-        `Tool ${name} is Excel-only; the active host is Word. Use office_* tools instead.`,
-      );
-    }
     let result;
-    // Apply the user's track-changes mode to every write-tool call before
-    // dispatching, so user preference always wins over the agent's value.
-    const writeArgs = () => ({
-      ...args,
-      track_changes: effectiveTrackChanges(args && args.track_changes),
-    });
     switch (name) {
-      case "office_get_selection":
-        result = await toolGetSelection();
-        break;
-      case "office_read_paragraphs":
-        result = await toolReadParagraphs(args);
-        break;
-      case "office_insert_paragraphs":
-        result = await toolInsertParagraphs(writeArgs());
-        break;
-      case "office_replace_paragraphs":
-        result = await toolReplaceParagraphs(writeArgs());
-        break;
-      case "office_replace_section":
-        result = await toolReplaceSection(writeArgs());
-        break;
-      case "office_delete_paragraphs":
-        result = await toolDeleteParagraphs(writeArgs());
-        break;
-      case "office_replace_text":
-        result = await toolReplaceText(writeArgs());
-        break;
-      case "office_highlight":
-        result = await toolHighlight(args);
-        break;
-      case "office_clear_highlights":
-        result = await toolClearHighlights(args);
-        break;
-      case "office_add_comment":
-        result = await toolAddComment(args);
-        break;
-      case "office_clear_comments":
-        result = await toolClearComments(args);
-        break;
-      case "office_apply_style":
-        result = await toolApplyStyle(writeArgs());
-        break;
-      case "office_set_font":
-        result = await toolSetFont(writeArgs());
-        break;
-      case "office_set_paragraph_formatting":
-        result = await toolSetParagraphFormatting(writeArgs());
-        break;
-      case "office_insert_table":
-        result = await toolInsertTable(writeArgs());
-        break;
-      case "office_set_table_cell":
-        result = await toolSetTableCell(writeArgs());
-        break;
-      case "office_get_document_text":
-        result = await toolGetDocumentText();
-        break;
-      case "office_get_outline":
-        result = await toolGetOutline();
-        break;
-      case "office_set_list":
-        result = await toolSetList(writeArgs());
-        break;
-      case "office_insert_image":
-        result = await toolInsertImage(writeArgs());
-        break;
-      case "office_insert_hyperlink":
-        result = await toolInsertHyperlink(writeArgs());
-        break;
-      case "office_insert_bookmark":
-        result = await toolInsertBookmark(args);
-        break;
-      case "office_find":
-        result = await toolFind(args);
-        break;
-      case "office_list_comments":
-        result = await toolListComments();
-        break;
-      case "office_reply_to_comment":
-        result = await toolReplyToComment(args);
-        break;
-      case "office_resolve_comment":
-        result = await toolResolveComment(args);
-        break;
-      case "office_header_footer":
-        result = await toolHeaderFooter(args);
-        break;
-      // ---- Excel ----
       case "excel_get_selected_range":
         result = await toolExcelGetSelectedRange();
         break;
-      case "excel_list_sheets":
-        result = await toolExcelListSheets();
+      case "excel_get_workbook_metadata":
+        result = await getWorkbookMetadata();
         break;
-      case "excel_read_range":
-        result = await toolExcelReadRange(args);
+      case "excel_get_cell_ranges":
+        result = await getCellRanges(args.sheetId, args.ranges, {
+          includeStyles: args.includeStyles,
+          cellLimit: args.cellLimit,
+        });
         break;
-      case "excel_write_range":
-        result = await toolExcelWriteRange(args);
+      case "excel_get_range_as_csv":
+        result = await getRangeAsCsv(args.sheetId, args.range, {
+          includeHeaders: args.includeHeaders,
+          maxRows: args.maxRows,
+        });
         break;
-      case "excel_find_value":
-        result = await toolExcelFindValue(args);
+      case "excel_search_data":
+        result = await searchData(args.searchTerm, {
+          sheetId: args.sheetId,
+          range: args.range,
+          offset: args.offset,
+          ...args.options,
+        });
         break;
-      case "excel_insert_rows":
-        result = await toolExcelInsertRows(args);
+      case "excel_get_all_objects":
+        result = await getAllObjects({ sheetId: args.sheetId, id: args.id });
         break;
-      case "excel_delete_rows":
-        result = await toolExcelDeleteRows(args);
+      case "excel_set_cell_range":
+        result = await setCellRange(args.sheetId, args.range, args.cells, {
+          copyToRange: args.copyToRange,
+          resizeWidth: args.resizeWidth,
+          resizeHeight: args.resizeHeight,
+          allowOverwrite: args.allow_overwrite,
+        });
+        break;
+      case "excel_clear_cell_range":
+        result = await clearCellRange(args.sheetId, args.range, args.clearType);
+        break;
+      case "excel_copy_to":
+        result = await copyTo(args.sheetId, args.sourceRange, args.destinationRange);
+        break;
+      case "excel_modify_sheet_structure":
+        result = await modifySheetStructure(args.sheetId, {
+          operation: args.operation,
+          dimension: args.dimension,
+          reference: args.reference,
+          count: args.count,
+          position: args.position,
+        });
+        break;
+      case "excel_modify_workbook_structure":
+        result = await modifyWorkbookStructure({
+          operation: args.operation,
+          sheetId: args.sheetId,
+          sheetName: args.sheetName,
+          newName: args.newName,
+          tabColor: args.tabColor,
+        });
+        break;
+      case "excel_resize_range":
+        result = await resizeRange(args.sheetId, {
+          range: args.range,
+          width: args.width,
+          height: args.height,
+        });
+        break;
+      case "excel_modify_object":
+        result = await modifyObject({
+          operation: args.operation,
+          sheetId: args.sheetId,
+          objectType: args.objectType,
+          id: args.id,
+          properties: args.properties,
+        });
         break;
       case "excel_select_range":
         result = await toolExcelSelectRange(args);
         break;
-      case "excel_write_formula":
-        result = await toolExcelWriteFormula(args);
-        break;
       case "excel_set_format":
         result = await toolExcelSetFormat(args);
-        break;
-      case "excel_insert_columns":
-        result = await toolExcelInsertColumns(args);
-        break;
-      case "excel_delete_columns":
-        result = await toolExcelDeleteColumns(args);
-        break;
-      case "excel_add_sheet":
-        result = await toolExcelAddSheet(args);
-        break;
-      case "excel_delete_sheet":
-        result = await toolExcelDeleteSheet(args);
-        break;
-      case "excel_rename_sheet":
-        result = await toolExcelRenameSheet(args);
-        break;
-      case "excel_clear_range":
-        result = await toolExcelClearRange(args);
         break;
       case "excel_sort_range":
         result = await toolExcelSortRange(args);
@@ -926,15 +807,6 @@ async function runOfficeTool(msg) {
         break;
       case "excel_add_table_rows":
         result = await toolExcelAddTableRows(args);
-        break;
-      case "excel_create_chart":
-        result = await toolExcelCreateChart(args);
-        break;
-      case "excel_set_column_width":
-        result = await toolExcelSetColumnWidth(args);
-        break;
-      case "excel_set_row_height":
-        result = await toolExcelSetRowHeight(args);
         break;
       default:
         throw new Error(`Unknown tool: ${name}`);
@@ -953,27 +825,17 @@ let selectionDebounce = null;
 
 async function captureSelection() {
   try {
-    let r;
-    if (HOST === "excel") {
-      r = await Excel.run(async (context) => {
-        const range = context.workbook.getSelectedRange();
-        range.load("address, values, rowCount, columnCount");
-        await context.sync();
-        const cellCount = (range.rowCount || 0) * (range.columnCount || 0);
-        const text =
-          cellCount === 1
-            ? String(range.values?.[0]?.[0] ?? "")
-            : `${range.address} (${range.rowCount}×${range.columnCount})`;
-        return { text, address: range.address };
-      });
-    } else {
-      r = await Word.run(async (context) => {
-        const sel = context.document.getSelection();
-        sel.load("text");
-        await context.sync();
-        return { text: sel.text, para_id: null, para_count: null };
-      });
-    }
+    const r = await Excel.run(async (context) => {
+      const range = context.workbook.getSelectedRange();
+      range.load("address, values, rowCount, columnCount");
+      await context.sync();
+      const cellCount = (range.rowCount || 0) * (range.columnCount || 0);
+      const text =
+        cellCount === 1
+          ? String(range.values?.[0]?.[0] ?? "")
+          : `${range.address} (${range.rowCount}×${range.columnCount})`;
+      return { text, address: range.address };
+    });
     lastSelection = r;
     refreshSelectionChip();
     if (wsReady) {
@@ -1025,10 +887,10 @@ $input.addEventListener("keydown", (e) => {
 });
 
 // ---------------------------------------------------------------------------
-// Theme — match Word's theme (light/dark) via Office.context.officeTheme.
+// Theme — match Excel's theme (light/dark) via Office.context.officeTheme.
 // If Office doesn't expose a theme (older build), the CSS
 // `prefers-color-scheme: dark` media query already handles the OS-level
-// preference, so this is purely an override for when Word's theme differs
+// preference, so this is purely an override for when Excel's theme differs
 // from the OS.
 // ---------------------------------------------------------------------------
 function applyOfficeTheme() {
@@ -1053,15 +915,10 @@ function applyOfficeTheme() {
 // Boot
 // ---------------------------------------------------------------------------
 Office.onReady((info) => {
-  // Reconcile HOST with what Office reports — body data-host should already
-  // match, but Office is authoritative if they disagree.
-  if (info.host === Office.HostType.Excel) HOST = "excel";
-  else if (info.host === Office.HostType.Word) HOST = "word";
-  else {
+  if (info.host !== Office.HostType.Excel) {
     setConnectionStatus("err", `Unsupported host: ${info.host}`);
     return;
   }
-  document.body.dataset.host = HOST;
 
   applyOfficeTheme();
 
@@ -1072,24 +929,11 @@ Office.onReady((info) => {
   }
   refreshMismatchIndicator();
 
-  // Hide host-irrelevant settings.
-  if (HOST === "excel") {
-    const tcRow = document.getElementById("setting-track-changes-mode")?.closest(".setting-row");
-    if (tcRow) tcRow.hidden = true;
-  }
-
   // Wire selection-change event.
-  if (HOST === "excel") {
-    Excel.run(async (context) => {
-      context.workbook.onSelectionChanged.add(onSelectionChanged);
-      await context.sync();
-    }).catch((err) => console.warn("Could not attach Excel selection handler:", err));
-  } else {
-    Word.run(async (context) => {
-      context.document.onSelectionChanged.add(onSelectionChanged);
-      await context.sync();
-    }).catch((err) => console.warn("Could not attach Word selection handler:", err));
-  }
+  Excel.run(async (context) => {
+    context.workbook.onSelectionChanged.add(onSelectionChanged);
+    await context.sync();
+  }).catch((err) => console.warn("Could not attach Excel selection handler:", err));
 
   // Capture once on boot.
   captureSelection();
@@ -1116,12 +960,12 @@ function maybeShowOnboarding() {
   } catch {
     /* ignore */
   }
-  const hostLabel = HOST === "excel" ? "Excel" : "Word";
+  const hostLabel = "Excel";
   const card = document.createElement("div");
   card.className = "onboarding-card";
   card.innerHTML = `
     <div class="onboarding-head">
-      <strong>Welcome to Draftspect for ${hostLabel}</strong>
+      <strong>Welcome to Excel Assistant</strong>
       <button type="button" class="onboarding-dismiss" title="Dismiss">×</button>
     </div>
     <div class="onboarding-body">
@@ -1175,82 +1019,10 @@ document.querySelectorAll(".tab").forEach((btn) => {
 // Presets — saved prompts that the user can pin to quick-chips or browse
 // in the Library tab.
 // ===========================================================================
-// Host-scoped: localStorage is per-origin and BOTH task panes are served
-// from the same origin (127.0.0.1), so a single key would let Word's
-// presets show up in Excel (and vice-versa). Keying by host keeps each
-// app's library separate.
 const PRESETS_KEY = "claude-code-office-presets-v1:" + HOST;
 
 function defaultPresets() {
-  return HOST === "excel" ? defaultExcelPresets() : defaultWordPresets();
-}
-
-function defaultWordPresets() {
-  return [
-    {
-      id: uuid(),
-      title: "Summarize this document",
-      category: "Summarize",
-      prompt:
-        "Read the whole document and give me a tight summary — main argument, key points, anything notable. Don't edit the document.",
-      pinned: true,
-      auto_send: true,
-    },
-    {
-      id: uuid(),
-      title: "Outline this document",
-      category: "Summarize",
-      prompt:
-        "Show me the heading outline of this document with paragraph counts per section. Don't edit anything.",
-      pinned: false,
-      auto_send: true,
-    },
-    {
-      id: uuid(),
-      title: "Improve writing in selection",
-      category: "Edit",
-      prompt:
-        "Improve the writing in my current selection — clearer, tighter, no redundancy, preserve meaning. Use track changes.",
-      pinned: true,
-      auto_send: true,
-    },
-    {
-      id: uuid(),
-      title: "Fix typos and inconsistencies",
-      category: "Edit",
-      prompt:
-        "Scan the whole document for typos, grammar errors, and inconsistencies (terminology, capitalization, punctuation). Use office_highlight with severity 'warning' for each issue and summarize them in chat.",
-      pinned: false,
-      auto_send: true,
-    },
-    {
-      id: uuid(),
-      title: "Simplify the selection",
-      category: "Edit",
-      prompt:
-        "Simplify the selected paragraph for clarity without losing meaning. Use track changes.",
-      pinned: false,
-      auto_send: true,
-    },
-    {
-      id: uuid(),
-      title: "Add comments on this section",
-      category: "Review",
-      prompt:
-        "Review the section my selection is in. Add Word comments on each paragraph that has a problem (unclear phrasing, weak argument, missing detail). Don't edit the text itself.",
-      pinned: false,
-      auto_send: true,
-    },
-    {
-      id: uuid(),
-      title: "Answer using my context files",
-      category: "Research",
-      prompt: "Use the context files I've added to this workspace to answer: ",
-      pinned: false,
-      auto_send: false,
-    },
-    ...defaultEditingPresets(),
-  ];
+  return defaultExcelPresets();
 }
 
 function defaultExcelPresets() {
@@ -1310,22 +1082,6 @@ function defaultExcelPresets() {
   ];
 }
 
-// Editing presets are factored out so the migration in initPresets can
-// append them to existing users' lists without duplicating the constants.
-function defaultEditingPresets() {
-  return [
-    {
-      id: uuid(),
-      title: "Clear highlighting",
-      category: "Editing",
-      prompt:
-        'Call office_clear_highlights with arguments {"all": true} to remove every highlight from the document.',
-      pinned: true,
-      auto_send: true,
-    },
-  ];
-}
-
 function uuid() {
   if (crypto?.randomUUID) return crypto.randomUUID();
   return "p_" + Math.random().toString(36).slice(2, 10);
@@ -1358,13 +1114,6 @@ function initPresets() {
     savePresets();
   } else {
     presets = existing;
-    // Migration: append the Word-only Editing category (clear highlights)
-    // for Word users seeded before it existed. Excel has no highlight
-    // tool, so it never gets this.
-    if (HOST === "word" && !presets.some((p) => p.category === "Editing")) {
-      presets.push(...defaultEditingPresets());
-      savePresets();
-    }
   }
   renderLibrary();
   renderQuickChips();

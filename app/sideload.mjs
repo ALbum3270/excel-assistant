@@ -1,10 +1,9 @@
-// Auto-sideload the Draftspect add-in manifests into Word and Excel.
+// Auto-sideload the Excel Assistant add-in manifest into Excel.
 //
-// macOS: drop manifests into the per-host wef/ folder inside the Office
-// app's container. Word/Excel scan that folder on launch and surface
-// every manifest under Insert → Office Add-ins → SHARED FOLDER.
+// macOS: drop the manifest into the wef/ folder inside Excel's container.
+// Excel scans that folder on launch and surfaces every manifest under
+// Insert → Office Add-ins → SHARED FOLDER.
 //
-//   ~/Library/Containers/com.microsoft.Word/Data/Documents/wef/word.xml
 //   ~/Library/Containers/com.microsoft.Excel/Data/Documents/wef/excel.xml
 //
 // Windows: copy manifests to a folder under %APPDATA%, then register
@@ -16,7 +15,7 @@
 // the add-in. The Developer key is what the official Office dev tooling
 // uses for local sideloading.)
 //
-//   %APPDATA%\Draftspect\manifests\{word,excel}.xml
+//   %APPDATA%\ExcelAssistant\manifests\excel.xml
 //   HKCU\Software\Microsoft\Office\16.0\WEF\Developer
 //     <full manifest path> = <full manifest path>  (REG_SZ)
 //
@@ -37,10 +36,7 @@ const MANIFESTS_DIR = join(PROJECT_ROOT, "manifests");
 // One row per supported Office host. `mac_container` is the bundle ID whose
 // sandbox we drop the manifest into on macOS. `guid` is purely informational
 // here (the manifest carries its own Id element).
-const HOSTS = [
-  { host: "Word", file: "word.xml", mac_container: "com.microsoft.Word" },
-  { host: "Excel", file: "excel.xml", mac_container: "com.microsoft.Excel" },
-];
+const HOSTS = [{ host: "Excel", file: "excel.xml", mac_container: "com.microsoft.Excel" }];
 
 // ---------------------------------------------------------------------------
 // macOS
@@ -100,7 +96,26 @@ const WIN_LEGACY_CATALOG_KEY =
   "HKCU\\Software\\Microsoft\\Office\\16.0\\WEF\\TrustedCatalogs\\claude-code-office-trusted-catalog";
 
 function winCatalogDir() {
-  return join(homedir(), "AppData", "Roaming", "Draftspect", "manifests");
+  return join(homedir(), "AppData", "Roaming", "ExcelAssistant", "manifests");
+}
+
+// This project started as a fork of Draftspect; drop that add-in's
+// registrations so Excel doesn't list both.
+async function winRemoveDraftspectRegistrations() {
+  const legacyDir = join(homedir(), "AppData", "Roaming", "Draftspect", "manifests");
+  for (const file of ["word.xml", "excel.xml"]) {
+    const path = join(legacyDir, file);
+    try {
+      await regDeleteValue(WIN_DEVELOPER_KEY, path);
+    } catch {
+      /* not registered */
+    }
+    try {
+      await unlink(path);
+    } catch {
+      /* already gone */
+    }
+  }
 }
 
 function regCommand(args) {
@@ -146,6 +161,7 @@ async function winInstall() {
     await regAddString(WIN_DEVELOPER_KEY, dst, dst);
     copied.push({ host: host.host, path: dst });
   }
+  await winRemoveDraftspectRegistrations();
   // Drop the dead legacy local-path catalog if a prior build left one.
   try {
     await regDeleteKey(WIN_LEGACY_CATALOG_KEY);
@@ -158,6 +174,7 @@ async function winInstall() {
 async function winUninstall() {
   const removed = [];
   const catalogDir = winCatalogDir();
+  await winRemoveDraftspectRegistrations();
   for (const host of HOSTS) {
     const dst = join(catalogDir, host.file);
     try {

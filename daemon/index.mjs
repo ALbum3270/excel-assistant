@@ -9,14 +9,23 @@ import { createBridge } from "./bridge.mjs";
 import { createOfficeBridgeMcp } from "./office-tools.mjs";
 import { resolveWorkspaceRoot, suggestWorkspaceRoot, ensureWorkspaceMarker } from "./workspace.mjs";
 import { randomUUID } from "node:crypto";
-import { getSessionId, saveSessionId, touchFolder } from "./sessions.mjs";
+import { getSessionId, saveSessionId, touchFolder, clearSessionId } from "./sessions.mjs";
 import { readTranscript } from "./transcript.mjs";
 import { diag } from "./diag.mjs";
 import { getContextEntries, setContextEntries } from "./context.mjs";
 import { stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
+
+// Model provider settings (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, ...) apply
+// only to this daemon's agent, not to the user's global Claude Code.
+const ENV_FILE = join(PROJECT_ROOT, ".env");
+if (existsSync(ENV_FILE)) {
+  process.loadEnvFile(ENV_FILE);
+  console.log(`[daemon] Loaded model provider settings from ${ENV_FILE}`);
+}
 
 // Draftspect deliberately uses 47833/47834. Another local Office add-in
 // on this machine may bind 47823/47824, so a distinct pair avoids a port
@@ -54,7 +63,7 @@ const matterFolder = process.argv[2]
 console.log(`[daemon] Workspace folder (agent cwd): ${matterFolder}`);
 
 // ---------------------------------------------------------------------------
-// HTTP server: serve the taskpane assets so Word can load them.
+// HTTP server: serve the taskpane assets so Excel can load them.
 // ---------------------------------------------------------------------------
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -68,6 +77,13 @@ const MIME = {
 };
 
 const taskpaneDir = join(PROJECT_ROOT, "taskpane");
+// Office.js served locally so the pane works when appsforoffice.microsoft.com is unreachable.
+const officeJsDir = join(PROJECT_ROOT, "node_modules", "@microsoft", "office-js", "dist");
+// Browser ES modules the pane imports straight from node_modules.
+const NPM_MODULES = {
+  "/npm/marked.esm.js": join(PROJECT_ROOT, "node_modules", "marked", "lib", "marked.esm.js"),
+  "/npm/purify.es.mjs": join(PROJECT_ROOT, "node_modules", "dompurify", "dist", "purify.es.mjs"),
+};
 
 // A branded, actionable error page. Office renders whatever the manifest's
 // SourceLocation returns inside the task pane, so a bare "Not found" (the
@@ -85,7 +101,7 @@ function errorPageHtml(status, headline, requestedPath) {
   requestedPath = htmlEscape(requestedPath);
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Draftspect — ${status}</title>
+<title>Excel Assistant — ${status}</title>
 <style>
   body{font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
        color:#1a1a1a;margin:0;padding:28px 24px;background:#fff}
@@ -95,16 +111,16 @@ function errorPageHtml(status, headline, requestedPath) {
   code{background:#f2f2f2;padding:1px 5px;border-radius:4px;font-size:12px}
   .foot{color:#999;font-size:12px;border-top:1px solid #eee;padding-top:12px}
 </style></head><body>
-<h1>Draftspect couldn't load this panel</h1>
+<h1>Excel Assistant couldn't load this panel</h1>
 <p class="sub">${headline}</p>
 <p>This usually means one of:</p>
 <ol>
-  <li>The <strong>Draftspect tray app isn't running</strong> — start it, then reopen this panel.</li>
-  <li>Word/Excel cached an old add-in — <strong>fully quit the app (⌘Q / Alt+F4) and reopen it</strong> so it re-reads the add-in.</li>
-  <li>This add-in's manifest points at a <strong>different port</strong> than the running Draftspect daemon (e.g. another add-in's daemon answered). Relaunch Draftspect, then quit &amp; reopen Word/Excel.</li>
-  <li>If it persists, reinstall the add-in from the Draftspect tray menu.</li>
+  <li>The <strong>Excel Assistant tray app isn't running</strong> — start it, then reopen this panel.</li>
+  <li>Excel cached an old add-in — <strong>fully quit the app (⌘Q / Alt+F4) and reopen it</strong> so it re-reads the add-in.</li>
+  <li>This add-in's manifest points at a <strong>different port</strong> than the running Excel Assistant daemon (e.g. another add-in's daemon answered). Relaunch Excel Assistant, then quit &amp; reopen Excel.</li>
+  <li>If it persists, reinstall the add-in from the Excel Assistant tray menu.</li>
 </ol>
-<p class="foot">Draftspect daemon on <code>127.0.0.1:${HTTP_PORT}</code> · requested <code>${requestedPath}</code> · ${status}</p>
+<p class="foot">Excel Assistant daemon on <code>127.0.0.1:${HTTP_PORT}</code> · requested <code>${requestedPath}</code> · ${status}</p>
 </body></html>`;
 }
 
@@ -149,13 +165,26 @@ const http = createServer(async (req, res) => {
       return;
     }
 
-    const relPath = urlPath === "/" ? "/index.html" : urlPath;
-    const fsPath = join(taskpaneDir, relPath);
+    if (urlPath.startsWith("/eval/")) {
+      await handleEvalRequest(req, res, urlPath);
+      return;
+    }
+
+    if (NPM_MODULES[urlPath]) {
+      res.writeHead(200, { "Content-Type": MIME[".js"] });
+      res.end(await readFile(NPM_MODULES[urlPath]));
+      return;
+    }
+
+    const isOfficeJs = urlPath.startsWith("/office-js/");
+    const baseDir = isOfficeJs ? officeJsDir : taskpaneDir;
+    const relPath = isOfficeJs ? urlPath.slice("/office-js".length) : urlPath === "/" ? "/index.html" : urlPath;
+    const fsPath = join(baseDir, relPath);
     // Containment check. `join` already normalizes `../`, so the obvious
     // traversal is blocked — but a bare startsWith(taskpaneDir) would also
     // accept a sibling like `<…>/taskpane-evil/x`. Require an exact match
     // OR a path under `taskpaneDir` + separator.
-    if (fsPath !== taskpaneDir && !fsPath.startsWith(taskpaneDir + sep)) {
+    if (fsPath !== baseDir && !fsPath.startsWith(baseDir + sep)) {
       res.writeHead(403).end("Forbidden");
       return;
     }
@@ -184,7 +213,7 @@ const http = createServer(async (req, res) => {
         req,
         res,
         404,
-        "That page or file isn’t served by this Draftspect daemon.",
+        "That page or file isn’t served by this Excel Assistant daemon.",
         reqPath,
       );
     } else {
@@ -193,7 +222,7 @@ const http = createServer(async (req, res) => {
         req,
         res,
         500,
-        "The Draftspect daemon hit an internal error serving this page.",
+        "The Excel Assistant daemon hit an internal error serving this page.",
         reqPath,
       );
     }
@@ -460,6 +489,27 @@ function onPaneClose(key) {
 // conversation. Deferred via setImmediate so it lands after the message
 // is queued and after any in-flight finally; the new loop then drains
 // this pane's queue. No other pane's loop is ever touched.
+// Drop this pane's conversation; the next user message lazily starts a fresh
+// session (ensureLoopForMessage finds no saved id). Removing the session from
+// the map first makes the aborted loop's catch/finally a no-op, so it doesn't
+// auto-restart a resuming loop.
+async function startNewConversation(key, host) {
+  const cwd = cwdForKey(key);
+  const live = sessionFor(key);
+  if (live) {
+    sessions.delete(key);
+    live.abortController.abort();
+    bridge.clearUserMessages(key);
+    bridge.sendAssistantEvent({ event: "turn_complete", interrupted: true }, key);
+  }
+  await clearSessionId(host, cwd);
+  bridge.sendToTaskpane(
+    { type: "transcript_replay", session_id: null, truncated: false, events: [] },
+    key,
+  );
+  console.log(`[daemon] New conversation for ${cwd} (${host})`);
+}
+
 async function ensureLoopForMessage(key, host) {
   if (!key) return;
   const cwd = cwdForKey(key);
@@ -599,6 +649,28 @@ const bridge = createBridge({
         });
       }
     },
+    get_models: async (msg, reply) => {
+      // Real model ids behind each tier when a non-Anthropic provider is
+      // configured in .env; null means the tier uses Claude as-is.
+      reply({
+        type: "get_models_result",
+        ok: true,
+        models: {
+          haiku: process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL || null,
+          sonnet: process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || null,
+          opus: process.env.ANTHROPIC_DEFAULT_OPUS_MODEL || null,
+        },
+        request_id: msg.request_id,
+      });
+    },
+    new_session: async (msg, reply, key, host) => {
+      try {
+        await startNewConversation(key, host);
+        reply({ type: "new_session_result", ok: true, request_id: msg.request_id });
+      } catch (e) {
+        reply({ type: "new_session_result", ok: false, error: e.message, request_id: msg.request_id });
+      }
+    },
     get_context: async (msg, reply, key) => {
       try {
         const cwd = cwdForKey(key);
@@ -662,6 +734,102 @@ const bridge = createBridge({
 });
 
 // ---------------------------------------------------------------------------
+// Evaluation hooks. An external runner (evals/) opens a workbook whose task
+// pane auto-opens, then POSTs a prompt to /eval/run; the prompt is injected as
+// if typed in that pane and the call resolves when the turn completes.
+// ---------------------------------------------------------------------------
+const evalObservers = new Map(); // paneKey -> { text, tools, finish }
+
+for (const method of ["sendAssistantEvent", "sendAssistantText"]) {
+  const original = bridge[method];
+  bridge[method] = (payload, key) => {
+    const observer = key && evalObservers.get(key);
+    if (observer) {
+      if (method === "sendAssistantText") observer.text += payload;
+      else if (payload.event === "tool_use_announce") observer.tools.push(payload.tool);
+      else if (payload.event === "session_init") observer.model = payload.model;
+      else if (payload.event === "turn_complete" && !payload.interrupted)
+        observer.finish({
+          status: payload.subtype === "success" ? "completed" : payload.subtype || "completed",
+          usage: payload.usage,
+          numTurns: payload.num_turns,
+          costUsd: payload.total_cost_usd,
+        });
+      else if (payload.event === "error" || payload.event === "auth_error")
+        observer.finish({ status: "error", error: payload.error });
+    }
+    return original(payload, key);
+  };
+}
+
+const samePath = (a, b) =>
+  String(a || "").replaceAll("/", "\\").toLowerCase() ===
+  String(b || "").replaceAll("/", "\\").toLowerCase();
+
+async function runEvalPrompt({ doc, prompt, model, timeoutMs = 15 * 60_000, paneWaitMs = 90_000 }) {
+  if (!doc || !prompt) return { status: "bad_request", error: "doc and prompt are required" };
+  const waitUntil = Date.now() + paneWaitMs;
+  let pane;
+  while (!(pane = bridge.listPanes().find((p) => samePath(p.activeDoc, doc)))) {
+    if (Date.now() > waitUntil) return { status: "no_pane", error: `No task pane connected for ${doc}` };
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  const { key, host } = pane;
+  if (evalObservers.has(key)) return { status: "busy", error: "An evaluation is already running in this pane" };
+  if (model && ALLOWED_MODELS.has(model)) modelByKey.set(key, model);
+  await startNewConversation(key, host);
+
+  const started = Date.now();
+  return new Promise((resolve) => {
+    const observer = {
+      text: "",
+      tools: [],
+      finish: (result) => {
+        clearTimeout(timer);
+        evalObservers.delete(key);
+        resolve({
+          ...result,
+          model: observer.model ?? null,
+          text: observer.text,
+          tools: observer.tools,
+          durationMs: Date.now() - started,
+        });
+      },
+    };
+    const timer = setTimeout(() => {
+      const live = sessionFor(key);
+      if (live) {
+        live.interrupted = true;
+        live.abortController.abort();
+      }
+      observer.finish({ status: "timeout" });
+    }, timeoutMs);
+    evalObservers.set(key, observer);
+    bridge.sendAssistantEvent({ event: "info", message: `Evaluation prompt:\n${prompt}` }, key);
+    ensureLoopForMessage(key, host);
+    bridge.pushUserMessage(prompt, key);
+  });
+}
+
+async function readJsonBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+}
+
+async function handleEvalRequest(req, res, urlPath) {
+  const reply = (status, body) => {
+    res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(body));
+  };
+  // Browsers can't read the token file, so a web page can't drive the agent.
+  if (req.headers["x-bridge-token"] !== BRIDGE_TOKEN) return reply(401, { error: "unauthorized" });
+  if (req.method === "GET" && urlPath === "/eval/panes") return reply(200, bridge.listPanes());
+  if (req.method === "POST" && urlPath === "/eval/run") return reply(200, await runEvalPrompt(await readJsonBody(req)));
+  return reply(404, { error: "not found" });
+}
+
+// ---------------------------------------------------------------------------
 // Office-bridge MCP server (in-process; forwards tool calls to the taskpane).
 // Built per session so the registered tool family matches the connected
 // host (see startSessionForFolder / the host re-narrow on hello).
@@ -688,56 +856,41 @@ async function loadUserMcpServers() {
   }
 }
 
-// Hoisted ABOVE the top-level awaits below on purpose. Module evaluation
-// suspends at the first top-level `await` (loadUserMcpServers /
-// preflightHttpMcpServers). The bridge WS server is already listening by
-// then, so a taskpane `hello` can arrive mid-suspension and drive
-// startSessionForFolder before the rest of the module body runs. Anything
-// that path touches must be initialized first, or it hits a TDZ
-// ReferenceError. Keep this (and any other start-path consts) up here.
-const WORD_MCP_DISALLOWED = [
-  "mcp__word-mcp__word_accept_revisions",
-  "mcp__word-mcp__word_add_comment",
-  "mcp__word-mcp__word_apply_style",
-  "mcp__word-mcp__word_begin_transaction",
-  "mcp__word-mcp__word_commit_transaction",
-  "mcp__word-mcp__word_delete_comment",
-  "mcp__word-mcp__word_delete_paragraphs",
-  "mcp__word-mcp__word_delete_snapshot",
-  "mcp__word-mcp__word_diff_snapshots",
-  "mcp__word-mcp__word_emergency_recover",
-  "mcp__word-mcp__word_export_pdf",
-  "mcp__word-mcp__word_find_text",
-  "mcp__word-mcp__word_get_document_info",
-  "mcp__word-mcp__word_get_outline",
-  "mcp__word-mcp__word_get_paragraph",
-  "mcp__word-mcp__word_get_paragraphs",
-  "mcp__word-mcp__word_get_section",
-  "mcp__word-mcp__word_get_selection",
-  "mcp__word-mcp__word_get_styles",
-  "mcp__word-mcp__word_insert_paragraphs",
-  "mcp__word-mcp__word_list_comments",
-  "mcp__word-mcp__word_list_open_documents",
-  "mcp__word-mcp__word_list_revisions",
-  "mcp__word-mcp__word_list_transactions",
-  "mcp__word-mcp__word_prune_snapshots",
-  "mcp__word-mcp__word_reject_revisions",
-  "mcp__word-mcp__word_replace_paragraphs",
-  "mcp__word-mcp__word_replace_range",
-  "mcp__word-mcp__word_replace_section",
-  "mcp__word-mcp__word_replace_text",
-  "mcp__word-mcp__word_restore_snapshot",
-  "mcp__word-mcp__word_rollback_transaction",
-  "mcp__word-mcp__word_toggle_track_changes",
-  "mcp__word-mcp__word_undo_last_edit",
-];
+// Project-scoped agent config (MCP servers such as the COM-based Excel server,
+// skill plugins) lives beside the daemon so it doesn't leak into the user's
+// global Claude Code config.
+async function loadAgentConfig() {
+  const configPath = join(PROJECT_ROOT, "agent.config.json");
+  try {
+    const parsed = JSON.parse(await readFile(configPath, "utf8"));
+    return {
+      mcpServers: parsed?.mcpServers ?? {},
+      plugins: parsed?.plugins ?? [],
+      skills: parsed?.skills,
+    };
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      console.warn(`[daemon] Could not load ${configPath}:`, err.message);
+    }
+    return { mcpServers: {}, plugins: [], skills: undefined };
+  }
+}
 
-const userMcpServers = await loadUserMcpServers();
-const userMcpNames = Object.keys(userMcpServers);
-if (userMcpNames.length > 0) {
-  console.log(
-    `[daemon] Loaded ${userMcpNames.length} MCP server(s) from ~/.claude.json: ${userMcpNames.join(", ")}`,
-  );
+const globalMcpServers = await loadUserMcpServers();
+const agentConfig = await loadAgentConfig();
+const userMcpServers = { ...globalMcpServers, ...agentConfig.mcpServers };
+const agentPlugins = agentConfig.plugins;
+for (const [source, servers] of [
+  ["~/.claude.json", globalMcpServers],
+  ["agent.config.json", agentConfig.mcpServers],
+]) {
+  const names = Object.keys(servers);
+  if (names.length > 0) {
+    console.log(`[daemon] Loaded ${names.length} MCP server(s) from ${source}: ${names.join(", ")}`);
+  }
+}
+if (agentPlugins.length > 0) {
+  console.log(`[daemon] Loaded ${agentPlugins.length} plugin(s): ${agentPlugins.map((p) => p.path).join(", ")}`);
 }
 
 // Preflight HTTP MCP servers. The SDK will silently drop any server whose
@@ -792,39 +945,19 @@ await preflightHttpMcpServers(userMcpServers);
 // ---------------------------------------------------------------------------
 // System prompt: Claude Code default + Office-specific append.
 // ---------------------------------------------------------------------------
-// Shared base + the active host's section only. An Excel session never
-// carries Word's surgical-edit / paragraph-reference rules (pure noise
-// for it) and vice-versa. Re-read fresh on every session start so edits
-// take effect when a session restarts (no daemon restart required).
-async function buildSystemPromptAppend(host) {
+// Shared base + the Excel section. Re-read fresh on every session start so
+// edits take effect when a session restarts (no daemon restart required).
+async function buildSystemPromptAppend() {
   const base = await readFile(join(__dirname, "system-prompt.md"), "utf8");
-  const files = host === "excel" ? ["system-prompt-excel.md"] : ["system-prompt-word.md"];
-  // Degraded pre-bind case (host null) shouldn't happen now that sessions
-  // start per pane, but fall back to including both to stay safe.
-  if (host !== "word" && host !== "excel") {
-    files.length = 0;
-    files.push("system-prompt-word.md", "system-prompt-excel.md");
-  }
-  const parts = [base];
-  for (const f of files) parts.push(await readFile(join(__dirname, f), "utf8"));
-  return parts.join("\n");
+  const excel = await readFile(join(__dirname, "system-prompt-excel.md"), "utf8");
+  return [base, excel].join("\n");
 }
 
 // ---------------------------------------------------------------------------
-// Disallow the out-of-process word-mcp tools. The user has word-mcp configured
-// in ~/.claude (it surfaces as `mcp__word-mcp__*`), but those tools drive Word
-// via AppleScript/COM and cause screen flicker on every edit — disqualifying
-// for the live-edit path. We replace them with the in-process office_* tools
-// that go through Office.js. The SDK's disallowedTools doesn't support globs,
-// so we have to enumerate.
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Permission handler. Hard rule: filesystem tools must never WRITE to .docx
-// files. The .docx the user has open in Word is held with unsaved changes; a
-// filesystem write clobbers their work and can corrupt the file (Word holds a
-// lock, OOXML cross-file references can break). Reading is allowed — the agent
-// occasionally falls back to unzipping .docx XML to extract text, which is
-// safe and read-only.
+// Permission handler. Hard rule: filesystem tools must never WRITE to Office
+// files. The workbook the user has open is held with unsaved changes; a
+// filesystem write clobbers their work and can corrupt the file. Reading is
+// allowed.
 // ---------------------------------------------------------------------------
 // Path/extension test for the Office-managed file types.
 const OFFICE_FILE_EXT = /\.(docx?|xlsx?|docm|xlsm)\b/i;
@@ -851,10 +984,9 @@ function denyWithOfficeMessage() {
   return {
     behavior: "deny",
     message:
-      "Refusing to write/move/delete a Word/Excel file via filesystem tools. These files are " +
+      "Refusing to write/move/delete an Office file via filesystem tools. These files are " +
       "managed by Office and may have unsaved changes; a filesystem mutation can corrupt the " +
-      "active document. Use the host's editing tools (office_* for Word, excel_* for Excel) " +
-      "to change document contents.",
+      "active workbook. Use the excel_* tools to change workbook contents.",
   };
 }
 
@@ -922,12 +1054,7 @@ async function* userMessageStream(key, session) {
 
 function renderContextHeader(ctx) {
   const parts = [];
-  // Host first so the agent immediately knows which tool family to use.
-  // Both office_* (Word) and excel_* tools are registered simultaneously;
-  // without this hint, the agent can pick the wrong family.
-  if (ctx.host === "word" || ctx.host === "excel") {
-    parts.push(`Host: ${ctx.host === "word" ? "Word" : "Excel"}`);
-  }
+  if (ctx.host === "excel") parts.push("Host: Excel");
   if (ctx.activeDoc) parts.push(`Doc: ${ctx.activeDoc}`);
   if (ctx.selection) {
     const s = ctx.selection;
@@ -1018,7 +1145,7 @@ async function startSessionForFolder(
   if (replay) sendTranscriptReplayTo(key, host, cwd).catch(() => {});
 
   // Re-read the drafting setup append fresh each session start.
-  const append = await buildSystemPromptAppend(host);
+  const append = await buildSystemPromptAppend();
 
   // Did this turn see a proper `result` message before the stream ended?
   // The SDK ends the stream with a `result` on normal completion. On a
@@ -1044,9 +1171,12 @@ async function startSessionForFolder(
             type: "preset",
             preset: "claude_code",
             append,
+            // Re-read the prompt files on every session start, including resumes.
+            snapshot: false,
           },
           mcpServers: { ...userMcpServers, office: officeMcp },
-          disallowedTools: WORD_MCP_DISALLOWED,
+          plugins: agentPlugins,
+          ...(agentConfig.skills ? { skills: agentConfig.skills } : {}),
           canUseTool: customPermissionHandler,
           includePartialMessages: true,
           // User-chosen model (composer dropdown); always explicit.
@@ -1179,7 +1309,9 @@ function handleAgentMessage(msg, session) {
   switch (msg.type) {
     case "system": {
       if (msg.subtype === "init") {
-        console.log(`[agent] init session ${msg.session_id} (model: ${msg.model})`);
+        console.log(
+          `[agent] init session ${msg.session_id} (model: ${msg.model}; plugins: ${(msg.plugins ?? []).map((p) => p.name).join(", ") || "none"}; skills: ${msg.skills?.length ?? 0})`,
+        );
         try {
           const tn = Array.isArray(msg.tools) ? msg.tools : Object.keys(msg.tools ?? {});
           diag(
@@ -1265,7 +1397,16 @@ function handleAgentMessage(msg, session) {
         session.slashCommandPending = false;
         session.turnProducedOutput = false;
       }
-      bridge.sendAssistantEvent({ event: "turn_complete", subtype: msg.subtype }, session?.key);
+      bridge.sendAssistantEvent(
+        {
+          event: "turn_complete",
+          subtype: msg.subtype,
+          usage: msg.usage,
+          num_turns: msg.num_turns,
+          total_cost_usd: msg.total_cost_usd,
+        },
+        session?.key,
+      );
       break;
     }
     case "user": {

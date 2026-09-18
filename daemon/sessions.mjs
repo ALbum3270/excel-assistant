@@ -103,6 +103,17 @@ export async function saveSessionId(host, cwd, sessionId) {
   await writeState(state);
 }
 
+// Forget the resumable session for (host, cwd) so the next message starts a
+// fresh conversation. The transcript .jsonl stays on disk.
+export async function clearSessionId(host, cwd) {
+  const h = normalizeHost(host);
+  if (!h) return;
+  const state = await readState();
+  if (!state.folders[cwd]?.sessions?.[h]) return;
+  delete state.folders[cwd].sessions[h];
+  await writeState(state);
+}
+
 // Touch a folder's bookkeeping (last_used / display_name) without changing
 // any session id. Ensures the folder entry exists for the per-host session
 // store. Skips OS-managed $HOME children so they never get persisted.

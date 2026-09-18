@@ -8,11 +8,21 @@ AGENTS.md
 
 # Local-only working scratch — never committed.
 PORT_TO_OFFICE_ADDINS.md
+# Personal AI chat logs (may contain API keys).
+claude记录
+codex对话
 dist/
 *.log
 .claude/
 .env
 .env.local
+# Machine-specific paths; see agent.config.example.json.
+agent.config.json
+# Evaluation runs and their Python environment.
+evals/runs/
+evals/.venv/
+evals/uv.lock
+__pycache__/
 
 
 # Office lock/owner temp files (~$foo.docx)

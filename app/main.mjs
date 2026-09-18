@@ -1,4 +1,4 @@
-// Draftspect for Office — Electron menu bar shell.
+// Excel Assistant — Electron menu bar shell.
 //
 // Wraps the daemon as a child process, exposes a tray icon with status and
 // controls, hides the dock icon (we're a background-only app), and restarts
@@ -301,31 +301,30 @@ function buildMenu() {
       ],
     },
     { type: "separator" },
-    { label: "Open Microsoft Word", click: () => shell.openExternal("ms-word:") },
     { label: "Open Microsoft Excel", click: () => shell.openExternal("ms-excel:") },
     { type: "separator" },
     {
       label: addinInstalled
-        ? "Reinstall add-in in Word + Excel"
-        : "Install add-in in Word + Excel…",
+        ? "Reinstall add-in in Excel"
+        : "Install add-in in Excel…",
       click: () => runInstall({ interactive: true }),
     },
     ...(addinInstalled
       ? [{ label: "Uninstall add-in", click: () => runUninstall({ interactive: true }) }]
       : []),
     { type: "separator" },
-    { label: "Quit Draftspect for Office", click: () => app.quit() },
+    { label: "Quit Excel Assistant", click: () => app.quit() },
   ]);
 }
 
 function updateTray() {
   if (!tray) return;
-  tray.setToolTip(`Draftspect for Office — ${statusLabel().replace(/^●\s*/, "")}`);
+  tray.setToolTip(`Excel Assistant — ${statusLabel().replace(/^●\s*/, "")}`);
   tray.setContextMenu(buildMenu());
 }
 
 // --------------------------------------------------------------------------
-// Add-in sideload — install / uninstall the Word + Excel manifests so the
+// Add-in sideload — install / uninstall the Excel manifest so the
 // user never has to manually drop files into wef/ or touch Trust Center.
 // --------------------------------------------------------------------------
 let addinInstalled = false;
@@ -348,11 +347,11 @@ async function runInstall({ interactive }) {
       dialog
         .showMessageBox({
           type: "info",
-          title: "Draftspect for Office installed",
-          message: "The add-in is now registered with Word and Excel.",
+          title: "Excel Assistant installed",
+          message: "The add-in is now registered with Excel.",
           detail:
-            "Quit and reopen Word / Excel (if they're already running), then look for " +
-            "Draftspect for Office under Insert → Office Add-ins → Shared Folder.\n\n" +
+            "Quit and reopen Excel (if it's already running), then look for " +
+            "Excel Assistant under Insert → Office Add-ins.\n\n" +
             (process.platform === "win32"
               ? `Trusted catalog registered at:\n${result.catalog}`
               : `Manifests copied to each app's wef/ folder.`),
@@ -371,8 +370,8 @@ async function runInstall({ interactive }) {
           message: err.message,
           detail:
             "You can sideload manually instead — see the README's Sideload section. " +
-            "The shortest path: in Word/Excel, Insert → My Add-ins → Upload My Add-in → " +
-            `pick the appropriate file from ${join(PROJECT_ROOT, "manifests")}.`,
+            "The shortest path: in Excel, Insert → My Add-ins → Upload My Add-in → " +
+            `pick excel.xml from ${join(PROJECT_ROOT, "manifests")}.`,
           buttons: ["OK"],
         })
         .catch(() => {});
@@ -390,9 +389,9 @@ async function runUninstall({ interactive }) {
         .showMessageBox({
           type: "info",
           title: "Add-in uninstalled",
-          message: "Draftspect for Office is no longer registered with Word or Excel.",
+          message: "Excel Assistant is no longer registered with Excel.",
           detail:
-            "The daemon is still running. Quit Draftspect for Office from the tray menu to stop it entirely.",
+            "The daemon is still running. Quit Excel Assistant from the tray menu to stop it entirely.",
           buttons: ["OK"],
         })
         .catch(() => {});
@@ -420,13 +419,13 @@ async function offerFirstRunInstall() {
   const { response } = await dialog
     .showMessageBox({
       type: "question",
-      title: "Install Draftspect for Office in Word + Excel?",
+      title: "Install Excel Assistant in Excel?",
       message:
-        "Draftspect for Office can install itself in Word and Excel automatically — no manifest copying or registry editing needed.",
+        "Excel Assistant can install itself in Excel automatically — no manifest copying or registry editing needed.",
       detail:
         "Click Install to register the add-in now. You can install later from the tray menu " +
-        "if you'd prefer. After installing, open Word/Excel and find Draftspect for Office under " +
-        "Insert → Office Add-ins → Shared Folder.",
+        "if you'd prefer. After installing, open Excel and find Excel Assistant under " +
+        "Insert → Office Add-ins.",
       buttons: ["Install", "Not now"],
       defaultId: 0,
       cancelId: 1,
@@ -455,7 +454,7 @@ app.whenReady().then(async () => {
   const icon = nativeImage.createFromPath(iconPath);
   if (process.platform === "darwin") icon.setTemplateImage(true);
   tray = new Tray(icon);
-  tray.setToolTip("Draftspect for Office");
+  tray.setToolTip("Excel Assistant");
 
   // Check whether the add-in is already registered and refresh the tray
   // menu, then offer to install on first run.

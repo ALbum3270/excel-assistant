@@ -1,0 +1,32 @@
+{
+  "mcpServers": {
+    "thepexcel-excel": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "C:\\path\\to\\ThepExcelMCP",
+        "thepexcel-mcp"
+      ],
+      "env": {
+        "THEPEXCEL_MCP_AUTOLAUNCH": "0"
+      }
+    }
+  },
+  "plugins": [
+    {
+      "type": "local",
+      "path": "C:\\path\\to\\financial-services-plugins\\plugins\\vertical-plugins\\financial-analysis",
+      "skipMcpDiscovery": true
+    }
+  ],
+  "skills": [
+    "financial-analysis:audit-xls",
+    "financial-analysis:clean-data-xls",
+    "financial-analysis:dcf-model",
+    "financial-analysis:3-statement-model",
+    "financial-analysis:lbo-model",
+    "financial-analysis:comps-analysis"
+  ]
+}

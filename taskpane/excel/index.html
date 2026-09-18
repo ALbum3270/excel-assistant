@@ -22,13 +22,13 @@
                  base-uri 'none';
                  object-src 'none'"
     />
-    <title>Draftspect for Excel</title>
-    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+    <title>Excel Assistant</title>
+    <script src="/office-js/office.js"></script>
     <link rel="stylesheet" href="/shared/styles.css" />
   </head>
   <body data-active-tab="chat" data-host="excel">
     <header class="topbar">
-      <span class="status" id="connection-status" title="Connection to the Draftspect daemon"
+      <span class="status" id="connection-status" title="Connection to the Excel Assistant daemon"
         >Connecting…</span
       >
       <button class="matter-chip" id="workspace-chip" title="Click to switch workspaces">
@@ -57,18 +57,21 @@
 
       <div class="agent-status-row">
         <span class="agent-status idle" id="agent-status">Ready</span>
+        <button type="button" class="btn-new-chat" id="new-chat" title="Start a new conversation">
+          New chat
+        </button>
         <button type="button" class="btn-stop" id="stop-agent" title="Stop the agent" hidden>
           Stop
         </button>
       </div>
 
       <form id="composer" class="composer">
-        <textarea id="input" placeholder="Ask Claude…" rows="3" autofocus></textarea>
+        <textarea id="input" placeholder="Ask about this workbook…" rows="3" autofocus></textarea>
         <div class="composer-actions">
           <select
             id="composer-model"
             class="composer-model"
-            title="Model — cheaper models use less of your monthly Claude credit"
+            title="Model tier"
           >
             <option value="haiku">Haiku · cheapest</option>
             <option value="sonnet">Sonnet · balanced</option>
@@ -97,7 +100,7 @@
         <div class="setup-section">
           <h3>Workspace</h3>
           <p class="setup-help">
-            The folder Claude works in — follows the open workbook automatically. Claude can already
+            The folder the agent works in — follows the open workbook automatically. The agent can already
             read <em>anything inside it</em> on demand; this just sets which
             <code>CLAUDE.md</code> and chat history apply. Override with
             <strong>Change workspace</strong>; it holds until you open a workbook elsewhere.
@@ -112,7 +115,7 @@
         <div class="setup-section">
           <h3>Context files</h3>
           <p class="setup-help">
-            Point Claude at material <strong>outside</strong> the workspace folder — notes, prior
+            Point the agent at material <strong>outside</strong> the workspace folder — notes, prior
             data, a vendor's specs, anywhere on disk. (Files <em>inside</em> the workspace it can
             already read on its own.) Saved to <code>CLAUDE.md</code>; read on demand.
           </p>
@@ -189,7 +192,7 @@
           <textarea
             id="preset-prompt"
             rows="6"
-            placeholder="What to send to Claude. Can be multi-line."
+            placeholder="What to send to the agent. Can be multi-line."
           ></textarea>
           <label>Category (optional)</label>
           <input
