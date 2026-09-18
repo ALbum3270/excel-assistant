@@ -11,8 +11,8 @@ Most tools take a numeric `sheetId`. Get the IDs from `excel_get_workbook_metada
 Read freely:
 - `excel_get_workbook_metadata` — sheets with IDs, used size, frozen panes, active sheet, current selection. Call first in a workbook you haven't seen.
 - `excel_get_selected_range` — the user's current selection with a bounded values preview. If it reports `truncated: true`, use `excel_get_cell_ranges` for the specific rows or columns you need. Use when the user says "this", "these cells", "the selection".
-- `excel_get_cell_ranges` — values, formulas and styles as a sparse A1-keyed object.
-- `excel_get_range_as_csv` — tabular data as CSV for analysis.
+- `excel_get_cell_ranges` — values, formulas and styles as a sparse A1-keyed object. Reads in bounded chunks; when `hasMore` is true, pass `remainingRanges` as the next call's `ranges` with the same sheet and options. Unread ranges may contain blanks.
+- `excel_get_range_as_csv` — a bounded page of tabular data as CSV. When `hasMore` is true, continue with `nextRange` and `includeHeaders: true` to retain the first row of the next page.
 - `excel_search_data` — find text, values or formula references (regex supported).
 - `excel_get_all_objects` — charts and pivot tables.
 

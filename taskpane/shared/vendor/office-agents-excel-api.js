@@ -200,6 +200,49 @@ async function getWorksheetStableId(context, sheet) {
   await context.sync();
   return getStableSheetId(sheet.id);
 }
+function remainingReadRanges(range, row, column) {
+  const { startRow, startCol } = parseRangeAddress(range.address);
+  const endRow = startRow + range.rowCount - 1;
+  const endCol = startCol + range.columnCount - 1;
+  if (row >= range.rowCount) return [];
+  const tail = [];
+  if (column > 0) {
+    tail.push(cellAddress(startRow + row, startCol + column) + ":" + cellAddress(startRow + row, endCol));
+    row++;
+  }
+  if (row < range.rowCount) {
+    tail.push(cellAddress(startRow + row, startCol) + ":" + cellAddress(endRow, endCol));
+  }
+  return tail;
+}
+async function planReadRanges(context, sheet, ranges) {
+  const targets = ranges.map((address) => sheet.getRange(address));
+  for (const target of targets) target.load("address,rowCount,columnCount");
+  await context.sync();
+  const pages = [];
+  let budget = 2e4;
+  for (let i = 0; i < targets.length; i++) {
+    const target = targets[i];
+    const { startRow, startCol } = parseRangeAddress(target.address);
+    let row = 0, column = 0;
+    while (row < target.rowCount) {
+      if (budget === 0) {
+        return { pages, remaining: [...remainingReadRanges(target, row, column), ...ranges.slice(i + 1)] };
+      }
+      const width = Math.min(target.columnCount - column, 2e3, budget);
+      const height = column === 0 && width === target.columnCount ? Math.min(target.rowCount - row, Math.floor(Math.min(2e3, budget) / width)) : 1;
+      const count = width * height;
+      pages.push(row === 0 && column === 0 && height === target.rowCount && width === target.columnCount ? ranges[i] : cellAddress(startRow + row, startCol + column) + ":" + cellAddress(startRow + row + height - 1, startCol + column + width - 1));
+      budget -= count;
+      column += width;
+      if (column === target.columnCount) {
+        column = 0;
+        row += height;
+      }
+    }
+  }
+  return { pages, remaining: [] };
+}
 async function getCellRanges(sheetId, ranges, options = {}) {
   const { includeStyles = true, cellLimit = 2e3 } = options;
   if (!Array.isArray(ranges) || ranges.length === 0) {
@@ -223,8 +266,11 @@ async function getCellRanges(sheetId, ranges, options = {}) {
     const styles = {};
     let totalCells = 0;
     let hasMore = false;
-    for (const rangeAddr of ranges) {
+    const readPlan = await planReadRanges(context, sheet, ranges);
+    let remainingRanges = readPlan.remaining;
+    for (let pageIndex = 0; pageIndex < readPlan.pages.length; pageIndex++) {
       if (hasMore) break;
+      const rangeAddr = readPlan.pages[pageIndex];
       const range = sheet.getRange(rangeAddr);
       range.load("values,formulas,address,rowCount,columnCount");
       await context.sync();
@@ -243,6 +289,11 @@ async function getCellRanges(sheetId, ranges, options = {}) {
           if (!hasValue && !hasFormula) continue;
           if (totalCells >= cellLimit) {
             hasMore = true;
+            remainingRanges = [
+              ...remainingReadRanges(range, r, c),
+              ...readPlan.pages.slice(pageIndex + 1),
+              ...readPlan.remaining
+            ];
             break scanRange;
           }
           if (hasValue) cells[addr] = value;
@@ -280,7 +331,8 @@ async function getCellRanges(sheetId, ranges, options = {}) {
     }
     return {
       success: true,
-      hasMore,
+      hasMore: hasMore || remainingRanges.length > 0,
+      remainingRanges,
       worksheet: {
         name: sheet.name,
         sheetId,
@@ -295,20 +347,33 @@ async function getCellRanges(sheetId, ranges, options = {}) {
 }
 async function getRangeAsCsv(sheetId, rangeAddr, options = {}) {
   const { includeHeaders = true, maxRows = 500 } = options;
+  if (!Number.isInteger(maxRows) || maxRows <= 0 || maxRows > 2e4) {
+    throw new Error("maxRows must be an integer from 1 to 20000");
+  }
   return Excel.run(async (context) => {
     const sheet = await getWorksheetById(context, sheetId);
     if (!sheet) throw new Error(`Worksheet with ID ${sheetId} not found`);
     sheet.load("name");
     const range = sheet.getRange(rangeAddr);
-    range.load("values,rowCount,columnCount");
+    range.load("address,rowCount,columnCount");
     await context.sync();
     const startRow = includeHeaders ? 0 : 1;
-    const availableRows = range.rowCount - startRow;
-    const actualRows = Math.min(availableRows, maxRows);
-    const hasMore = availableRows > maxRows;
+    const availableRows = Math.max(0, range.rowCount - startRow);
+    const actualRows = Math.min(availableRows, maxRows, Math.max(1, Math.floor(2e4 / range.columnCount)));
+    const hasMore = availableRows > actualRows;
+    const { startRow: firstRow, startCol } = parseRangeAddress(range.address);
+    const endColumn = startCol + range.columnCount - 1;
+    const preview = actualRows === 0 ? null : sheet.getRange(
+      cellAddress(firstRow + startRow, startCol) + ":" + cellAddress(firstRow + startRow + actualRows - 1, endColumn)
+    );
+    if (preview) {
+      preview.load("values");
+      await context.sync();
+    }
+    const nextRange = hasMore ? cellAddress(firstRow + startRow + actualRows, startCol) + ":" + cellAddress(firstRow + range.rowCount - 1, endColumn) : null;
     const rows = [];
-    for (let r = startRow; r < startRow + actualRows; r++) {
-      const row = range.values[r].map((v) => {
+    for (let r = 0; r < actualRows; r++) {
+      const row = preview.values[r].map((v) => {
         if (v === null || v === void 0) return "";
         const str = String(v);
         if (str.includes(",") || str.includes('"') || str.includes("\n")) {
@@ -324,6 +389,7 @@ async function getRangeAsCsv(sheetId, rangeAddr, options = {}) {
       rowCount: actualRows,
       columnCount: range.columnCount,
       hasMore,
+      nextRange,
       sheetName: sheet.name
     };
   });

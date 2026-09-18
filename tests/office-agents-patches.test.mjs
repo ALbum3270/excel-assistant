@@ -81,7 +81,7 @@ function installExcel(ranges, { usedAddress = "A1:A3" } = {}) {
       load() {},
     }),
     getRange(address) {
-      const result = ranges[address];
+      const result = typeof ranges === "function" ? ranges(address) : ranges[address];
       assert.ok(result, `Unexpected range request: ${address}`);
       return result;
     },
@@ -139,6 +139,81 @@ test("getCellRanges reports truncation within one range", async () => {
   });
   assert.equal(result.hasMore, true);
   assert.deepEqual(result.worksheet.cells, { A1: 1, A2: 2 });
+});
+
+// Generate values only when Office.js requests them, so an accidental
+// full-range load fails before allocating a whole-sheet matrix.
+function installReadGrid(valueAt, maxChunk) {
+  const reads = [];
+  const col = (letters) => [...letters].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
+  installExcel((address) => {
+    const match = address.match(/^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/);
+    assert.ok(match, address);
+    const firstRow = Number(match[2]);
+    const firstCol = col(match[1]);
+    const rowCount = Number(match[4] ?? match[2]) - firstRow + 1;
+    const columnCount = col(match[3] ?? match[1]) - firstCol + 1;
+    const target = { address: `Sheet1!${address}`, rowCount, columnCount };
+    target.load = (properties) => {
+      if (!properties.includes("values")) return;
+      const size = rowCount * columnCount;
+      assert.ok(size <= maxChunk, `Unbounded host read: ${size} cells`);
+      reads.push(size);
+      target.values = Array.from({ length: rowCount }, (_, r) =>
+        Array.from({ length: columnCount }, (_, c) => valueAt(firstRow + r, firstCol + c)),
+      );
+      target.formulas = target.values;
+    };
+    return target;
+  });
+  return reads;
+}
+
+test("bounded sparse pages preserve every cell and stop scanning huge blank ranges", async () => {
+  const reads = installReadGrid((r, c) => r * 10 + c, 2000);
+  const cells = {};
+  let ranges = ["A1:C1001"];
+  let pages = 0;
+  do {
+    const page = await api.getCellRanges(1, ranges, { includeStyles: false, cellLimit: 700 });
+    for (const [address, value] of Object.entries(page.worksheet.cells)) {
+      assert.equal(cells[address], undefined, `Duplicate: ${address}`);
+      cells[address] = value;
+    }
+    ranges = page.remainingRanges;
+    assert.equal(page.hasMore, ranges.length > 0);
+    assert.ok(++pages < 10, "Continuation must advance");
+  } while (ranges.length);
+  assert.equal(Object.keys(cells).length, 3003);
+  assert.equal(cells.C1001, 10013);
+  assert.ok(reads.every((size) => size <= 2000));
+
+  const blankReads = installReadGrid(() => "", 2000);
+  const blank = await api.getCellRanges(1, ["A1:XFD1048576"], { includeStyles: false });
+  assert.equal(
+    blankReads.reduce((a, b) => a + b, 0),
+    20000,
+  );
+  assert.equal(blank.hasMore, true);
+  assert.equal(blank.remainingRanges[0], "EIC2:XFD2");
+  assert.deepEqual(blank.worksheet.cells, {});
+});
+
+test("CSV pages bound host reads and continue after the skipped header without losing rows", async () => {
+  const reads = installReadGrid((r, c) => `${r},${c}`, 20000);
+  const first = await api.getRangeAsCsv(1, "A1:D10001", {
+    includeHeaders: false,
+    maxRows: 20000,
+  });
+  assert.equal(first.rowCount, 5000);
+  assert.equal(first.nextRange, "A5002:D10001");
+  assert.equal(first.csv.split("\n")[0], '"2,1","2,2","2,3","2,4"');
+  const second = await api.getRangeAsCsv(1, first.nextRange, { maxRows: 20000 });
+  assert.equal(second.rowCount, 5000);
+  assert.equal(second.hasMore, false);
+  assert.equal(second.nextRange, null);
+  assert.equal(second.csv.split("\n")[0], '"5002,1","5002,2","5002,3","5002,4"');
+  assert.deepEqual(reads, [20000, 20000]);
 });
 
 test("a formula with an empty displayed value counts toward cellLimit", async () => {

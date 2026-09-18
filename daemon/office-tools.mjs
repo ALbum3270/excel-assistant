@@ -221,13 +221,12 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
 
   const excel_get_cell_ranges = tool(
     "excel_get_cell_ranges",
-    "READ. Read cell values, formulas, and formatting from specified ranges in a worksheet. Returns cells as a sparse object with A1-notation keys. Use this to inspect data before modifying it.",
+    "READ. Read cell values, formulas, and formatting as a sparse A1-keyed object. Each call scans at most 20000 cells in bounded chunks. If hasMore is true, pass remainingRanges as ranges in the next call with the same sheetId and options; unread ranges may contain blanks. Use this to inspect data before modifying it.",
     {
       sheetId,
       ranges: z
         .array(z.string().min(1))
         .min(1)
-        .max(50)
         .describe("Ranges in A1 notation, e.g. ['A1:C10', 'E1:E100']."),
       includeStyles: z
         .boolean()
@@ -247,7 +246,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
 
   const excel_get_range_as_csv = tool(
     "excel_get_range_as_csv",
-    "READ. Read cell data from a range and return it as CSV. Use when you need tabular data for analysis without styling info.",
+    "READ. Read a bounded page of cell data as CSV, at most 20000 cells. If hasMore is true, continue with nextRange as range and includeHeaders=true so the next data row is not skipped. Use for tabular analysis without styling info.",
     {
       sheetId,
       range: z.string().describe("Range in A1 notation, e.g. 'A1:Z100'."),
@@ -255,7 +254,13 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
         .boolean()
         .optional()
         .describe("Include first row as headers. Default: true."),
-      maxRows: z.number().int().optional().describe("Maximum rows to return. Default: 500."),
+      maxRows: z
+        .number()
+        .int()
+        .positive()
+        .max(20_000)
+        .optional()
+        .describe("Maximum rows to return, also bounded by 20000 cells. Default: 500."),
       explanation,
     },
     wrap("excel_get_range_as_csv"),

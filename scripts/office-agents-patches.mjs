@@ -1,6 +1,7 @@
 // Reproducible local fixes for the vendored office-agents Excel API.
 // Each replacement must match exactly once. An upstream change therefore
 // stops the build instead of silently dropping a safety fix.
+import { patchBoundedReads } from "./office-agents-read-patches.mjs";
 
 function replaceOnce(source, name, before, after) {
   const first = source.indexOf(before);
@@ -384,5 +385,5 @@ function excelColorToHex(
   return Excel.run(async (context) => {`,
   );
 
-  return source;
+  return patchBoundedReads(source, replaceOnce);
 }
