@@ -180,7 +180,7 @@ function setAgentStatus(state, label) {
 
 // Stop button — abort the current agent turn. The daemon picks up the
 // abort, emits turn_complete with interrupted=true (flipping this
-// indicator to "Stopped"), and auto-restarts a fresh resuming loop.
+// indicator to "Stopped"). The next message starts a fresh resuming loop.
 $stopAgent?.addEventListener("click", () => {
   if (!wsReady) return;
   setAgentStatus("working", "Stopping…");
@@ -215,12 +215,12 @@ function showAuthErrorBanner(rawError) {
         <button type="button" class="auth-error-dismiss" title="Dismiss">×</button>
       </div>
       <div class="auth-error-body">
-        The agent couldn't authenticate with Anthropic. Either:
+        The agent couldn't authenticate with its model provider.
         <ul>
-          <li>Sign in to Claude Code in a terminal — run <code>claude</code> and follow the prompts.</li>
-          <li>Or set <code>ANTHROPIC_API_KEY</code> in your shell and relaunch the app.</li>
+          <li>Using a provider configured in <code>.env</code>: check <code>ANTHROPIC_AUTH_TOKEN</code> and <code>ANTHROPIC_BASE_URL</code>.</li>
+          <li>Using Claude: sign in to Claude Code in a terminal (run <code>claude</code>), or set <code>ANTHROPIC_API_KEY</code>.</li>
         </ul>
-        After signing in, quit Excel Assistant (tray icon) and reopen it.
+        Then quit Excel Assistant (tray icon) and reopen it.
       </div>
       <details class="auth-error-raw">
         <summary>Raw error</summary>
@@ -627,7 +627,12 @@ async function handleServerMessage(msg) {
         appendToolUse(msg.tool, msg.input);
         setAgentStatus("working", statusForTool(msg.tool));
       } else if (msg.event === "turn_complete") {
-        setAgentStatus("idle", msg.interrupted ? "Stopped" : "Ready");
+        if (!msg.interrupted && msg.subtype && msg.subtype !== "success") {
+          appendError(msg.error || `The agent ended this request with ${msg.subtype}.`);
+          setAgentStatus("idle", "Stopped — see message");
+        } else {
+          setAgentStatus("idle", msg.interrupted ? "Stopped" : "Ready");
+        }
         endTurn();
       } else if (msg.event === "info") {
         appendNotice(msg.message);
@@ -880,7 +885,9 @@ $composer.addEventListener("submit", (e) => {
 });
 
 $input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
+  // isComposing / keyCode 229: Enter that confirms an IME candidate (Chinese,
+  // Japanese…) must not send the half-typed message.
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
     e.preventDefault();
     $composer.dispatchEvent(new Event("submit"));
   }

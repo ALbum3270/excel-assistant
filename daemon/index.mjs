@@ -178,7 +178,11 @@ const http = createServer(async (req, res) => {
 
     const isOfficeJs = urlPath.startsWith("/office-js/");
     const baseDir = isOfficeJs ? officeJsDir : taskpaneDir;
-    const relPath = isOfficeJs ? urlPath.slice("/office-js".length) : urlPath === "/" ? "/index.html" : urlPath;
+    const relPath = isOfficeJs
+      ? urlPath.slice("/office-js".length)
+      : urlPath === "/"
+        ? "/index.html"
+        : urlPath;
     const fsPath = join(baseDir, relPath);
     // Containment check. `join` already normalizes `../`, so the obvious
     // traversal is blocked — but a bare startsWith(taskpaneDir) would also
@@ -277,7 +281,7 @@ function pickPathFromMain({ include_files, default_path, title, button_label }) 
 // (preflightHttpMcpServers, etc.) don't hit a TDZ on these bindings.
 //
 //   sessions:        paneKey -> live session { key, host, cwd, sessionId,
-//                    abortController, settled, interrupted }
+//                    abortController, settled, generation }
 //   workspaceByKey:  paneKey -> last-known cwd, so a pane that connects
 //                    before its first message still resolves a workspace
 //                    (and survives that pane's loop ending).
@@ -291,6 +295,29 @@ function pickPathFromMain({ include_files, default_path, title, button_label }) 
 // ping-pong of sharing a pane.
 const sessions = new Map();
 const workspaceByKey = new Map();
+const sessionGenerationByKey = new Map();
+const replayTokenByKey = new Map();
+
+function invalidateReplay(key) {
+  const token = Symbol("replay");
+  replayTokenByKey.set(key, token);
+  return token;
+}
+
+function cancelPaneSession(key) {
+  sessionGenerationByKey.set(key, Symbol("session"));
+  invalidateReplay(key);
+  const pending = startQueue.get(key);
+  if (pending) pending.latest = null;
+  // An obsolete initialization may still be awaiting I/O. A new generation
+  // gets its own runner instead of waiting for that obsolete start to finish.
+  startQueue.delete(key);
+  const live = sessionFor(key);
+  sessions.delete(key);
+  live?.abortController.abort();
+  bridge.clearUserMessages(key);
+  return live;
+}
 // Panes whose workspace the user set explicitly (Change workspace). Their
 // workspace must NOT be re-derived from the document folder on reconnect.
 const explicitWorkspaceKeys = new Set();
@@ -310,6 +337,23 @@ function modelArgFor(key) {
 
 function sessionFor(key) {
   return sessions.get(key) ?? null;
+}
+
+function isCurrentSession(session) {
+  return (
+    sessionFor(session.key) === session &&
+    sessionGenerationByKey.get(session.key) === session.generation &&
+    !session.abortController.signal.aborted
+  );
+}
+
+function retireCurrentSession(session, { clearMessages = false } = {}) {
+  if (sessionFor(session.key) !== session) return false;
+  session.settled = true;
+  sessions.delete(session.key);
+  session.abortController.abort();
+  if (clearMessages) bridge.clearUserMessages(session.key);
+  return true;
 }
 
 // This pane's workspace: its live session's cwd, else the last cwd we
@@ -335,12 +379,13 @@ async function resolveReplaySessionId(key, host, cwd) {
 // Reconstruct this pane's prior conversation from its .jsonl and push it
 // to THAT pane only. Sent on every taskpane hello and after a workspace
 // switch (cwd_changed). Empty events => fresh chat, no divider.
-async function sendTranscriptReplayTo(key, host, cwd) {
+async function sendTranscriptReplayTo(key, host, cwd, token = invalidateReplay(key)) {
   try {
     const sessionId = await resolveReplaySessionId(key, host, cwd);
     const { events, truncated } = sessionId
       ? await readTranscript(sessionId, { maxEvents: 200 })
       : { events: [], truncated: false };
+    if (replayTokenByKey.get(key) !== token || cwdForKey(key) !== cwd) return;
     bridge.sendToTaskpane(
       {
         type: "transcript_replay",
@@ -355,23 +400,10 @@ async function sendTranscriptReplayTo(key, host, cwd) {
   }
 }
 
-// Start (or resume) this pane's session on the next tick — past the
-// current message handler / the agent loop's finally block (which clears
-// sessions.get(key)), so startSessionForFolder builds cleanly. Every
-// path that (re)starts a pane's session — first message, post-stream-end,
-// post-Stop — funnels through here; `reason` only flavors the failure log.
-// Per-key serialization + coalescing of (re)starts. Every restart trigger —
-// first message, post-Stop, post-stream-end, model/context change, workspace
-// switch — funnels through here. startSessionForFolder aborts whatever
-// session is current for the key, so if several triggers fire close together
-// (e.g. "slow first turn → Stop → switch model → resend") their setImmediate
-// callbacks used to interleave: each abort killed the next start before it
-// could `init`, leaving an orphaned loop with no consumer (the Excel hang).
-//
-// Now each key has a single-flight runner. While a start is in progress,
-// later requests only overwrite `latest` — intermediate restarts collapse,
-// and exactly one final start runs to completion uncontested, so it always
-// reaches `init`.
+// Serialize/coalesce starts within a pane generation. Cancellation retires
+// the runner; every awaited initialization checks its generation before
+// publishing events or starting the SDK. Stop and stream failures recover
+// lazily on the next user message, rather than starting an idle SDK loop.
 const startQueue = new Map(); // key -> { running: boolean, latest: req | null }
 
 function scheduleSessionStart(cwd, sessionId, key, host, reason, { replay = true } = {}) {
@@ -380,7 +412,14 @@ function scheduleSessionStart(cwd, sessionId, key, host, reason, { replay = true
     q = { running: false, latest: null };
     startQueue.set(key, q);
   }
-  q.latest = { cwd, resumeId: sessionId, host: host ?? null, reason, replay };
+  q.latest = {
+    cwd,
+    resumeId: sessionId,
+    host: host ?? null,
+    reason,
+    replay,
+    generation: sessionGenerationByKey.get(key),
+  };
   if (q.running) return; // the active runner will pick up `latest`
   q.running = true;
   setImmediate(() => runStartQueue(key));
@@ -392,50 +431,23 @@ async function runStartQueue(key) {
   // startSessionForFolder returns once setup is done (it kicks the agent
   // loop off detached), so awaiting it serializes only the abort+create
   // step — exactly the part that must not interleave.
-  while (q.latest) {
+  while (startQueue.get(key) === q && q.latest) {
     const req = q.latest;
     q.latest = null;
+    if (req.generation !== sessionGenerationByKey.get(key)) continue;
     try {
       await startSessionForFolder(req.cwd, req.resumeId, {
         key,
         host: req.host,
         replay: req.replay,
+        generation: req.generation,
       });
     } catch (err) {
       console.error(`[daemon] ${req.reason} session start failed:`, err?.message ?? err);
     }
   }
   q.running = false;
-}
-
-// Backoff for the post-stream-end auto-restart. When the SDK stream dies
-// immediately without ever producing a `result` (persistent usage-limit,
-// auth failure, or an SDK fault), the loop would otherwise respawn forever,
-// spamming the pane with an error + turn_complete on every cycle. We track,
-// per pane key, how many such restarts happened with no successful turn in
-// between, inside a rolling window. Past the cap we stop auto-resurrecting
-// that pane; an explicit new user message still gets a fresh attempt (it
-// goes through the un-capped "user message" path) and a completed turn
-// clears the record (see noteSuccessfulTurn).
-const LOOP_RESTART_WINDOW_MS = 60_000;
-const MAX_LOOP_RESTARTS = 5;
-const loopRestartByKey = new Map(); // key -> { count, first }
-
-// Records one failure restart for `key` and returns true if the loop may be
-// auto-restarted, false once the cap is hit within the window.
-function allowFailureRestart(key) {
-  const now = Date.now();
-  let rec = loopRestartByKey.get(key);
-  if (!rec || now - rec.first > LOOP_RESTART_WINDOW_MS) {
-    rec = { count: 0, first: now };
-    loopRestartByKey.set(key, rec);
-  }
-  rec.count += 1;
-  return rec.count <= MAX_LOOP_RESTARTS;
-}
-
-function noteSuccessfulTurn(key) {
-  loopRestartByKey.delete(key);
+  if (startQueue.get(key) === q) startQueue.delete(key);
 }
 
 // Called on every taskpane hello — for ANY open document, many panes
@@ -444,8 +456,40 @@ function noteSuccessfulTurn(key) {
 // ping-pong and burn an unasked turn. We only re-render this pane's own
 // transcript. The loop starts lazily on the first user message
 // (onUserMessage → ensureLoopForMessage).
-async function onPaneConnect(key, host, doc) {
-  if (!key) return;
+// Pending workspace resolution per pane. The bridge sends `welcome` without
+// waiting for onPaneConnect, so a message that arrives right after connect
+// must wait for this, or it starts in the daemon's default folder.
+const workspaceResolving = new Map(); // key -> Promise<void>
+
+async function awaitWorkspaceResolution(key) {
+  // Failed mutations report their own error; readers use the last valid
+  // workspace rather than inheriting another request's rejection.
+  while (workspaceResolving.has(key)) await workspaceResolving.get(key).catch(() => {});
+}
+
+// Serialize directory resolution, explicit switches and New chat's history
+// reset. Readers wait for directory state, never for transcript I/O.
+function updateWorkspace(key, action) {
+  const previous = workspaceResolving.get(key);
+  const work = Promise.resolve(previous)
+    .catch(() => {})
+    .then(action);
+  const tracked = work.finally(() => {
+    if (workspaceResolving.get(key) === tracked) workspaceResolving.delete(key);
+  });
+  workspaceResolving.set(key, tracked);
+  return tracked;
+}
+
+function onPaneConnect(key, host, doc) {
+  if (!key) return undefined;
+  const token = invalidateReplay(key);
+  return updateWorkspace(key, () => resolvePaneWorkspace(key, host, doc)).then(() =>
+    sendTranscriptReplayTo(key, host, cwdForKey(key), token),
+  );
+}
+
+async function resolvePaneWorkspace(key, host, doc) {
   // Resolve this pane's workspace from the open document's own folder,
   // server-side and immediately — deterministic, no loop start. Without
   // this, cwdForKey() falls back to matterFolder (the daemon's launch
@@ -457,14 +501,20 @@ async function onPaneConnect(key, host, doc) {
   if (doc && !explicitWorkspaceKeys.has(key) && !sessionFor(key)) {
     try {
       const folder = await resolveWorkspaceRoot(doc);
-      if (folder) workspaceByKey.set(key, folder);
+      if (
+        folder &&
+        !explicitWorkspaceKeys.has(key) &&
+        !sessionFor(key) &&
+        bridge.isTaskpaneConnected(key)
+      ) {
+        workspaceByKey.set(key, folder);
+      }
     } catch {
       /* unresolvable (cloud/unsaved) — keep the fallback */
     }
   }
   const cwd = cwdForKey(key);
   diag(`hello → replay key=${key} cwd=${cwd} (no loop start on connect)`);
-  await sendTranscriptReplayTo(key, host, cwd);
 }
 
 // Called when a pane's WebSocket closes for good (the bridge already
@@ -475,9 +525,9 @@ async function onPaneConnect(key, host, doc) {
 // key); its own `finally` clears `sessions` when its loop actually ends.
 function onPaneClose(key) {
   if (!key || sessionFor(key)) return;
+  cancelPaneSession(key);
   workspaceByKey.delete(key);
   explicitWorkspaceKeys.delete(key);
-  loopRestartByKey.delete(key);
   modelByKey.delete(key);
   startQueue.delete(key);
 }
@@ -490,28 +540,33 @@ function onPaneClose(key) {
 // is queued and after any in-flight finally; the new loop then drains
 // this pane's queue. No other pane's loop is ever touched.
 // Drop this pane's conversation; the next user message lazily starts a fresh
-// session (ensureLoopForMessage finds no saved id). Removing the session from
-// the map first makes the aborted loop's catch/finally a no-op, so it doesn't
-// auto-restart a resuming loop.
-async function startNewConversation(key, host) {
-  const cwd = cwdForKey(key);
-  const live = sessionFor(key);
-  if (live) {
-    sessions.delete(key);
-    live.abortController.abort();
-    bridge.clearUserMessages(key);
-    bridge.sendAssistantEvent({ event: "turn_complete", interrupted: true }, key);
-  }
-  await clearSessionId(host, cwd);
-  bridge.sendToTaskpane(
-    { type: "transcript_replay", session_id: null, truncated: false, events: [] },
-    key,
-  );
-  console.log(`[daemon] New conversation for ${cwd} (${host})`);
+// session (ensureLoopForMessage finds no saved id). Cancellation also retires
+// queued starts and makes the aborted loop's catch/finally harmless.
+function startNewConversation(key, host) {
+  cancelPaneSession(key);
+  const generation = sessionGenerationByKey.get(key);
+  const token = replayTokenByKey.get(key);
+  bridge.sendAssistantEvent({ event: "turn_complete", interrupted: true }, key);
+  return updateWorkspace(key, async () => {
+    const cwd = cwdForKey(key);
+    await clearSessionId(host, cwd);
+    if (sessionGenerationByKey.get(key) !== generation) return;
+    if (replayTokenByKey.get(key) === token) {
+      bridge.sendToTaskpane(
+        { type: "transcript_replay", session_id: null, truncated: false, events: [] },
+        key,
+      );
+    }
+    console.log(`[daemon] New conversation for ${cwd} (${host})`);
+  });
 }
 
 async function ensureLoopForMessage(key, host) {
   if (!key) return;
+  invalidateReplay(key);
+  const generation = sessionGenerationByKey.get(key);
+  await awaitWorkspaceResolution(key);
+  if (sessionGenerationByKey.get(key) !== generation) return;
   const cwd = cwdForKey(key);
   const live = sessionFor(key);
   if (live && !live.settled) {
@@ -523,6 +578,7 @@ async function ensureLoopForMessage(key, host) {
   } catch {
     /* fresh session if lookup fails */
   }
+  if (sessionGenerationByKey.get(key) !== generation || sessionFor(key)) return;
   diag(`message → ensure loop key=${key} cwd=${cwd} resume=${resumeId ?? "(new)"}`);
   // replay:false — the pane already shows the chat (incl. the message
   // that just triggered this). An empty transcript_replay here (a
@@ -561,41 +617,43 @@ const bridge = createBridge({
     },
     set_cwd: async (msg, reply, key, host) => {
       try {
-        let cwd;
-        let explicitPick = false;
-        if (msg.autodetect_from_doc) {
-          const detected = await resolveWorkspaceRoot(msg.autodetect_from_doc);
-          if (!detected)
-            throw new Error("Could not auto-detect a workspace folder from that doc path");
-          cwd = detected;
-        } else if (msg.cwd) {
-          cwd = msg.cwd;
-          explicitPick = true;
-        } else {
-          throw new Error("set_cwd requires `cwd` or `autodetect_from_doc`");
-        }
-        // Remember an explicit pick so a later reconnect doesn't re-derive
-        // this pane's workspace from the doc folder; an autodetect switch
-        // clears that pin (the doc folder is authoritative again).
-        if (explicitPick) explicitWorkspaceKeys.add(key);
-        else explicitWorkspaceKeys.delete(key);
-        const resolved = await switchFolder(cwd, key, host);
-        // Drop a CLAUDE.md marker on explicit user pick so the next open of
-        // any doc in this folder auto-detects silently.
-        let markerCreated = false;
-        if (explicitPick) {
-          try {
-            markerCreated = await ensureWorkspaceMarker(resolved);
-          } catch (e) {
-            console.warn(`[daemon] could not create CLAUDE.md in ${resolved}: ${e.message}`);
+        await updateWorkspace(key, async () => {
+          let cwd;
+          let explicitPick = false;
+          if (msg.autodetect_from_doc) {
+            const detected = await resolveWorkspaceRoot(msg.autodetect_from_doc);
+            if (!detected)
+              throw new Error("Could not auto-detect a workspace folder from that doc path");
+            cwd = detected;
+          } else if (msg.cwd) {
+            cwd = msg.cwd;
+            explicitPick = true;
+          } else {
+            throw new Error("set_cwd requires `cwd` or `autodetect_from_doc`");
           }
-        }
-        reply({
-          type: "set_cwd_result",
-          ok: true,
-          cwd: resolved,
-          marker_created: markerCreated,
-          request_id: msg.request_id,
+          // Remember an explicit pick so a later reconnect doesn't re-derive
+          // this pane's workspace from the doc folder; an autodetect switch
+          // clears that pin (the doc folder is authoritative again).
+          const resolved = await switchFolder(cwd, key, host);
+          if (explicitPick) explicitWorkspaceKeys.add(key);
+          else explicitWorkspaceKeys.delete(key);
+          // Drop a CLAUDE.md marker on explicit user pick so the next open of
+          // any doc in this folder auto-detects silently.
+          let markerCreated = false;
+          if (explicitPick) {
+            try {
+              markerCreated = await ensureWorkspaceMarker(resolved);
+            } catch (e) {
+              console.warn(`[daemon] could not create CLAUDE.md in ${resolved}: ${e.message}`);
+            }
+          }
+          reply({
+            type: "set_cwd_result",
+            ok: true,
+            cwd: resolved,
+            marker_created: markerCreated,
+            request_id: msg.request_id,
+          });
         });
       } catch (e) {
         reply({ type: "set_cwd_result", ok: false, error: e.message, request_id: msg.request_id });
@@ -620,6 +678,7 @@ const bridge = createBridge({
       }
     },
     get_cwd_state: async (msg, reply, key) => {
+      await awaitWorkspaceResolution(key);
       reply({
         type: "get_cwd_state_result",
         ok: true,
@@ -630,24 +689,12 @@ const bridge = createBridge({
       });
     },
     stop_agent: async (msg, reply, key) => {
-      // User clicked Stop in this pane. Abort only THIS pane's loop; the
-      // query() iterator's catch path sees AbortError and (because we
-      // flag the session interrupted) emits turn_complete interrupted so
-      // the taskpane flips to Ready and auto-restarts a resuming loop.
-      // Every other pane's loop is untouched.
-      const s = sessionFor(key);
-      if (s) {
-        s.interrupted = true;
-        s.abortController.abort();
-        reply({ type: "stop_agent_result", ok: true, request_id: msg.request_id });
-      } else {
-        reply({
-          type: "stop_agent_result",
-          ok: false,
-          error: "No active agent turn",
-          request_id: msg.request_id,
-        });
-      }
+      // Also cancel starts still waiting for workspace/session lookup.
+      // Abort releases the old bridge waiter immediately. The next user
+      // message starts lazily; no idle SDK restart is needed after Stop.
+      cancelPaneSession(key);
+      bridge.sendAssistantEvent({ event: "turn_complete", interrupted: true }, key);
+      reply({ type: "stop_agent_result", ok: true, request_id: msg.request_id });
     },
     get_models: async (msg, reply) => {
       // Real model ids behind each tier when a non-Anthropic provider is
@@ -668,11 +715,17 @@ const bridge = createBridge({
         await startNewConversation(key, host);
         reply({ type: "new_session_result", ok: true, request_id: msg.request_id });
       } catch (e) {
-        reply({ type: "new_session_result", ok: false, error: e.message, request_id: msg.request_id });
+        reply({
+          type: "new_session_result",
+          ok: false,
+          error: e.message,
+          request_id: msg.request_id,
+        });
       }
     },
     get_context: async (msg, reply, key) => {
       try {
+        await awaitWorkspaceResolution(key);
         const cwd = cwdForKey(key);
         const entries = cwd ? await getContextEntries(cwd) : [];
         reply({ type: "get_context_result", ok: true, cwd, entries, request_id: msg.request_id });
@@ -704,23 +757,25 @@ const bridge = createBridge({
     },
     set_context: async (msg, reply, key, host) => {
       try {
-        const cwd = cwdForKey(key);
-        if (!cwd) throw new Error("No workspace selected");
-        const { saved, errors } = await setContextEntries(cwd, msg.entries || []);
-        reply({
-          type: "set_context_result",
-          ok: errors.length === 0,
-          cwd,
-          saved,
-          errors,
-          request_id: msg.request_id,
+        await updateWorkspace(key, async () => {
+          const cwd = cwdForKey(key);
+          if (!cwd) throw new Error("No workspace selected");
+          const { saved, errors } = await setContextEntries(cwd, msg.entries || []);
+          reply({
+            type: "set_context_result",
+            ok: errors.length === 0,
+            cwd,
+            saved,
+            errors,
+            request_id: msg.request_id,
+          });
+          // Restart THIS pane's loop so its agent re-reads CLAUDE.md and
+          // picks up the updated context block on the next turn. Every
+          // other pane is unaffected.
+          restartSession(key, host, { reason: "context_changed" }).catch((err) =>
+            console.warn("[daemon] restart failed:", err.message),
+          );
         });
-        // Restart THIS pane's loop so its agent re-reads CLAUDE.md and
-        // picks up the updated context block on the next turn. Every
-        // other pane is unaffected.
-        restartSession(key, host, { reason: "context_changed" }).catch((err) =>
-          console.warn("[daemon] restart failed:", err.message),
-        );
       } catch (e) {
         reply({
           type: "set_context_result",
@@ -751,6 +806,7 @@ for (const method of ["sendAssistantEvent", "sendAssistantText"]) {
       else if (payload.event === "turn_complete" && !payload.interrupted)
         observer.finish({
           status: payload.subtype === "success" ? "completed" : payload.subtype || "completed",
+          error: payload.error,
           usage: payload.usage,
           numTurns: payload.num_turns,
           costUsd: payload.total_cost_usd,
@@ -763,19 +819,25 @@ for (const method of ["sendAssistantEvent", "sendAssistantText"]) {
 }
 
 const samePath = (a, b) =>
-  String(a || "").replaceAll("/", "\\").toLowerCase() ===
-  String(b || "").replaceAll("/", "\\").toLowerCase();
+  String(a || "")
+    .replaceAll("/", "\\")
+    .toLowerCase() ===
+  String(b || "")
+    .replaceAll("/", "\\")
+    .toLowerCase();
 
 async function runEvalPrompt({ doc, prompt, model, timeoutMs = 15 * 60_000, paneWaitMs = 90_000 }) {
   if (!doc || !prompt) return { status: "bad_request", error: "doc and prompt are required" };
   const waitUntil = Date.now() + paneWaitMs;
   let pane;
   while (!(pane = bridge.listPanes().find((p) => samePath(p.activeDoc, doc)))) {
-    if (Date.now() > waitUntil) return { status: "no_pane", error: `No task pane connected for ${doc}` };
+    if (Date.now() > waitUntil)
+      return { status: "no_pane", error: `No task pane connected for ${doc}` };
     await new Promise((r) => setTimeout(r, 1000));
   }
   const { key, host } = pane;
-  if (evalObservers.has(key)) return { status: "busy", error: "An evaluation is already running in this pane" };
+  if (evalObservers.has(key))
+    return { status: "busy", error: "An evaluation is already running in this pane" };
   if (model && ALLOWED_MODELS.has(model)) modelByKey.set(key, model);
   await startNewConversation(key, host);
 
@@ -797,16 +859,18 @@ async function runEvalPrompt({ doc, prompt, model, timeoutMs = 15 * 60_000, pane
       },
     };
     const timer = setTimeout(() => {
-      const live = sessionFor(key);
-      if (live) {
-        live.interrupted = true;
-        live.abortController.abort();
-      }
+      cancelPaneSession(key);
+      bridge.sendAssistantEvent({ event: "turn_complete", interrupted: true }, key);
       observer.finish({ status: "timeout" });
     }, timeoutMs);
     evalObservers.set(key, observer);
     bridge.sendAssistantEvent({ event: "info", message: `Evaluation prompt:\n${prompt}` }, key);
-    ensureLoopForMessage(key, host);
+    ensureLoopForMessage(key, host).catch((err) => {
+      if (evalObservers.get(key) === observer) {
+        bridge.clearUserMessages(key);
+        bridge.sendAssistantEvent({ event: "error", error: err.message }, key);
+      }
+    });
     bridge.pushUserMessage(prompt, key);
   });
 }
@@ -825,7 +889,8 @@ async function handleEvalRequest(req, res, urlPath) {
   // Browsers can't read the token file, so a web page can't drive the agent.
   if (req.headers["x-bridge-token"] !== BRIDGE_TOKEN) return reply(401, { error: "unauthorized" });
   if (req.method === "GET" && urlPath === "/eval/panes") return reply(200, bridge.listPanes());
-  if (req.method === "POST" && urlPath === "/eval/run") return reply(200, await runEvalPrompt(await readJsonBody(req)));
+  if (req.method === "POST" && urlPath === "/eval/run")
+    return reply(200, await runEvalPrompt(await readJsonBody(req)));
   return reply(404, { error: "not found" });
 }
 
@@ -886,11 +951,15 @@ for (const [source, servers] of [
 ]) {
   const names = Object.keys(servers);
   if (names.length > 0) {
-    console.log(`[daemon] Loaded ${names.length} MCP server(s) from ${source}: ${names.join(", ")}`);
+    console.log(
+      `[daemon] Loaded ${names.length} MCP server(s) from ${source}: ${names.join(", ")}`,
+    );
   }
 }
 if (agentPlugins.length > 0) {
-  console.log(`[daemon] Loaded ${agentPlugins.length} plugin(s): ${agentPlugins.map((p) => p.path).join(", ")}`);
+  console.log(
+    `[daemon] Loaded ${agentPlugins.length} plugin(s): ${agentPlugins.map((p) => p.path).join(", ")}`,
+  );
 }
 
 // Preflight HTTP MCP servers. The SDK will silently drop any server whose
@@ -1018,12 +1087,13 @@ async function* userMessageStream(key, session) {
   while (true) {
     let msg;
     try {
-      msg = await bridge.nextUserMessage(key);
+      msg = await bridge.nextUserMessage(key, { signal: session?.abortController.signal });
     } catch {
       // Bridge rejected the waiter — session was aborted. Exit cleanly so
       // the underlying query() iterator can shut down without a stray error.
       return;
     }
+    if (session && !isCurrentSession(session)) return;
     const { text, context } = msg;
     // The Agent SDK only treats a turn as a slash command (built-in or a
     // custom .claude/commands/*.md) when the message *starts with* "/".
@@ -1043,6 +1113,7 @@ async function* userMessageStream(key, session) {
     if (session) {
       session.slashCommandPending = isSlashCommand;
       session.turnProducedOutput = false;
+      session.turnOpen = true;
     }
     yield {
       type: "user",
@@ -1073,6 +1144,23 @@ function renderContextHeader(ctx) {
   return parts.length ? `[${parts.join(" · ")}]` : "";
 }
 
+// Which model provider the agent talks to, for user-facing error messages.
+function providerLabel() {
+  const base = process.env.ANTHROPIC_BASE_URL;
+  if (!base) return "Claude";
+  try {
+    return new URL(base).host;
+  } catch {
+    return base;
+  }
+}
+
+function providerRecoveryHint() {
+  return process.env.ANTHROPIC_BASE_URL
+    ? "Check the API key, balance and model names in .env, then restart the daemon."
+    : "Wait for your Claude limit to reset, or set ANTHROPIC_API_KEY to use an API key.";
+}
+
 // ---------------------------------------------------------------------------
 // Session management. Each open document (paneKey) runs its own
 // independent query() loop with its own cwd; switching workspace or
@@ -1087,8 +1175,9 @@ function renderContextHeader(ctx) {
 async function startSessionForFolder(
   cwd,
   resumeSessionId = null,
-  { key = null, host = null, replay = true } = {},
+  { key = null, host = null, replay = true, generation = sessionGenerationByKey.get(key) } = {},
 ) {
+  if (generation !== sessionGenerationByKey.get(key)) return null;
   // Only when actually superseding a live session for THIS pane: abort it
   // and drain its queue (same-pane restart: workspace switch, config
   // reload, post-Stop/stream-end resume). No other pane's loop is ever
@@ -1111,6 +1200,7 @@ async function startSessionForFolder(
     abortController,
     settled: false,
     host,
+    generation,
   };
   sessions.set(key, session);
   workspaceByKey.set(key, cwd);
@@ -1118,9 +1208,18 @@ async function startSessionForFolder(
   // Register only this host's tool family, routed to THIS pane. A session
   // is created lazily on the first user message (onUserMessage →
   // ensureLoopForMessage), so `host` is normally "word" or "excel".
-  const officeMcp = createOfficeBridgeMcp(bridge, host, key);
+  let officeMcp;
 
-  await touchFolder(cwd);
+  // Recents bookkeeping only; a failure here must not block the session.
+  try {
+    await touchFolder(cwd);
+  } catch (err) {
+    console.warn(`[daemon] could not record workspace ${cwd}: ${err?.message ?? err}`);
+  }
+  if (!isCurrentSession(session)) {
+    session.settled = true;
+    return null;
+  }
   console.log(
     `[daemon] Starting session for ${cwd}` +
       (resumeSessionId ? ` (resuming ${resumeSessionId.slice(0, 8)}…)` : " (new session)"),
@@ -1145,14 +1244,33 @@ async function startSessionForFolder(
   if (replay) sendTranscriptReplayTo(key, host, cwd).catch(() => {});
 
   // Re-read the drafting setup append fresh each session start.
-  const append = await buildSystemPromptAppend();
+  let append;
+  try {
+    append = await buildSystemPromptAppend();
+    if (!isCurrentSession(session)) {
+      session.settled = true;
+      return null;
+    }
+    officeMcp = createOfficeBridgeMcp(bridge, host, key);
+  } catch (err) {
+    // Without cleanup the half-built session stays registered as live, so
+    // ensureLoopForMessage would treat it as a consumer and every later
+    // message would wait forever. Drop it and end the pending turn instead.
+    if (!isCurrentSession(session)) return null;
+    retireCurrentSession(session, { clearMessages: true });
+    const reason = `Could not start the agent: ${err?.message ?? err}`;
+    console.error(`[daemon] ${reason}`);
+    bridge.sendAssistantEvent({ event: "error", error: reason }, key);
+    throw err;
+  }
 
-  // Did this turn see a proper `result` message before the stream ended?
-  // The SDK ends the stream with a `result` on normal completion. On a
-  // usage-limit / quota hit (and some transport failures) the stream just
-  // ends with no result and no thrown error — leaving the taskpane pinned
-  // to "Working…". We track this to recover.
-  let sawResult = false;
+  // Tracked per turn (not per loop): the loop serves many turns, and a later
+  // turn can end without a `result` even after earlier turns succeeded. The
+  // SDK normally ends each turn with a `result`; on a usage-limit / quota hit
+  // (and some transport failures) the stream just ends with no result and no
+  // thrown error — leaving the taskpane pinned to "Working…".
+  session.turnOpen = false;
+  session.sawAnyResult = false;
   // Best-effort usage-limit detection from the SDK CLI's stderr. The exact
   // phrasing varies by SDK version and limit kind (per-minute / daily /
   // weekly); match broadly.
@@ -1196,61 +1314,33 @@ async function startSessionForFolder(
           ...(resumeSessionId ? { resume: resumeSessionId } : {}),
         },
       })) {
-        if (sessionFor(key) !== session) break; // this pane's loop was restarted
-        if (msg.type === "result") sawResult = true;
+        if (!isCurrentSession(session)) break;
+        if (msg.type === "result") {
+          session.turnOpen = false;
+          session.sawAnyResult = true;
+        }
         handleAgentMessage(msg, session);
       }
-      // A turn that produced a `result` means the loop is healthy again —
-      // clear any accumulated failure-restart count for this pane.
-      if (sawResult) noteSuccessfulTurn(key);
-      // Loop ended normally. If we never saw a `result`, the session is
-      // still the live one, and the user didn't Stop, the stream died
-      // unexpectedly — almost always a usage-limit hit. Tell the taskpane
-      // (so it leaves "Working…") and auto-restart the loop so the next
-      // message has a live consumer (same rationale as the Stop path).
-      if (sessionFor(key) === session && !sawResult && !session.interrupted) {
+      // Include accepted input that the SDK has not consumed yet. Report
+      // one failure terminal event; a subsequent message starts a fresh
+      // consumer. A result from an earlier turn cannot hide this failure.
+      const turnUnfinished =
+        session.turnOpen || bridge.hasPendingUserMessages(key) || !session.sawAnyResult;
+      if (isCurrentSession(session) && turnUnfinished) {
         const friendly = rateLimitHint
-          ? `Claude usage limit reached. ${rateLimitHint}`
-          : "The agent stopped unexpectedly — this is usually a Claude usage limit. Wait for your limit to reset, or set ANTHROPIC_API_KEY to use an API key.";
-        bridge.sendAssistantEvent({ event: "turn_complete", subtype: "stream_ended" }, key);
-        const { key: rkey, cwd: rcwd, sessionId: rsid, host: rhost } = session;
-        if (allowFailureRestart(key)) {
-          bridge.sendAssistantEvent({ event: "error", error: friendly }, key);
-          scheduleSessionStart(rcwd, rsid, rkey, rhost, "post-stream-end");
-        } else {
-          // Cap hit: the loop has died immediately too many times in a row.
-          // Stop auto-resurrecting it (the respawn was achieving nothing but
-          // error spam) and tell the user how to actually recover.
-          console.error(
-            `[daemon] post-stream-end restart cap hit for key=${key} — pausing auto-restart`,
-          );
-          bridge.sendAssistantEvent(
-            {
-              event: "error",
-              error:
-                "The agent keeps stopping immediately. This is almost always a Claude usage limit or an auth problem. Wait for your limit to reset (or set ANTHROPIC_API_KEY), then send a new message to retry.",
-            },
-            key,
-          );
-        }
+          ? `${providerLabel()} usage limit reached. ${rateLimitHint}`
+          : `The agent stopped unexpectedly — usually a usage limit, quota or error at the model provider (${providerLabel()}). ${providerRecoveryHint()}`;
+        // Retire before notifying the UI. A user can retry immediately from
+        // an event handler; that retry must see no old live session.
+        retireCurrentSession(session, { clearMessages: true });
+        bridge.sendAssistantEvent(
+          { event: "error", subtype: "stream_ended", error: friendly },
+          key,
+        );
       }
     } catch (err) {
-      if (err.name === "AbortError" || /aborted/i.test(err.message ?? "")) {
-        // Expected on a same-host restart OR when the user clicked Stop.
-        // In the stop case (session.interrupted = true) we still need to
-        // flip the taskpane's agent status back to Ready (otherwise it
-        // stays pinned to "Working…") AND auto-restart a fresh resuming
-        // loop — without a live query() iterator awaiting
-        // bridge.nextUserMessage(), the user's next message would enqueue
-        // with nobody to consume it. Let the finally block clear this
-        // host's session first (via setImmediate); the fresh
-        // startSessionForFolder then builds cleanly.
-        if (sessionFor(key) === session && session.interrupted) {
-          bridge.sendAssistantEvent({ event: "turn_complete", interrupted: true }, key);
-          const { key: rkey, cwd: rcwd, sessionId: rsid, host: rhost } = session;
-          scheduleSessionStart(rcwd, rsid, rkey, rhost, "post-stop");
-        }
-      } else if (sessionFor(key) === session) {
+      if (sessionFor(key) === session) {
+        retireCurrentSession(session, { clearMessages: true });
         console.error("[daemon] Agent loop crashed:", err);
         // Detect auth failures and surface them as a distinct event so the
         // taskpane can show a recoverable banner ("sign in to Claude Code")
@@ -1270,6 +1360,9 @@ async function startSessionForFolder(
     } finally {
       session.settled = true;
       if (sessionFor(key) === session) sessions.delete(key);
+      // The SDK can end its output while still awaiting input. Release
+      // only this loop's waiter, including on normal completion.
+      abortController.abort();
     }
   })();
 
@@ -1285,7 +1378,13 @@ async function switchFolder(rawCwd, key, host = null) {
   // (host, cwd)'s prior conversation if one is on record. Every other
   // pane stays in its own workspace, untouched.
   const resumeId = host ? await getSessionId(host, cwd) : null;
-  await startSessionForFolder(cwd, resumeId, { key, host });
+  cancelPaneSession(key);
+  workspaceByKey.set(key, cwd);
+  bridge.sendAssistantEvent({ event: "turn_complete", interrupted: true }, key);
+  bridge.sendAssistantEvent({ event: "cwd_changed", cwd, resumed: !!resumeId }, key);
+  // A folder switch only changes context/history. Start the SDK when the
+  // next user message arrives, just as on an initial pane connection.
+  sendTranscriptReplayTo(key, host, cwd).catch(() => {});
   return cwd;
 }
 
@@ -1297,6 +1396,7 @@ async function restartSession(key, host, { reason = "config_changed" } = {}) {
   const s = sessionFor(key);
   if (!s) return;
   const { cwd, sessionId } = s;
+  cancelPaneSession(key);
   console.log(`[daemon] Restarting session for ${cwd} (reason: ${reason})`);
   bridge.sendAssistantEvent({ event: "config_reloaded", reason }, key);
   // Funnel through the serialized per-key queue (not a direct
@@ -1401,6 +1501,13 @@ function handleAgentMessage(msg, session) {
         {
           event: "turn_complete",
           subtype: msg.subtype,
+          ...(msg.subtype !== "success"
+            ? {
+                error:
+                  msg.errors?.join("\n") ||
+                  `The agent ended this request with ${msg.subtype || "an error"}.`,
+              }
+            : {}),
           usage: msg.usage,
           num_turns: msg.num_turns,
           total_cost_usd: msg.total_cost_usd,
