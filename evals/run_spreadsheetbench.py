@@ -2,22 +2,31 @@
 
 For each task: copy the initial workbook into its own folder (fresh agent
 session), tag it so the task pane auto-opens, open it in Excel, inject the
-prompt through the daemon's /eval/run endpoint, save, and grade with the
-official SpreadsheetBench comparison.
+prompt through the daemon's /eval/run endpoint, save, grade with the official
+SpreadsheetBench comparison, and count edits outside the authorized range.
+
+Each run directory is pinned to one configuration (manifest.json); resuming
+with a different commit, model mapping, prompt or task set is refused.
 
   uv run --project evals python evals/run_spreadsheetbench.py \
-      --dataset <.../spreadsheetbench_verified_400> --run qwen-plus --limit 20
+      --dataset <.../spreadsheetbench_verified_400> --run dev40-qwen-plus --sample 40
 """
 
 import argparse
+import hashlib
 import json
+import random
 import shutil
+import statistics
+import subprocess
 import sys
 import time
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 from embed_taskpane import embed_taskpane, read_manifest
+from workbook_diff import unauthorized_edits
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DAEMON = "http://127.0.0.1:47834"
@@ -42,6 +51,9 @@ The workbook is already open in Excel. Make the changes directly in it; do not c
 {answer_position}
 """
 
+# Daemon results that mean the harness, not the model, failed.
+INFRA_STATUSES = {"no_pane", "busy", "bad_request"}
+
 
 def qualified_answer_position(task: dict) -> str:
     position = task["answer_position"]
@@ -51,16 +63,74 @@ def qualified_answer_position(task: dict) -> str:
     return ",".join(f"'{sheet}'!{part.strip()}" for part in position.split(","))
 
 
-def post_json(path: str, payload: dict, token: str, timeout: float) -> dict:
+def daemon_request(path: str, token: str, payload: dict | None = None, timeout: float = 30) -> dict:
     request = urllib.request.Request(
         DAEMON + path,
-        data=json.dumps(payload).encode("utf-8"),
+        data=None if payload is None else json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", "x-bridge-token": token},
-        method="POST",
+        method="GET" if payload is None else "POST",
     )
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(request, timeout=timeout) as response:
         return json.load(response)
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def git(*args: str, check: bool = True) -> str:
+    return subprocess.run(
+        ["git", "-C", str(PROJECT_ROOT), *args], capture_output=True, text=True, encoding="utf-8", check=check
+    ).stdout
+
+
+def uncommitted_patch() -> str:
+    """Tracked changes plus new untracked files, as one applyable patch."""
+    patch = git("diff", "HEAD")
+    for path in git("ls-files", "--others", "--exclude-standard").splitlines():
+        # --no-index exits 1 when the files differ, which is always the case here.
+        patch += git("diff", "--no-index", "--", "/dev/null", path, check=False)
+    return patch
+
+
+def select_tasks(tasks: list[dict], args) -> list[dict]:
+    if args.ids:
+        wanted = [str(i) for i in args.ids]
+        by_id = {str(t["id"]): t for t in tasks}
+        return [by_id[i] for i in wanted]
+    if args.sample:
+        # Stratified by instruction type so a small dev set keeps the benchmark's mix.
+        rng = random.Random(args.seed)
+        groups: dict[str, list[dict]] = {}
+        for task in tasks:
+            groups.setdefault(task["instruction_type"], []).append(task)
+        chosen = []
+        for kind in sorted(groups):
+            share = round(args.sample * len(groups[kind]) / len(tasks))
+            chosen += rng.sample(groups[kind], min(share, len(groups[kind])))
+        return sorted(chosen, key=lambda t: str(t["id"]))
+    return tasks[args.offset : args.offset + args.limit]
+
+
+def build_manifest(args, selected: list[dict], info: dict) -> dict:
+    dirty_diff = uncommitted_patch()
+    return {
+        "config": {
+            "commit": git("rev-parse", "HEAD").strip(),
+            "uncommittedDiffSha256": hashlib.sha256(dirty_diff.encode("utf-8")).hexdigest() if dirty_diff else None,
+            "vendorSha256": sha256_file(PROJECT_ROOT / "taskpane/shared/vendor/office-agents-excel-api.js"),
+            "datasetSha256": sha256_file(args.dataset / "dataset.json"),
+            "taskIds": [str(t["id"]) for t in selected],
+            "tier": args.model,
+            "timeoutSeconds": args.timeout,
+            "promptTemplateSha256": hashlib.sha256(PROMPT.encode("utf-8")).hexdigest(),
+            "agent": info,
+        },
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "dataset": str(args.dataset),
+        "selection": {"ids": args.ids, "sample": args.sample, "seed": args.seed, "offset": args.offset, "limit": args.limit},
+    }
 
 
 def excel_app():
@@ -70,65 +140,180 @@ def excel_app():
         app = win32com.client.GetActiveObject("Excel.Application")
     except Exception:
         app = win32com.client.Dispatch("Excel.Application")
-    app.Visible = True
     return app
+
+
+def tool_errors(transcript: Path | None) -> int:
+    if not transcript or not transcript.exists():
+        return 0
+    count = 0
+    for line in transcript.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        content = (entry.get("message") or {}).get("content")
+        if entry.get("type") == "user" and isinstance(content, list):
+            count += sum(1 for block in content if block.get("type") == "tool_result" and block.get("is_error"))
+    return count
 
 
 def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: tuple[str, str], compare) -> dict:
     task_id = str(task["id"])
+    phases: dict[str, float] = {}
+    record: dict = {"id": task_id, "instruction_type": task["instruction_type"], "phases_s": phases}
+
+    def phase(name: str, started: float) -> None:
+        phases[name] = round(time.perf_counter() - started, 2)
+
+    started = time.perf_counter()
     source_dir = dataset / task["spreadsheet_path"]
     # Most folders use N_<id>_init/golden.xlsx; a few use initial.xlsx/golden.xlsx.
     init_file = next(p for p in source_dir.glob("*.xlsx") if p.stem.endswith(("_init", "initial")))
     golden_file = next(p for p in source_dir.glob("*.xlsx") if p.stem.endswith("golden"))
-
     task_dir = run_dir / task_id
     shutil.rmtree(task_dir, ignore_errors=True)
     task_dir.mkdir(parents=True)
     workbook_path = task_dir / f"{task_id}.xlsx"
     shutil.copyfile(init_file, workbook_path)
     embed_taskpane(workbook_path, *addin)
-
     answer_position = qualified_answer_position(task)
     prompt = PROMPT.format(
-        instruction=task["instruction"],
-        instruction_type=task["instruction_type"],
-        answer_position=answer_position,
+        instruction=task["instruction"], instruction_type=task["instruction_type"], answer_position=answer_position
     )
+    phase("prepare", started)
 
     app = excel_app()
+    alerts, visible = app.DisplayAlerts, app.Visible
     app.DisplayAlerts = False
+    app.Visible = True
+    started = time.perf_counter()
     workbook = app.Workbooks.Open(str(workbook_path), UpdateLinks=0)
+    phase("open", started)
     try:
-        agent = post_json(
+        started = time.perf_counter()
+        agent = daemon_request(
             "/eval/run",
-            {"doc": str(workbook_path), "prompt": prompt, "model": args.model, "timeoutMs": args.timeout * 1000},
             token,
+            {"doc": str(workbook_path), "prompt": prompt, "model": args.model, "timeoutMs": args.timeout * 1000},
             timeout=args.timeout + 180,
         )
-        workbook.Save()
+        phase("agent", started)
+        started = time.perf_counter()
+        try:
+            workbook.Save()
+            record["saved"] = True
+        except Exception as exc:
+            record["saved"] = False
+            record["save_error"] = f"{type(exc).__name__}: {exc}"
+        phase("save", started)
     finally:
+        started = time.perf_counter()
         try:
             workbook.Close(SaveChanges=False)
         finally:
-            app.DisplayAlerts = True
+            app.DisplayAlerts, app.Visible = alerts, visible
+        phase("close", started)
 
+    transcript = Path(agent["transcriptPath"]) if agent.get("transcriptPath") else None
+    if transcript and transcript.exists():
+        shutil.copyfile(transcript, task_dir / "transcript.jsonl")
+
+    started = time.perf_counter()
     try:
         passed, _ = compare(str(golden_file), str(workbook_path), task["instruction_type"], answer_position)
     except Exception as exc:
         passed = False
-        agent["grade_error"] = str(exc)
+        record["grade_error"] = f"{type(exc).__name__}: {exc}"
+    phase("grade", started)
 
+    started = time.perf_counter()
+    try:
+        preservation = unauthorized_edits(init_file, workbook_path, answer_position, args.compare_values)
+    except Exception as exc:
+        preservation = {"error": f"{type(exc).__name__}: {exc}"}
+    phase("preservation", started)
+
+    agent_status = agent.get("status")
+    if agent_status in INFRA_STATUSES:
+        infra = agent_status
+    elif agent.get("stalled"):
+        infra = "stalled"  # machine sleep or starvation, not model latency
+    elif not record.get("saved"):
+        infra = "save_error"
+    elif "grade_error" in record:
+        infra = "grade_error"
+    else:
+        infra = "ok"
+
+    record.update(
+        {
+            "passed": bool(passed),
+            "agent_status": agent_status,
+            "infra_status": infra,
+            "unauthorized_cells": preservation.get("unauthorized_cells"),
+            "model": agent.get("model"),
+            "session_id": agent.get("sessionId"),
+            "tool_calls": len(agent.get("tools", [])),
+            "tool_errors": tool_errors(task_dir / "transcript.jsonl"),
+            "agent_duration_s": round((agent.get("monotonicMs") or 0) / 1000, 1),
+            "agent_wall_s": round((agent.get("durationMs") or 0) / 1000, 1),
+            "max_gap_s": round(max(agent.get("maxWallGapMs") or 0, agent.get("maxMonotonicGapMs") or 0) / 1000, 1),
+            "usage": agent.get("usage"),
+            "num_turns": agent.get("numTurns"),
+            "error": agent.get("error"),
+        }
+    )
+    (task_dir / "attempt.json").write_text(
+        json.dumps({**record, "preservation": preservation, "agent": agent, "prompt": prompt}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return record
+
+
+def percentile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return round(ordered[min(len(ordered) - 1, int(q * len(ordered)))], 1)
+
+
+def summarize(run: str, results: list[dict]) -> dict:
+    n = len(results)
+    ok = [r for r in results if r["infra_status"] == "ok"]
+    durations = [r["agent_duration_s"] for r in ok]
+    usage_keys = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")
+    tokens = {k: sum((r.get("usage") or {}).get(k) or 0 for r in ok) for k in usage_keys}
+    preserved = [r for r in ok if r.get("unauthorized_cells") is not None]
     return {
-        "id": task_id,
-        "instruction_type": task["instruction_type"],
-        "passed": bool(passed),
-        "status": agent.get("status"),
-        "model": agent.get("model"),
-        "tool_calls": len(agent.get("tools", [])),
-        "duration_s": round(agent.get("durationMs", 0) / 1000, 1),
-        "usage": agent.get("usage"),
-        "error": agent.get("error") or agent.get("grade_error"),
-        "final_text": agent.get("text", "")[-2000:],
+        "run": run,
+        "attempted": n,
+        # Infrastructure failures stay in the denominator of the headline rate.
+        "end_to_end_pass_rate": round(sum(r["passed"] for r in results) / max(n, 1), 3),
+        "infra_completion_rate": round(len(ok) / max(n, 1), 3),
+        "pass_rate_given_infra_ok": round(sum(r["passed"] for r in ok) / max(len(ok), 1), 3),
+        "by_type": {
+            kind: {"attempted": len(g), "passed": sum(r["passed"] for r in g)}
+            for kind in sorted({r["instruction_type"] for r in results})
+            for g in [[r for r in results if r["instruction_type"] == kind]]
+        },
+        "infra_statuses": {s: sum(r["infra_status"] == s for r in results) for s in sorted({r["infra_status"] for r in results})},
+        "agent_statuses": {str(s): sum(r["agent_status"] == s for r in results) for s in sorted({str(r["agent_status"]) for r in results})},
+        "preservation": {
+            "checked": len(preserved),
+            "tasks_with_unauthorized_edits": sum(1 for r in preserved if r["unauthorized_cells"]),
+            "unauthorized_cells_total": sum(r["unauthorized_cells"] for r in preserved),
+            "passed_but_damaged": sum(1 for r in preserved if r["passed"] and r["unauthorized_cells"]),
+        },
+        "agent_seconds": {
+            "median": round(statistics.median(durations), 1) if durations else None,
+            # Tail latency is noise on small samples.
+            "p90": percentile(durations, 0.9) if len(durations) >= 20 else None,
+        },
+        "tool_calls_mean": round(statistics.mean(r["tool_calls"] for r in ok), 1) if ok else None,
+        "tool_errors_total": sum(r["tool_errors"] for r in ok),
+        "tokens_infra_ok": tokens,
+        "tokens_per_task_mean": {k: round(v / max(len(ok), 1)) for k, v in tokens.items()},
     }
 
 
@@ -137,75 +322,88 @@ def main() -> None:
     parser.add_argument("--dataset", type=Path, required=True, help="spreadsheetbench_verified_400 directory")
     parser.add_argument("--spreadsheetbench", type=Path, default=PROJECT_ROOT.parent / "_sdks" / "spreadsheetbench",
                         help="SpreadsheetBench repo checkout (for evaluation/evaluation.py)")
-    parser.add_argument("--run", required=True, help="run name, e.g. qwen3.7-plus")
+    parser.add_argument("--run", required=True, help="run name; one directory per configuration")
     parser.add_argument("--model", default="sonnet", choices=["haiku", "sonnet", "opus"], help="model tier")
+    parser.add_argument("--ids", nargs="*", help="run exactly these task ids")
+    parser.add_argument("--sample", type=int, help="stratified random sample of this many tasks")
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--offset", type=int, default=0)
-    parser.add_argument("--ids", nargs="*", help="run only these task ids")
     parser.add_argument("--timeout", type=int, default=900, help="per-task agent timeout, seconds")
+    parser.add_argument("--retry-infra", action="store_true", help="rerun tasks whose last attempt was an infra failure")
     args = parser.parse_args()
 
     sys.path.insert(0, str(args.spreadsheetbench / "evaluation"))
-    from evaluation import compare_workbooks
+    from evaluation import compare_cell_value, compare_workbooks
 
+    args.compare_values = compare_cell_value
     tasks = json.loads((args.dataset / "dataset.json").read_text(encoding="utf-8"))
-    for task in tasks:
-        task["id"] = str(task["id"])
-    tasks = [t for t in tasks if t["id"] in set(args.ids)] if args.ids else tasks[args.offset: args.offset + args.limit]
+    selected = select_tasks(tasks, args)
+    token = TOKEN_FILE.read_text(encoding="utf-8").strip()
+    manifest = build_manifest(args, selected, daemon_request("/eval/info", token))
 
     run_dir = PROJECT_ROOT / "evals" / "runs" / args.run
-    run_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = run_dir / "manifest.json"
     results_path = run_dir / "results.jsonl"
-    done = set()
-    if results_path.exists():
-        done = {str(json.loads(line)["id"]) for line in results_path.read_text(encoding="utf-8").splitlines() if line}
+    if manifest_path.exists():
+        existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if existing["config"] != manifest["config"]:
+            changed = sorted(k for k in manifest["config"] if existing["config"].get(k) != manifest["config"][k])
+            sys.exit(f"Run '{args.run}' was recorded with a different configuration ({', '.join(changed)}). "
+                     "Use a new --run name.")
+    elif results_path.exists():
+        sys.exit(f"Run '{args.run}' predates run manifests; use a new --run name.")
+    else:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        # The manifest only hashes uncommitted changes; keep the diff itself so
+        # the run can be reproduced even if those changes are never committed.
+        dirty_diff = uncommitted_patch()
+        if dirty_diff:
+            (run_dir / "uncommitted.patch").write_text(dirty_diff, encoding="utf-8")
 
-    token = TOKEN_FILE.read_text(encoding="utf-8").strip()
+    previous = {}
+    if results_path.exists():
+        for line in results_path.read_text(encoding="utf-8").splitlines():
+            if line:
+                row = json.loads(line)
+                previous[row["id"]] = row  # the last attempt of each task wins
     addin = read_manifest(PROJECT_ROOT / "manifests" / "excel.xml")
 
-    for index, task in enumerate(tasks, 1):
-        if task["id"] in done:
+    for index, task in enumerate(selected, 1):
+        last = previous.get(str(task["id"]))
+        if last and not (args.retry_infra and last["infra_status"] != "ok"):
             continue
-        started = time.time()
+        started = time.perf_counter()
         try:
             result = run_task(task, args.dataset, run_dir, args, token, addin, compare_workbooks)
         except Exception as exc:
             # One broken task (COM error, unreadable workbook) must not end the run.
             result = {
-                "id": task["id"],
+                "id": str(task["id"]),
                 "instruction_type": task["instruction_type"],
                 "passed": False,
-                "status": "harness_error",
-                "model": None,
+                "agent_status": None,
+                "infra_status": "harness_error",
+                "unauthorized_cells": None,
                 "tool_calls": 0,
-                "duration_s": round(time.time() - started, 1),
-                "usage": None,
+                "tool_errors": 0,
+                "agent_duration_s": 0,
                 "error": f"{type(exc).__name__}: {exc}",
-                "final_text": "",
             }
         with results_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(result, ensure_ascii=False) + "\n")
-        print(f"[{index}/{len(tasks)}] {task['id']}: {'PASS' if result['passed'] else 'FAIL'} "
-              f"({result['status']}, {result['tool_calls']} tools, {time.time() - started:.0f}s)", flush=True)
+        previous[result["id"]] = result
+        print(
+            f"[{index}/{len(selected)}] {result['id']}: {'PASS' if result['passed'] else 'FAIL'} "
+            f"infra={result['infra_status']} agent={result['agent_status']} "
+            f"outside_edits={result['unauthorized_cells']} tools={result['tool_calls']} "
+            f"({time.perf_counter() - started:.0f}s)",
+            flush=True,
+        )
 
-    results = [json.loads(line) for line in results_path.read_text(encoding="utf-8").splitlines() if line]
-    summary = {
-        "run": args.run,
-        "models": sorted({r["model"] for r in results if r.get("model")}),
-        "tasks": len(results),
-        "passed": sum(r["passed"] for r in results),
-        "pass_rate": round(sum(r["passed"] for r in results) / max(len(results), 1), 3),
-        "by_type": {
-            kind: {
-                "tasks": len(group),
-                "passed": sum(r["passed"] for r in group),
-            }
-            for kind in sorted({r["instruction_type"] for r in results})
-            for group in [[r for r in results if r["instruction_type"] == kind]]
-        },
-        "statuses": {s: sum(r["status"] == s for r in results) for s in sorted({r["status"] for r in results})},
-        "avg_duration_s": round(sum(r["duration_s"] for r in results) / max(len(results), 1), 1),
-    }
+    results = [previous[str(t["id"])] for t in selected if str(t["id"]) in previous]
+    summary = summarize(args.run, results)
     (run_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 

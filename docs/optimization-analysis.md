@@ -365,3 +365,43 @@ R6、R7已实施。Context缓存和在途读取现在绑定workspace及请求代
 `getRangeAsCsv`先读取规模，再按 `maxRows` 和20000格双重上限加载实际数据。返回 `nextRange`；续读时使用 `includeHeaders: true`，避免每页错误跳过首行。工具schema和系统提示同步更新。改动位于可重放的vendor补丁中，已从固定上游commit重新生成产物；没有直接手改生成文件。
 
 仅新增两项核心行为回归：3003格跨页拼接无重复或遗漏、整表空白读取达到20000格预算后停止；CSV按20000格分两页后行数及首行连续。全量94/94通过，语法和差异检查通过。真实Excel耗时与内存尚未测量；搜索工具的全used-range读取仍留待后续处理。
+
+**二十六、搜索按扫描预算分页**
+
+`excel_search_data` 原先无论命中多少都读取整个 used range。现在单次最多扫描 20000 格，按每块最多 2000 格读取；达到扫描预算或 `maxResults` 时返回不透明的 `nextCursor`，记录工作表、单元格位置和累计命中数。续读必须保持搜索参数不变，游标中的参数指纹不一致、工作表已删除或游标格式错误都会拒绝并要求重新搜索。某页没有命中也可能 `hasMore: true`，这只表示仍有未扫描的单元格；`totalFound` 为累计值，只有扫描结束时 `totalFoundIsExact` 才为 true。保留原有的区分大小写、整格匹配、正则和公式匹配，参数上限在进入 Excel.run 前校验。
+
+实现放在 `scripts/office-agents-search.ts`，由补丁脚本替换固定上游提交中的 `searchData`，daemon schema、taskpane 分发和系统提示同步说明续读方式。新增 3 项回归：空白页后续扫不重读整个范围、跨页与跨工作表保持行序、四种匹配选项保持原行为。全量 97/97 通过；vendor 连续生成的 SHA-256 一致；`git diff --check` 通过。两个既有未格式化文件（`daemon/system-prompt-excel.md`、`taskpane/shared/taskpane.js`）在上一个提交时已不符合 Prettier，本批没有改写。验证仍使用 Office.js 替身，没有启动真实 Excel。
+
+**二十七、可信评测：运行清单、状态分离与范围外修改**
+
+- 每个运行目录固定一份 `manifest.json`：提交号、未提交差异哈希、vendor 与数据集哈希、题目列表、模型档位与超时、提示模板哈希，以及 daemon `/eval/info` 返回的 SDK 版本、提供方、档位映射、系统提示哈希、MCP/插件/技能配置。配置不一致时拒绝续跑，必须换新的 run 名。
+- `/eval/run` 返回 sessionId 和轨迹文件路径（评测脚本复制为 `transcript.jsonl`），并用 5 秒心跳记录墙钟和单调时钟的最大间隔；超过 30 秒标为 `stalled`，归为基础设施失败，不算模型耗时。
+- 每题分开记录：代理终态、基础设施状态（ok / no_pane / stalled / save_error / grade_error / harness_error）、官方比较结果、答案区以外被改动的格数（`evals/workbook_diff.py`，公式按文本、常量按官方口径比较）、工具调用与工具报错数、各阶段耗时。
+- 汇总按第十三节口径：端到端通过率（基础设施失败留在分母）、基础设施完成率、条件通过率、范围外修改（含“通过但有误改”）、耗时中位数（样本≥20 才给 P90）、分项 token。支持 `--sample N --seed S` 按题型分层抽固定开发集，`--retry-infra` 只重跑基础设施失败的题。
+- 评测结束恢复 Excel 原来的 DisplayAlerts/Visible，而不是固定设为 True。
+
+验证：9 项离线单元测试（范围外修改、抽样、汇总口径），node 全量回归通过。标准答案文件本身的范围外差异（误报率）未做全量校准，首轮开发集结果需人工看一下样例。
+
+**二十八、上下文瘦身：从配置入手**
+
+用 SDK 直接发一句“只回复 OK”（qwen3.7-flash，maxTurns 1），比较首轮请求的 prompt token（输入+缓存写+缓存读）：
+
+| 配置 | 首轮 token | 工具数 |
+| --- | --- | --- |
+| 原配置：继承全局设置与全局 MCP，默认全部内置工具 | 62,904 | 78 |
+| 只加载项目级设置，内置工具只留 Read/Glob/Grep/Skill，不挂全局 MCP | 28,743 | 49 |
+| 同上，再改为自定义系统提示（不用 claude_code 预设） | 27,385 | 49 |
+| 去掉 COM 工具 | 12,346 | 23 |
+| **瘦身配置 + `ENABLE_TOOL_SEARCH`，COM 工具按需通过 ToolSearch 加载** | **13,213** | 50 |
+
+采用最后一行：首轮上下文减少约 79%，COM 能力不丢。自定义系统提示只再省约 1.4k，不值得放弃 Claude Code 预设行为，保留预设。实现方式是 `agent.config.json` 新增 `builtinTools`、`settingSources`、`inheritUserMcpServers`、`env` 四项，缺省即为上述瘦身值；daemon 只读取配置。项目级 `CLAUDE.md`（参考文件清单）仍会加载；用户全局的 CLAUDE.md、全局技能和 `~/.claude.json` 中的 MCP 不再进入 Excel 代理。`/eval/info` 同步输出这些配置，进入评测清单。
+
+验证：一次真实会话中，代理调用了面板工具读选区，并通过 ToolSearch 找到 `mcp__thepexcel-excel__excel_name`；node 全量测试通过。多轮任务的实际 token 与费用要在下一轮开发集评测里量，不按首轮比例外推。
+
+补充：内置工具白名单加入 WebSearch、WebFetch。它们同样按需加载，首轮 token 基本不变（13,213 → 13,215）；在 qwen3.7-flash 下实测一次查询汇率，能返回来源网址。Bash 继续不提供：结果应以公式写入工作簿，且 Bash 可改动本地文件。
+
+**二十九、基线中断与评测模型所有权**
+
+首次启动 `baseline-dev40-flash` 后，笔记本合盖导致机器休眠；唤醒时taskpane重连并重发界面记住的模型，覆盖了评测指定的flash档。该运行中途停止，不作为有效基线。修复后，评测在清空历史之前先取得pane的模型所有权；评测期间的重连不能改变本轮模型，但会记住用户界面随后选择的档位。评测结束会停止临时模型会话并恢复该档位，下一条普通消息不会继续落入评测消费者。
+
+评测配置清单不再保存 `agent.config` 中环境变量的明文，只记录键名和配置值哈希。新增1项针对本次事故的生命周期回归，并保留9项评测脚本离线测试；node全量98/98通过。当前仍没有一份完成的40题基线结果，重跑前需要使用包含本节修复的新daemon。

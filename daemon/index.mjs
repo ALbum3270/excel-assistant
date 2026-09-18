@@ -1,6 +1,6 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { readFile, writeFile, mkdir, chmod } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, extname, join, sep } from "node:path";
@@ -10,7 +10,7 @@ import { createOfficeBridgeMcp } from "./office-tools.mjs";
 import { resolveWorkspaceRoot, suggestWorkspaceRoot, ensureWorkspaceMarker } from "./workspace.mjs";
 import { randomUUID } from "node:crypto";
 import { getSessionId, saveSessionId, touchFolder, clearSessionId } from "./sessions.mjs";
-import { readTranscript } from "./transcript.mjs";
+import { readTranscript, locateSessionFile } from "./transcript.mjs";
 import { diag } from "./diag.mjs";
 import { getContextEntries, setContextEntries } from "./context.mjs";
 import { stat } from "node:fs/promises";
@@ -746,6 +746,20 @@ const bridge = createBridge({
       }
     },
     set_model: async (msg, reply, key, host) => {
+      // A pane that reconnects mid-evaluation (e.g. after machine sleep)
+      // re-sends its sticky UI model; the evaluation's model must win.
+      const evaluation = evalObservers.get(key);
+      if (evaluation) {
+        const requested = String(msg.model || "").trim();
+        if (ALLOWED_MODELS.has(requested)) evaluation.restoreModel = requested;
+        reply({
+          type: "set_model_result",
+          ok: true,
+          model: evaluation.tier,
+          request_id: msg.request_id,
+        });
+        return;
+      }
       const requested = String(msg.model || "").trim();
       const model = ALLOWED_MODELS.has(requested) ? requested : "sonnet";
       const prev = modelByKey.get(key);
@@ -812,8 +826,10 @@ for (const method of ["sendAssistantEvent", "sendAssistantText"]) {
     if (observer) {
       if (method === "sendAssistantText") observer.text += payload;
       else if (payload.event === "tool_use_announce") observer.tools.push(payload.tool);
-      else if (payload.event === "session_init") observer.model = payload.model;
-      else if (payload.event === "turn_complete" && !payload.interrupted)
+      else if (payload.event === "session_init") {
+        observer.model = payload.model;
+        observer.sessionId = payload.session_id ?? null;
+      } else if (payload.event === "turn_complete" && !payload.interrupted)
         observer.finish({
           status: payload.subtype === "success" ? "completed" : payload.subtype || "completed",
           error: payload.error,
@@ -848,41 +864,134 @@ async function runEvalPrompt({ doc, prompt, model, timeoutMs = 15 * 60_000, pane
   const { key, host } = pane;
   if (evalObservers.has(key))
     return { status: "busy", error: "An evaluation is already running in this pane" };
-  if (model && ALLOWED_MODELS.has(model)) modelByKey.set(key, model);
-  await startNewConversation(key, host);
-
+  const previousModel = modelByKey.get(key);
+  const evaluationModel = model && ALLOWED_MODELS.has(model) ? model : modelArgFor(key);
   const started = Date.now();
+  const startedMono = performance.now();
+  // A heartbeat that arrives far later than scheduled means the process was
+  // suspended (machine sleep) or starved; such attempts are infra failures,
+  // not model latency.
+  const HEARTBEAT_MS = 5000;
+  const STALL_MS = 30_000;
+  const clock = { lastWall: started, lastMono: startedMono, maxWallGapMs: 0, maxMonoGapMs: 0 };
   return new Promise((resolve) => {
+    let timer = null;
+    let heartbeat = null;
     const observer = {
+      tier: evaluationModel,
+      restoreModel: previousModel,
       text: "",
       tools: [],
+      finished: false,
       finish: (result) => {
+        if (observer.finished) return;
+        observer.finished = true;
         clearTimeout(timer);
-        evalObservers.delete(key);
-        resolve({
+        clearInterval(heartbeat);
+        if (evalObservers.get(key) === observer) evalObservers.delete(key);
+        // Do not leave the long-lived evaluation loop waiting for another
+        // message under the temporary model. The next ordinary message will
+        // start lazily with the pane's restored choice.
+        if (sessionFor(key)) cancelPaneSession(key);
+        if (observer.restoreModel === undefined) modelByKey.delete(key);
+        else modelByKey.set(key, observer.restoreModel);
+        const finished = Date.now();
+        const wallGap = Math.max(clock.maxWallGapMs, finished - clock.lastWall);
+        const monoGap = Math.max(clock.maxMonoGapMs, performance.now() - clock.lastMono);
+        const summary = {
           ...result,
           model: observer.model ?? null,
+          sessionId: observer.sessionId ?? null,
           text: observer.text,
           tools: observer.tools,
-          durationMs: Date.now() - started,
-        });
+          startedAt: new Date(started).toISOString(),
+          finishedAt: new Date(finished).toISOString(),
+          durationMs: finished - started,
+          monotonicMs: Math.round(performance.now() - startedMono),
+          maxWallGapMs: Math.round(wallGap),
+          maxMonotonicGapMs: Math.round(monoGap),
+          stalled: wallGap > STALL_MS || monoGap > STALL_MS,
+        };
+        resolve(
+          (async () => ({
+            ...summary,
+            transcriptPath: summary.sessionId ? await locateSessionFile(summary.sessionId) : null,
+          }))(),
+        );
       },
     };
-    const timer = setTimeout(() => {
+    // Publish the ownership lock before the first await. A reconnect while
+    // New chat clears history must not replace the evaluation's model.
+    evalObservers.set(key, observer);
+    modelByKey.set(key, evaluationModel);
+    heartbeat = setInterval(() => {
+      const wall = Date.now();
+      const mono = performance.now();
+      clock.maxWallGapMs = Math.max(clock.maxWallGapMs, wall - clock.lastWall);
+      clock.maxMonoGapMs = Math.max(clock.maxMonoGapMs, mono - clock.lastMono);
+      clock.lastWall = wall;
+      clock.lastMono = mono;
+    }, HEARTBEAT_MS);
+    timer = setTimeout(() => {
       cancelPaneSession(key);
       bridge.sendAssistantEvent({ event: "turn_complete", interrupted: true }, key);
-      observer.finish({ status: "timeout" });
+      observer.finish({ status: "timeout", timeoutMs });
     }, timeoutMs);
-    evalObservers.set(key, observer);
-    bridge.sendAssistantEvent({ event: "info", message: `Evaluation prompt:\n${prompt}` }, key);
-    ensureLoopForMessage(key, host).catch((err) => {
-      if (evalObservers.get(key) === observer) {
-        bridge.clearUserMessages(key);
-        bridge.sendAssistantEvent({ event: "error", error: err.message }, key);
+    (async () => {
+      try {
+        await startNewConversation(key, host);
+        if (evalObservers.get(key) !== observer) return;
+        bridge.sendAssistantEvent({ event: "info", message: `Evaluation prompt:\n${prompt}` }, key);
+        ensureLoopForMessage(key, host).catch((err) => {
+          if (evalObservers.get(key) === observer) {
+            bridge.clearUserMessages(key);
+            bridge.sendAssistantEvent({ event: "error", error: err.message }, key);
+          }
+        });
+        bridge.pushUserMessage(prompt, key);
+      } catch (err) {
+        observer.finish({ status: "error", error: err?.message ?? String(err) });
       }
-    });
-    bridge.pushUserMessage(prompt, key);
+    })();
   });
+}
+
+// Everything that changes agent behavior without changing the repo commit,
+// so a run manifest can refuse to mix configurations.
+async function evalInfo() {
+  const sdkPackage = join(
+    PROJECT_ROOT,
+    "node_modules",
+    "@anthropic-ai",
+    "claude-agent-sdk",
+    "package.json",
+  );
+  const baseUrl = process.env.ANTHROPIC_BASE_URL;
+  const configuredEnv = Object.fromEntries(
+    Object.entries(agentConfig.env ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+  );
+  return {
+    node: process.version,
+    sdkVersion: JSON.parse(await readFile(sdkPackage, "utf8")).version,
+    provider: baseUrl ? new URL(baseUrl).host : "anthropic",
+    models: {
+      haiku: process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL || "haiku",
+      sonnet: process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || "sonnet",
+      opus: process.env.ANTHROPIC_DEFAULT_OPUS_MODEL || "opus",
+    },
+    systemPromptSha256: createHash("sha256")
+      .update(await buildSystemPromptAppend())
+      .digest("hex"),
+    mcpServers: Object.keys(userMcpServers).sort(),
+    plugins: agentPlugins.map((p) => p.path),
+    skills: agentConfig.skills ?? null,
+    builtinTools: agentConfig.builtinTools,
+    settingSources: agentConfig.settingSources,
+    env: {
+      keys: Object.keys(configuredEnv),
+      sha256: createHash("sha256").update(JSON.stringify(configuredEnv)).digest("hex"),
+    },
+  };
 }
 
 async function readJsonBody(req) {
@@ -899,6 +1008,7 @@ async function handleEvalRequest(req, res, urlPath) {
   // Browsers can't read the token file, so a web page can't drive the agent.
   if (req.headers["x-bridge-token"] !== BRIDGE_TOKEN) return reply(401, { error: "unauthorized" });
   if (req.method === "GET" && urlPath === "/eval/panes") return reply(200, bridge.listPanes());
+  if (req.method === "GET" && urlPath === "/eval/info") return reply(200, await evalInfo());
   if (req.method === "POST" && urlPath === "/eval/run")
     return reply(200, await runEvalPrompt(await readJsonBody(req)));
   return reply(404, { error: "not found" });
@@ -932,27 +1042,37 @@ async function loadUserMcpServers() {
 }
 
 // Project-scoped agent config (MCP servers such as the COM-based Excel server,
-// skill plugins) lives beside the daemon so it doesn't leak into the user's
-// global Claude Code config.
+// skill plugins, which Claude Code features the agent gets) lives beside the
+// daemon so it neither leaks into nor inherits from the user's global Claude
+// Code config. Defaults measured to cut the first request from ~63k to ~13k
+// tokens (docs/optimization-analysis.md, section 28).
+const DEFAULT_AGENT_CONFIG = {
+  mcpServers: {},
+  plugins: [],
+  skills: undefined,
+  builtinTools: ["Read", "Glob", "Grep", "Skill", "ToolSearch", "WebSearch", "WebFetch"],
+  settingSources: ["project"],
+  inheritUserMcpServers: false,
+  env: { ENABLE_TOOL_SEARCH: "true" },
+};
+
 async function loadAgentConfig() {
   const configPath = join(PROJECT_ROOT, "agent.config.json");
   try {
-    const parsed = JSON.parse(await readFile(configPath, "utf8"));
-    return {
-      mcpServers: parsed?.mcpServers ?? {},
-      plugins: parsed?.plugins ?? [],
-      skills: parsed?.skills,
-    };
+    return { ...DEFAULT_AGENT_CONFIG, ...JSON.parse(await readFile(configPath, "utf8")) };
   } catch (err) {
     if (err.code !== "ENOENT") {
       console.warn(`[daemon] Could not load ${configPath}:`, err.message);
     }
-    return { mcpServers: {}, plugins: [], skills: undefined };
+    return DEFAULT_AGENT_CONFIG;
   }
 }
 
-const globalMcpServers = await loadUserMcpServers();
 const agentConfig = await loadAgentConfig();
+// Read by the spawned Claude Code process (e.g. ENABLE_TOOL_SEARCH defers
+// large MCP tool catalogs behind ToolSearch).
+Object.assign(process.env, agentConfig.env);
+const globalMcpServers = agentConfig.inheritUserMcpServers ? await loadUserMcpServers() : {};
 const userMcpServers = { ...globalMcpServers, ...agentConfig.mcpServers };
 const agentPlugins = agentConfig.plugins;
 for (const [source, servers] of [
@@ -1305,6 +1425,8 @@ async function startSessionForFolder(
           mcpServers: { ...userMcpServers, office: officeMcp },
           plugins: agentPlugins,
           ...(agentConfig.skills ? { skills: agentConfig.skills } : {}),
+          tools: agentConfig.builtinTools,
+          settingSources: agentConfig.settingSources,
           canUseTool: customPermissionHandler,
           includePartialMessages: true,
           // User-chosen model (composer dropdown); always explicit.

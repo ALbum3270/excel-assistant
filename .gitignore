@@ -11,6 +11,7 @@ PORT_TO_OFFICE_ADDINS.md
 # Personal AI chat logs (may contain API keys).
 claude记录
 codex对话
+codex新对话
 dist/
 *.log
 .claude/

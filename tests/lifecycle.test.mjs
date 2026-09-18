@@ -559,3 +559,62 @@ test("a retry sent synchronously from an SDK exception sees no stale session", a
   await until(() => h.events.some((e) => e.subtype === "success"));
   assert.equal(h.queries.length, 2);
 });
+
+test("evaluation owns its model before reset and restores the pane model afterward", async () => {
+  const reset = deferred();
+  const key = "excel\0book.xlsx";
+  let canceled = 0;
+  const bridge = {
+    listPanes: () => [{ key, host: "excel", activeDoc: "book.xlsx" }],
+    sendAssistantEvent() {},
+    sendAssistantText() {},
+    pushUserMessage() {},
+    clearUserMessages() {},
+  };
+  const evalSandbox = {
+    bridge,
+    modelByKey: new Map([[key, "sonnet"]]),
+    ALLOWED_MODELS: new Set(["haiku", "sonnet", "opus"]),
+    modelArgFor: (paneKey) => evalSandbox.modelByKey.get(paneKey) ?? "sonnet",
+    startNewConversation: () => reset.promise,
+    ensureLoopForMessage: async () => {},
+    sessionFor: () => ({}),
+    cancelPaneSession: () => canceled++,
+    locateSessionFile: async () => null,
+    performance,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+  };
+  const evalCode = section(
+    "const evalObservers = new Map();",
+    "// Everything that changes agent behavior",
+  );
+  vm.createContext(evalSandbox);
+  vm.runInContext(
+    `${evalCode}\nglobalThis.evalApi = { runEvalPrompt, observer: (key) => evalObservers.get(key) };`,
+    evalSandbox,
+    { filename: "daemon-eval-model-under-test.mjs" },
+  );
+
+  const resultPromise = evalSandbox.evalApi.runEvalPrompt({
+    doc: "book.xlsx",
+    prompt: "task",
+    model: "haiku",
+  });
+  const observer = evalSandbox.evalApi.observer(key);
+  assert.equal(observer.tier, "haiku", "model lock must exist before history reset finishes");
+  assert.equal(evalSandbox.modelByKey.get(key), "haiku");
+  observer.restoreModel = "opus"; // a UI choice received while the evaluation owns the pane
+  reset.resolve();
+  await tick();
+  bridge.sendAssistantEvent({ event: "session_init", model: "qwen-flash", session_id: "s" }, key);
+  bridge.sendAssistantEvent({ event: "turn_complete", subtype: "success" }, key);
+
+  const result = await resultPromise;
+  assert.equal(result.model, "qwen-flash");
+  assert.equal(evalSandbox.modelByKey.get(key), "opus");
+  assert.equal(evalSandbox.evalApi.observer(key), undefined);
+  assert.equal(canceled, 1, "temporary evaluation loop must not consume later pane messages");
+});

@@ -28,5 +28,21 @@
     "financial-analysis:3-statement-model",
     "financial-analysis:lbo-model",
     "financial-analysis:comps-analysis"
-  ]
+  ],
+  "builtinTools": [
+    "Read",
+    "Glob",
+    "Grep",
+    "Skill",
+    "ToolSearch",
+    "WebSearch",
+    "WebFetch"
+  ],
+  "settingSources": [
+    "project"
+  ],
+  "inheritUserMcpServers": false,
+  "env": {
+    "ENABLE_TOOL_SEARCH": "true"
+  }
 }
