@@ -26,11 +26,19 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
 
   const excel_get_selected_range = tool(
     "excel_get_selected_range",
-    "Return the user's current selection in the active Excel workbook. Includes the range address (e.g. \"Sheet1!B2:D5\"), the values as a 2D array, and the worksheet name. Call whenever the user refers to 'this', 'these cells', 'the selection', or asks to edit existing content without specifying location.",
-    {},
-    async () => {
+    "Return the user's current selection in the active Excel workbook. Includes its full address and dimensions plus a bounded top-left values preview. When truncated is true, use excel_get_cell_ranges to read the specific rows or columns needed. Call whenever the user refers to 'this', 'these cells', 'the selection', or asks to edit existing content without specifying location.",
+    {
+      cellLimit: z
+        .number()
+        .int()
+        .positive()
+        .max(5000)
+        .optional()
+        .describe("Maximum cells in the values preview. Default: 2000; maximum: 5000."),
+    },
+    async (args) => {
       try {
-        return asMcpResult(await call("excel_get_selected_range", {}));
+        return asMcpResult(await call("excel_get_selected_range", args));
       } catch (e) {
         return asMcpError(e);
       }

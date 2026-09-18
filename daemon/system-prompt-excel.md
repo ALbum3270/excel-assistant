@@ -10,7 +10,7 @@ Most tools take a numeric `sheetId`. Get the IDs from `excel_get_workbook_metada
 
 Read freely:
 - `excel_get_workbook_metadata` — sheets with IDs, used size, frozen panes, active sheet, current selection. Call first in a workbook you haven't seen.
-- `excel_get_selected_range` — the user's current selection with values. Use when the user says "this", "these cells", "the selection".
+- `excel_get_selected_range` — the user's current selection with a bounded values preview. If it reports `truncated: true`, use `excel_get_cell_ranges` for the specific rows or columns you need. Use when the user says "this", "these cells", "the selection".
 - `excel_get_cell_ranges` — values, formulas and styles as a sparse A1-keyed object.
 - `excel_get_range_as_csv` — tabular data as CSV for analysis.
 - `excel_search_data` — find text, values or formula references (regex supported).

@@ -40,17 +40,35 @@ async function _activeSheetName(context) {
   return ws.name;
 }
 
-export async function toolExcelGetSelectedRange() {
+export async function toolExcelGetSelectedRange({ cellLimit = 2000 } = {}) {
+  if (!Number.isInteger(cellLimit) || cellLimit <= 0 || cellLimit > 5000) {
+    throw new Error("`cellLimit` must be an integer from 1 to 5000.");
+  }
   return await Excel.run(async (context) => {
     const range = context.workbook.getSelectedRange();
-    range.load("address, values, rowCount, columnCount, worksheet/name");
+    range.load("address, rowCount, columnCount, worksheet/name");
+    await context.sync();
+    const totalCellCount = range.rowCount * range.columnCount;
+    const truncated = totalCellCount > cellLimit;
+    const previewColumns = Math.min(range.columnCount, cellLimit);
+    const previewRows = Math.min(
+      range.rowCount,
+      Math.max(1, Math.floor(cellLimit / previewColumns)),
+    );
+    const previewRange = truncated
+      ? range.getCell(0, 0).getResizedRange(previewRows - 1, previewColumns - 1)
+      : range;
+    previewRange.load("address, values");
     await context.sync();
     return {
       address: range.address,
       sheet: range.worksheet.name,
       row_count: range.rowCount,
       column_count: range.columnCount,
-      values: range.values,
+      total_cell_count: totalCellCount,
+      values: previewRange.values,
+      preview_address: previewRange.address,
+      truncated,
     };
   });
 }

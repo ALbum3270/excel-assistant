@@ -27,6 +27,9 @@ test("set-cell schema rejects empty, ragged and malformed formula matrices", () 
 
 test("read and structure schemas enforce positive bounds", () => {
   const all = schemas();
+  assert.equal(all.excel_get_selected_range.safeParse({ cellLimit: 0 }).success, false);
+  assert.equal(all.excel_get_selected_range.safeParse({ cellLimit: 5000 }).success, true);
+  assert.equal(all.excel_get_selected_range.safeParse({ cellLimit: 5001 }).success, false);
   assert.equal(
     all.excel_get_cell_ranges.safeParse({ sheetId: 1, ranges: [], cellLimit: 0 }).success,
     false,

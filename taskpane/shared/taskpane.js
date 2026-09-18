@@ -98,6 +98,7 @@ function beginTurn() {
 }
 
 function endTurn() {
+  flushAssistantRendering();
   turnInFlight = false;
   setComposerDisabled(false);
 }
@@ -332,14 +333,30 @@ function renderMarkdown(el, text) {
   el.innerHTML = DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: true }));
 }
 
+let assistantRenderTimer = null;
+const pendingAssistantRenders = new Set();
+
+function flushAssistantRendering() {
+  clearTimeout(assistantRenderTimer);
+  assistantRenderTimer = null;
+  for (const el of pendingAssistantRenders) {
+    if (el.isConnected) renderMarkdown(el, el.rawText ?? "");
+  }
+  pendingAssistantRenders.clear();
+  maybeScrollToBottom();
+}
+
 function appendAssistantDelta(delta) {
   if (!assistantTurnElem) {
     assistantTurnElem = document.createElement("div");
     assistantTurnElem.className = "msg assistant";
     $messages.appendChild(assistantTurnElem);
   }
-  renderMarkdown(assistantTurnElem, (assistantTurnElem.rawText ?? "") + delta);
-  maybeScrollToBottom();
+  assistantTurnElem.rawText = (assistantTurnElem.rawText ?? "") + delta;
+  pendingAssistantRenders.add(assistantTurnElem);
+  if (assistantRenderTimer === null) {
+    assistantRenderTimer = setTimeout(flushAssistantRendering, 50);
+  }
 }
 
 function appendEvent(text) {
@@ -543,6 +560,11 @@ function wsConnect() {
 
   ws.onclose = () => {
     wsReady = false;
+    for (const pending of pendingRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("Disconnected from daemon"));
+    }
+    pendingRequests.clear();
     setConnectionStatus("err", "Disconnected — retrying…");
     // Release the composer if a turn was mid-flight when the connection
     // dropped — otherwise the user is stuck waiting for a turn_complete
@@ -681,6 +703,7 @@ async function handleServerMessage(msg) {
         const pending = pendingRequests.get(msg.request_id);
         if (pending) {
           pendingRequests.delete(msg.request_id);
+          clearTimeout(pending.timer);
           pending.resolve(msg);
         }
       }
@@ -699,14 +722,17 @@ function sendRequest(type, payload = {}) {
       return;
     }
     const request_id = uuid();
-    pendingRequests.set(request_id, { resolve, reject });
-    wsSend({ type, request_id, ...payload });
-    setTimeout(() => {
+    // Native picking may take minutes; allow the daemon's five-minute
+    // picker deadline to report its own result before the client expires.
+    const timeoutMs = type === "pick_path" ? 310_000 : REQUEST_TIMEOUT_MS;
+    const timer = setTimeout(() => {
       if (pendingRequests.has(request_id)) {
         pendingRequests.delete(request_id);
         reject(new Error(`Request "${type}" timed out`));
       }
-    }, REQUEST_TIMEOUT_MS);
+    }, timeoutMs);
+    pendingRequests.set(request_id, { resolve, reject, timer });
+    wsSend({ type, request_id, ...payload });
   });
 }
 
@@ -719,7 +745,7 @@ async function runOfficeTool(msg) {
     let result;
     switch (name) {
       case "excel_get_selected_range":
-        result = await toolExcelGetSelectedRange();
+        result = await toolExcelGetSelectedRange(args);
         break;
       case "excel_get_workbook_metadata":
         result = await getWorkbookMetadata();
@@ -837,12 +863,14 @@ async function captureSelection() {
   try {
     const r = await Excel.run(async (context) => {
       const range = context.workbook.getSelectedRange();
-      range.load("address, values, rowCount, columnCount");
+      const firstCell = range.getCell(0, 0);
+      range.load("address, rowCount, columnCount");
+      firstCell.load("values");
       await context.sync();
       const cellCount = (range.rowCount || 0) * (range.columnCount || 0);
       const text =
         cellCount === 1
-          ? String(range.values?.[0]?.[0] ?? "")
+          ? String(firstCell.values?.[0]?.[0] ?? "")
           : `${range.address} (${range.rowCount}×${range.columnCount})`;
       return { text, address: range.address };
     });

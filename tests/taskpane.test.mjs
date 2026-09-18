@@ -62,6 +62,7 @@ function createTurnHarness({ attached = true, captureFails = false } = {}) {
   assert.ok(start >= 0 && end > start, "selection/composer source anchors must exist");
 
   const sent = [];
+  const loads = [];
   let excelRuns = 0;
   const sandbox = {
     attachSelection: attached,
@@ -80,7 +81,17 @@ function createTurnHarness({ attached = true, captureFails = false } = {}) {
           values: [[42]],
           rowCount: 1,
           columnCount: 1,
-          load() {},
+          load(properties) {
+            loads.push(["selection", properties]);
+          },
+          getCell() {
+            return {
+              values: [[42]],
+              load(properties) {
+                loads.push(["first-cell", properties]);
+              },
+            };
+          },
         };
         return callback({ workbook: { getSelectedRange: () => range }, async sync() {} });
       },
@@ -104,7 +115,7 @@ function createTurnHarness({ attached = true, captureFails = false } = {}) {
   vm.runInContext(source.slice(start, end), sandbox, {
     filename: "taskpane-selection-under-test.js",
   });
-  return { sandbox, sent, excelRuns: () => excelRuns };
+  return { sandbox, sent, loads, excelRuns: () => excelRuns };
 }
 
 test("a turn snapshots Excel selection immediately before submit", async () => {
@@ -114,6 +125,10 @@ test("a turn snapshots Excel selection immediately before submit", async () => {
   const message = h.sent.find((entry) => entry.type === "user_message");
   assert.equal(message.selection.address, "Sheet1!B2");
   assert.equal(message.selection.text, "42");
+  assert.deepEqual(h.loads, [
+    ["selection", "address, rowCount, columnCount"],
+    ["first-cell", "values"],
+  ]);
 });
 
 test("a detached turn explicitly submits null selection", async () => {
