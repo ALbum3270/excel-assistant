@@ -85,6 +85,7 @@ let attachSelection = true;
 // the gate, appendUserMessage would reset assistantTurnElem and subsequent
 // streaming deltas would land in a new (wrong) bubble.
 let turnInFlight = false;
+let submitPending = false;
 
 function setComposerDisabled(disabled) {
   $send.disabled = disabled;
@@ -448,6 +449,7 @@ function refreshSelectionChip() {
 $chipDetach.addEventListener("click", () => {
   attachSelection = false;
   refreshSelectionChip();
+  if (wsReady) wsSend({ type: "context_update", selection: null });
 });
 
 // ---------------------------------------------------------------------------
@@ -658,8 +660,6 @@ async function handleServerMessage(msg) {
         appendEvent(
           `Switched to workspace: ${msg.cwd.split(/[\\/]/).filter(Boolean).pop()}${msg.resumed ? " (resumed prior session)" : ""}`,
         );
-        // Per-workspace context must be re-read for the new workspace.
-        contextCache = null;
         if (document.body.dataset.activeTab === "setup") loadContext(true);
       } else if (msg.event === "config_reloaded") {
         const what = msg.reason === "context_changed" ? "context files" : "config";
@@ -854,8 +854,10 @@ async function captureSelection() {
         selection: attachSelection ? lastSelection : null,
       });
     }
+    return r;
   } catch (e) {
     // Selection may be transient; ignore.
+    return null;
   }
 }
 
@@ -864,29 +866,44 @@ function onSelectionChanged() {
   selectionDebounce = setTimeout(captureSelection, 100);
 }
 
+async function sendUserTurn(text) {
+  // Snapshot selection immediately before the message. This closes the
+  // debounce window where Excel has moved but context_update still carries
+  // the previous range. Detaching explicitly sends null for this turn.
+  if (turnInFlight || submitPending || !text) return false;
+  if (!wsReady) {
+    appendEvent("Not connected to daemon.");
+    return false;
+  }
+  submitPending = true;
+  setComposerDisabled(true);
+  try {
+    const selection = attachSelection ? await captureSelection() : null;
+    if (!wsReady) {
+      appendEvent("Disconnected before the message could be sent.");
+      return false;
+    }
+    appendUserMessage(text);
+    wsSend({ type: "user_message", text, selection });
+    setAgentStatus("working", "Working…");
+    beginTurn();
+    // The detach choice applies to one turn; the next turn starts attached.
+    attachSelection = true;
+    refreshSelectionChip();
+    return true;
+  } finally {
+    submitPending = false;
+    if (!turnInFlight) setComposerDisabled(false);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Composer
 // ---------------------------------------------------------------------------
-$composer.addEventListener("submit", (e) => {
+$composer.addEventListener("submit", async (e) => {
   e.preventDefault();
-  // Gate: refuse new submissions while a turn is still streaming. Without
-  // this, appendUserMessage resets the assistant bubble pointer and the
-  // remaining deltas of the prior turn would mis-order into a new bubble.
-  if (turnInFlight) return;
   const text = $input.value.trim();
-  if (!text) return;
-  if (!wsReady) {
-    appendEvent("Not connected to daemon.");
-    return;
-  }
-  appendUserMessage(text);
-  wsSend({ type: "user_message", text });
-  setAgentStatus("working", "Working…");
-  beginTurn();
-  $input.value = "";
-  // After sending, the chip resets to "attached" for the next turn.
-  attachSelection = true;
-  refreshSelectionChip();
+  if (await sendUserTurn(text)) $input.value = "";
 });
 
 $input.addEventListener("keydown", (e) => {
@@ -1255,19 +1272,9 @@ function renderPresetRow(p) {
 }
 
 // ---- Use preset (click handler) -------------------------------------------
-function usePreset(p) {
+async function usePreset(p) {
   if (p.auto_send) {
-    if (!wsReady) {
-      appendEvent("Not connected to daemon — can't send preset.");
-      return;
-    }
-    if (turnInFlight) return;
-    appendUserMessage(p.prompt);
-    wsSend({ type: "user_message", text: p.prompt });
-    setAgentStatus("working", "Working…");
-    beginTurn();
-    attachSelection = true;
-    refreshSelectionChip();
+    await sendUserTurn(p.prompt);
   } else {
     $input.value = p.prompt;
     $input.focus();
@@ -1364,8 +1371,17 @@ document.getElementById("add-preset").addEventListener("click", () => openPreset
 // workspace's CLAUDE.md, loaded by Claude Code each session).
 // ===========================================================================
 let contextCache = null;
-let contextLoadingPromise = null;
+let contextCacheCwd = null;
+let contextLoading = null;
+let contextLoadToken = Symbol("context-load");
 const $contextList = document.getElementById("context-list");
+
+function resetContextForWorkspace(cwd) {
+  contextLoadToken = Symbol("context-load");
+  contextCache = null;
+  contextCacheCwd = cwd ?? null;
+  contextLoading = null;
+}
 
 async function removeContextEntryAt(idx) {
   if (!contextCache) return;
@@ -1374,24 +1390,38 @@ async function removeContextEntryAt(idx) {
 }
 
 async function loadContext(force = false) {
-  if (contextCache && !force) {
+  const requestCwd = currentWorkspaceCwd;
+  if (contextCache && contextCacheCwd === requestCwd && !force) {
     renderContext();
     return;
   }
-  if (contextLoadingPromise) return contextLoadingPromise;
-  contextLoadingPromise = (async () => {
+  if (contextLoading?.cwd === requestCwd && !force) return contextLoading.promise;
+  const token = Symbol("context-load");
+  contextLoadToken = token;
+  const promise = (async () => {
     try {
       $contextList.innerHTML = '<div class="references-loading">Loading…</div>';
       const r = await sendRequest("get_context");
+      if (
+        contextLoadToken !== token ||
+        currentWorkspaceCwd !== requestCwd ||
+        (r.cwd && currentWorkspaceCwd && r.cwd !== currentWorkspaceCwd)
+      ) {
+        return;
+      }
       contextCache = Array.isArray(r.entries) ? r.entries : [];
+      contextCacheCwd = r.cwd ?? requestCwd;
       renderContext();
     } catch (e) {
-      showListMessage($contextList, "references-empty", `Could not load: ${e.message}`);
+      if (contextLoadToken === token && currentWorkspaceCwd === requestCwd) {
+        showListMessage($contextList, "references-empty", `Could not load: ${e.message}`);
+      }
     } finally {
-      contextLoadingPromise = null;
+      if (contextLoadToken === token) contextLoading = null;
     }
   })();
-  return contextLoadingPromise;
+  contextLoading = { cwd: requestCwd, promise };
+  return promise;
 }
 
 function renderContext() {
@@ -1460,9 +1490,14 @@ function clearContextError() {
 
 async function saveContext() {
   if (!contextCache) return false;
+  const targetCwd = contextCacheCwd ?? currentWorkspaceCwd;
+  if (!targetCwd || targetCwd !== currentWorkspaceCwd) return false;
+  const entries = contextCache.map((entry) => ({ ...entry }));
   clearContextError();
   try {
-    const r = await sendRequest("set_context", { entries: contextCache });
+    const r = await sendRequest("set_context", { entries, expected_cwd: targetCwd });
+    if (!r.ok) throw new Error(r.error || "Could not save context files");
+    if (currentWorkspaceCwd !== targetCwd || contextCacheCwd !== targetCwd) return false;
     if (r.errors && r.errors.length > 0) {
       const lines = r.errors.map((e) => `${e.path} — ${e.error}`).join("; ");
       showContextError(`Some entries could not be saved: ${lines}`);
@@ -1471,7 +1506,7 @@ async function saveContext() {
     renderContext();
     return true;
   } catch (e) {
-    showContextError(`Could not save: ${e.message}`);
+    if (currentWorkspaceCwd === targetCwd) showContextError(`Could not save: ${e.message}`);
     return false;
   }
 }
@@ -1487,8 +1522,10 @@ const $addFolderCancel = document.getElementById("add-folder-cancel");
 const $addFolderModalClose = document.getElementById("add-folder-modal-close");
 const $addFolderBrowseFile = document.getElementById("add-folder-browse-file");
 const $addFolderBrowseFolder = document.getElementById("add-folder-browse-folder");
+let addFolderTargetCwd = null;
 
 function openAddFolderModal(prefillPath = "", kind = null) {
+  addFolderTargetCwd = currentWorkspaceCwd;
   $addFolderModalTitle.textContent =
     kind === "file" ? "Add file" : kind === "folder" ? "Add folder" : "Add folder or file";
   $addFolderPath.value = prefillPath;
@@ -1534,13 +1571,24 @@ $addFolderModal.addEventListener("click", (e) => {
 $addFolderSave.addEventListener("click", async () => {
   const path = $addFolderPath.value.trim();
   const description = $addFolderDescription.value.trim();
+  const targetCwd = addFolderTargetCwd;
   $addFolderError.hidden = true;
   if (!path) {
     $addFolderError.textContent = "Path is required.";
     $addFolderError.hidden = false;
     return;
   }
-  if (!contextCache) await loadContext();
+  if (!targetCwd || currentWorkspaceCwd !== targetCwd) {
+    $addFolderError.textContent = "The workspace changed. Close this dialog and add the file again.";
+    $addFolderError.hidden = false;
+    return;
+  }
+  if (!contextCache || contextCacheCwd !== currentWorkspaceCwd) await loadContext();
+  if (currentWorkspaceCwd !== targetCwd || contextCacheCwd !== targetCwd) {
+    $addFolderError.textContent = "The workspace changed. Close this dialog and add the file again.";
+    $addFolderError.hidden = false;
+    return;
+  }
   if (!contextCache) contextCache = [];
   contextCache = [...contextCache, { path, description }];
   const ok = await saveContext();
@@ -1626,6 +1674,7 @@ const $workspaceWarning = document.getElementById("workspace-warning");
 let lastFollowedDocDir = null;
 
 function setWorkspaceDisplay(cwd) {
+  if (currentWorkspaceCwd !== cwd) resetContextForWorkspace(cwd);
   currentWorkspaceCwd = cwd;
   const name = cwd ? cwd.split(/[\\/]/).filter(Boolean).pop() : "(no workspace)";
   $workspaceFolder.textContent = name;

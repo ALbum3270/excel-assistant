@@ -7,6 +7,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import WebSocket from "ws";
 
 import { createBridge } from "../daemon/bridge.mjs";
 
@@ -36,4 +38,42 @@ test("WS bridge binds to loopback (127.0.0.1), not all interfaces", async () => 
 
 test("createBridge requires a token", () => {
   assert.throws(() => createBridge({ port: 0 }), /requires a token/);
+});
+
+test("user message carries its submit-time selection snapshot", async () => {
+  const bridge = createBridge({ port: 0, token: "test-token", allowedOrigins: [] });
+  let client;
+  try {
+    await waitForListening(bridge);
+    client = new WebSocket(`ws://127.0.0.1:${bridge.address().port}`);
+    await once(client, "open");
+    const welcome = once(client, "message");
+    client.send(
+      JSON.stringify({
+        type: "hello",
+        token: "test-token",
+        host: "excel",
+        active_doc: "book.xlsx",
+        selection: { address: "Sheet1!A1", text: "old" },
+      }),
+    );
+    await welcome;
+
+    client.send(
+      JSON.stringify({
+        type: "user_message",
+        text: "use the current cell",
+        selection: { address: "Sheet1!B2", text: "new" },
+      }),
+    );
+    const first = await bridge.nextUserMessage("excel\0book.xlsx");
+    assert.deepEqual(first.context.selection, { address: "Sheet1!B2", text: "new" });
+
+    client.send(JSON.stringify({ type: "user_message", text: "without selection", selection: null }));
+    const second = await bridge.nextUserMessage("excel\0book.xlsx");
+    assert.equal(second.context.selection, null);
+  } finally {
+    client?.terminate();
+    await bridge.close();
+  }
 });

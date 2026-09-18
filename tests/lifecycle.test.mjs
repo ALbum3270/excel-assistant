@@ -52,6 +52,13 @@ function harness(t, overrides = {}) {
     URL,
     setImmediate,
     resolve,
+    samePath: (a, b) =>
+      String(a || "")
+        .replaceAll("/", "\\")
+        .toLowerCase() ===
+      String(b || "")
+        .replaceAll("/", "\\")
+        .toLowerCase(),
     console: { log() {}, warn() {}, error() {} },
     process: { env: {} },
     matterFolder: resolve("fallback"),
@@ -342,6 +349,17 @@ test("cwd/context reads and writes wait for document resolution", async (t) => {
   assert.equal((await read).cwd, resolve("book"));
   assert.deepEqual(h.reads, [resolve("book")]);
   assert.deepEqual(h.writes, [resolve("book")]);
+});
+
+test("context writes are rejected after the workspace changes", async (t) => {
+  const h = harness(t);
+  const result = await h.handle("set_context", {
+    entries: [{ path: "stale.txt" }],
+    expected_cwd: resolve("old-workspace"),
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Workspace changed/);
+  assert.deepEqual(h.writes, []);
 });
 
 test("slow transcript does not block input and cannot overwrite the new message", async (t) => {

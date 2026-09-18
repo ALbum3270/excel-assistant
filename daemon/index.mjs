@@ -767,6 +767,9 @@ const bridge = createBridge({
         await updateWorkspace(key, async () => {
           const cwd = cwdForKey(key);
           if (!cwd) throw new Error("No workspace selected");
+          if (msg.expected_cwd && !samePath(resolve(msg.expected_cwd), resolve(cwd))) {
+            throw new Error("Workspace changed before context files could be saved");
+          }
           const { saved, errors } = await setContextEntries(cwd, msg.entries || []);
           reply({
             type: "set_context_result",
