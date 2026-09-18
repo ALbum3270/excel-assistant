@@ -10,8 +10,26 @@
 function _splitSheetAddress(address, fallbackSheetName) {
   // Returns { sheetName, a1 } from "Sheet1!A1:B2" or "A1:B2" (uses fallback).
   if (!address) return { sheetName: fallbackSheetName, a1: null };
-  const m = /^(?:'([^']+)'|([^!]+))!(.+)$/.exec(address);
-  if (m) return { sheetName: m[1] || m[2], a1: m[3] };
+  if (address.startsWith("'")) {
+    for (let i = 1; i < address.length; i++) {
+      if (address[i] !== "'") continue;
+      if (address[i + 1] === "'") {
+        i++;
+        continue;
+      }
+      if (address[i + 1] === "!") {
+        return {
+          sheetName: address.slice(1, i).replaceAll("''", "'"),
+          a1: address.slice(i + 2),
+        };
+      }
+      break;
+    }
+  }
+  const separator = address.indexOf("!");
+  if (separator > 0) {
+    return { sheetName: address.slice(0, separator), a1: address.slice(separator + 1) };
+  }
   return { sheetName: fallbackSheetName, a1: address };
 }
 
@@ -146,19 +164,19 @@ export async function toolExcelSortRange({
 export async function toolExcelAutoFilter({ address, sheet = null, clear = false }) {
   return await Excel.run(async (context) => {
     const activeName = sheet || (await _activeSheetName(context));
-    const ws = context.workbook.worksheets.getItem(activeName);
+    const { sheetName, a1 } = _splitSheetAddress(address, activeName);
+    const ws = context.workbook.worksheets.getItem(sheetName);
     if (clear) {
       ws.autoFilter.remove();
       await context.sync();
-      return { sheet: activeName, autofilter: "removed" };
+      return { sheet: sheetName, autofilter: "removed" };
     }
     if (!address || typeof address !== "string") {
       throw new Error("`address` is required (or pass clear: true to remove the filter).");
     }
-    const { a1 } = _splitSheetAddress(address, activeName);
     ws.autoFilter.apply(ws.getRange(a1));
     await context.sync();
-    return { sheet: activeName, autofilter: "applied", address: a1 };
+    return { sheet: sheetName, autofilter: "applied", address: a1 };
   });
 }
 
@@ -185,8 +203,15 @@ export async function toolExcelCreateTable({
 // Tool: excel_add_table_rows — append rows to an existing table.
 export async function toolExcelAddTableRows({ table, values, index = null }) {
   if (!table || typeof table !== "string") throw new Error("`table` (table name) is required.");
-  if (!Array.isArray(values) || !values.length || !Array.isArray(values[0])) {
-    throw new Error("`values` must be a non-empty 2D array.");
+  if (!Array.isArray(values) || !values.length || !Array.isArray(values[0]) || !values[0].length) {
+    throw new Error("`values` must be a non-empty rectangular 2D array.");
+  }
+  const width = values[0].length;
+  if (values.some((row) => !Array.isArray(row) || row.length !== width)) {
+    throw new Error("`values` must be rectangular; every row must have the same length.");
+  }
+  if (index !== null && (!Number.isInteger(index) || index < 0)) {
+    throw new Error("`index` must be a non-negative integer or null.");
   }
   return await Excel.run(async (context) => {
     const t = context.workbook.tables.getItem(table);

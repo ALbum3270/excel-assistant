@@ -61,6 +61,23 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
     }
   };
 
+  const scalarCell = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+  const tableValues = z
+    .array(z.array(scalarCell).min(1))
+    .min(1)
+    .superRefine((rows, ctx) => {
+      const width = rows[0]?.length;
+      rows.forEach((row, index) => {
+        if (row.length !== width) {
+          ctx.addIssue({
+            code: "custom",
+            path: [index],
+            message: `Row ${index + 1} has ${row.length} cells; expected ${width}.`,
+          });
+        }
+      });
+    });
+
   const excel_set_format = tool(
     "excel_set_format",
     "Set number format and/or font/fill/border styling on a range.",
@@ -96,8 +113,8 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
     "excel_autofilter",
     "Apply an AutoFilter to a range, or pass clear:true to remove the sheet's filter.",
     {
-      address: z.string().optional().describe("A1 range (required unless clear)."),
-      sheet: z.string().optional(),
+      address: z.string().min(1).optional().describe("A1 range (required unless clear)."),
+      sheet: z.string().min(1).optional(),
       clear: z.boolean().optional(),
     },
     wrap("excel_autofilter"),
@@ -119,9 +136,9 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
     "excel_add_table_rows",
     "Append rows to an existing table by name.",
     {
-      table: z.string().describe("Table name."),
-      values: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))),
-      index: z.number().int().optional().describe("Insert position; omit to append."),
+      table: z.string().min(1).describe("Table name."),
+      values: tableValues.describe("Non-empty rectangular 2D array of row values."),
+      index: z.number().int().nonnegative().optional().describe("Insert position; omit to append."),
     },
     wrap("excel_add_table_rows"),
   );
@@ -132,7 +149,9 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
   const sheetId = z
     .number()
     .int()
-    .describe("Worksheet ID from excel_get_workbook_metadata (stable per workbook, not the tab position).");
+    .describe(
+      "Worksheet ID from excel_get_workbook_metadata (stable per workbook, not the tab position).",
+    );
   const explanation = z.string().max(50).optional().describe("Brief explanation (max 50 chars).");
   const borderSide = z
     .object({
@@ -143,7 +162,11 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
     .optional();
   const cellInput = z.object({
     value: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
-    formula: z.string().optional().describe("Formula starting with '=', e.g. '=SUM(B2:B5)'."),
+    formula: z
+      .string()
+      .startsWith("=", "Formula must start with '='.")
+      .optional()
+      .describe("Formula starting with '=', e.g. '=SUM(B2:B5)'."),
     note: z.string().optional(),
     cellStyles: z
       .object({
@@ -162,7 +185,24 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
       .object({ top: borderSide, bottom: borderSide, left: borderSide, right: borderSide })
       .optional(),
   });
-  const size = z.object({ type: z.enum(["points", "standard"]), value: z.number() }).optional();
+  const cellMatrix = z
+    .array(z.array(cellInput).min(1))
+    .min(1)
+    .superRefine((rows, ctx) => {
+      const width = rows[0]?.length;
+      rows.forEach((row, index) => {
+        if (row.length !== width) {
+          ctx.addIssue({
+            code: "custom",
+            path: [index],
+            message: `Row ${index + 1} has ${row.length} cells; expected ${width}.`,
+          });
+        }
+      });
+    });
+  const size = z
+    .object({ type: z.enum(["points", "standard"]), value: z.number().positive() })
+    .optional();
 
   const excel_get_workbook_metadata = tool(
     "excel_get_workbook_metadata",
@@ -176,9 +216,22 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
     "READ. Read cell values, formulas, and formatting from specified ranges in a worksheet. Returns cells as a sparse object with A1-notation keys. Use this to inspect data before modifying it.",
     {
       sheetId,
-      ranges: z.array(z.string()).describe("Ranges in A1 notation, e.g. ['A1:C10', 'E1:E100']."),
-      includeStyles: z.boolean().optional().describe("Include font/fill styling info. Default: true."),
-      cellLimit: z.number().int().optional().describe("Maximum cells to return. Default: 2000."),
+      ranges: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(50)
+        .describe("Ranges in A1 notation, e.g. ['A1:C10', 'E1:E100']."),
+      includeStyles: z
+        .boolean()
+        .optional()
+        .describe("Include font/fill styling info. Default: true."),
+      cellLimit: z
+        .number()
+        .int()
+        .positive()
+        .max(20_000)
+        .optional()
+        .describe("Maximum populated cells to return. Default: 2000."),
       explanation,
     },
     wrap("excel_get_cell_ranges"),
@@ -190,7 +243,10 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
     {
       sheetId,
       range: z.string().describe("Range in A1 notation, e.g. 'A1:Z100'."),
-      includeHeaders: z.boolean().optional().describe("Include first row as headers. Default: true."),
+      includeHeaders: z
+        .boolean()
+        .optional()
+        .describe("Include first row as headers. Default: true."),
       maxRows: z.number().int().optional().describe("Maximum rows to return. Default: 500."),
       explanation,
     },
@@ -236,8 +292,13 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
     {
       sheetId,
       range: z.string().describe("Target range in A1 notation (auto-expands to match cells)."),
-      cells: z.array(z.array(cellInput)).describe("2D array of cell data. Outer = rows, inner = columns."),
-      copyToRange: z.string().optional().describe("Expand the written pattern to this larger range."),
+      cells: cellMatrix.describe(
+        "Non-empty rectangular 2D array of cell data. Outer = rows, inner = columns.",
+      ),
+      copyToRange: z
+        .string()
+        .optional()
+        .describe("Expand the written pattern to this larger range."),
       resizeWidth: size,
       resizeHeight: size,
       allow_overwrite: z.boolean().optional().describe("Confirm overwriting existing data."),
@@ -260,11 +321,15 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
 
   const excel_copy_to = tool(
     "excel_copy_to",
-    "WRITE. Copy a range to another location with formula translation. If the destination is larger, the source pattern repeats — use this to fill formulas down a column.",
+    "WRITE. Copy a range to another location with formula translation. If the destination is larger, the source pattern repeats. OVERWRITE PROTECTION: the call fails when destination cells contain data unless the user authorized replacement and allow_overwrite=true.",
     {
       sheetId,
       sourceRange: z.string().describe("Source range in A1 notation."),
       destinationRange: z.string().describe("Destination range in A1 notation."),
+      allow_overwrite: z
+        .boolean()
+        .optional()
+        .describe("Confirm overwriting existing destination data."),
       explanation,
     },
     wrap("excel_copy_to"),
@@ -278,8 +343,11 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
       operation: z.enum(["insert", "delete", "hide", "unhide", "freeze", "unfreeze"]),
       dimension: z.enum(["rows", "columns"]),
       reference: z.string().optional().describe("Row number or column letter, e.g. '5' or 'C'."),
-      count: z.number().int().optional().describe("Number of rows/columns. Default: 1."),
-      position: z.enum(["before", "after"]).optional().describe("Insert before or after reference. Default: 'before'."),
+      count: z.number().int().positive().optional().describe("Number of rows/columns. Default: 1."),
+      position: z
+        .enum(["before", "after"])
+        .optional()
+        .describe("Insert before or after reference. Default: 'before'."),
       explanation,
     },
     wrap("excel_modify_sheet_structure"),
@@ -292,7 +360,10 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
       operation: z.enum(["create", "delete", "rename", "duplicate"]),
       sheetId: sheetId.optional().describe("Sheet ID for delete/rename/duplicate."),
       sheetName: z.string().optional().describe("Name for a new sheet (create)."),
-      newName: z.string().optional().describe("New name (rename) or name for the copy (duplicate)."),
+      newName: z
+        .string()
+        .optional()
+        .describe("New name (rename) or name for the copy (duplicate)."),
       tabColor: z.string().optional().describe("Tab color as hex, e.g. '#ff0000'."),
       explanation,
     },
@@ -304,7 +375,10 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
     "WRITE. Adjust column widths or row heights. Use 'A:D' for columns A-D, '1:5' for rows 1-5, or omit range for the entire sheet.",
     {
       sheetId,
-      range: z.string().optional().describe("Column range (A:D) or row range (1:5). Omit for the entire sheet."),
+      range: z
+        .string()
+        .optional()
+        .describe("Column range (A:D) or row range (1:5). Omit for the entire sheet."),
       width: size,
       height: size,
       explanation,

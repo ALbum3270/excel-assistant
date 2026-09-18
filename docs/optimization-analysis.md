@@ -316,3 +316,17 @@ flowchart TD
 R5已实施：`daemon/sessions.mjs` 将每次修改的完整“读取—修改—写入”放进同一进程内的串行队列，读取会等待先前已发起的修改完成。文件先写到同目录的唯一临时文件，再通过rename替换 `sessions.json`；失败会清理临时文件，队列也能继续执行后续操作。
 
 新增6项回归，覆盖不同目录/host并发保存、未await写入后的立即读取、touch与save交错、clear与save顺序、临时文件清理，以及一次替换失败后后续写入恢复。该修复解决当前daemon内的丢失更新，并使进程在写入中断时保留旧的完整JSON。应用仍以单daemon为运行约束：固定监听端口会阻止第二个daemon正常服务；Electron多次启动和重启代次应在后续应用生命周期批次显式收口。本批尚未改变会话按host+cwd持久化的R1身份模型。
+
+**二十一、工具契约与 vendor 安全修复**
+
+office-agents Excel API 的本地修复已进入可重复构建流程。`scripts/vendor-office-agents.mjs` 固定上游提交 `95fb654491a9d394dc85ea2b8c93dee2ca4546b9`，拒绝错误提交和带未提交改动的上游目录；`scripts/office-agents-patches.mjs` 对每个补丁要求源片段恰好匹配一次，匹配漂移即中止。连续两次生成的 vendor 文件 SHA-256 一致，因此这些修复不会在下次打包时静默丢失。
+
+- `getCellRanges` 统一按实际返回的非空值或公式计数。单个范围内截断、显示为空的公式、后续空范围和后续含数据范围都会给出与实际相符的 `hasMore`；空 ranges 和非正 cellLimit 在进入 Excel.run 前拒绝。
+- `setCellRange` 要求非空矩形矩阵和以 `=` 开头的公式。覆盖检查只检查真正写入值或公式的单元格；仅改样式/批注时保留原内容，稀疏矩阵中未提供 value/formula 的格也保留原值或原公式，显式 null 清空仍视为破坏性写入。`copyToRange` 在基础范围写入前检查目标，避免发现冲突时基础写入已部分提交。
+- 独立 `copyTo` 增加 `allow_overwrite` 契约并在复制前检查目标；源范围与扩展目标重叠时不把源单元格误判为覆盖冲突。daemon schema、taskpane dispatcher 和生成后的浏览器 API 已同步。
+- 行列结构修改在 Excel.run 前验证正整数 count、必需 reference、行号和 A:XFD 列号，避免缺参数时返回 success=true 却没有执行。表格新增行同时在 daemon schema 和 taskpane 运行时拒绝空矩阵、空行、ragged 行和负 index。
+- 自定义 A1 地址解析支持带空格及转义单引号的工作表名；AutoFilter 使用地址中实际解析出的工作表，不再忽略限定的 sheetName。
+
+本批新增工具 schema、生成补丁和 taskpane 工具回归；全量自动化测试为78/78通过，相关代码通过语法检查和Prettier检查，连续生成的 vendor 哈希一致。验证使用生成后的真实 vendor 模块与 Office.js 可控替身，没有启动真实 Excel。当前仍需保留的工具层问题包括：多次 context.sync 之间的通用部分提交语义、copyToRange 的公式结果只覆盖基础范围、宿主 API capability gating，以及更完整的结构操作边界。它们不由本批测试通过所替代。
+
+项目直接使用 Node 的 `process.loadEnvFile`，因此 package 与 lockfile 的 engines 已从不准确的 Node 18 调整为 `>=20.12.0`，使安装约束和实际启动要求一致。

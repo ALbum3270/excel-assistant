@@ -759,7 +759,12 @@ async function runOfficeTool(msg) {
         result = await clearCellRange(args.sheetId, args.range, args.clearType);
         break;
       case "excel_copy_to":
-        result = await copyTo(args.sheetId, args.sourceRange, args.destinationRange);
+        result = await copyTo(
+          args.sheetId,
+          args.sourceRange,
+          args.destinationRange,
+          args.allow_overwrite,
+        );
         break;
       case "excel_modify_sheet_structure":
         result = await modifySheetStructure(args.sheetId, {

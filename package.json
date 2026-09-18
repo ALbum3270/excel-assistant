@@ -6,7 +6,7 @@
   "main": "app/main.mjs",
   "type": "module",
   "engines": {
-    "node": ">=18"
+    "node": ">=20.12.0"
   },
   "scripts": {
     "dev": "node daemon/index.mjs",

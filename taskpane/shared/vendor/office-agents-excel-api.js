@@ -121,6 +121,40 @@ function parseRangeAddress(address) {
   const row = Number.parseInt(match[2], 10) - 1;
   return { startCol: col, startRow: row };
 }
+function nonEmptyCellAddresses(range, shouldCheck = () => true) {
+  const nonEmpty = [];
+  const { startCol, startRow } = parseRangeAddress(range.address);
+  for (let r = 0; r < range.rowCount; r++) {
+    for (let c = 0; c < range.columnCount; c++) {
+      const address = cellAddress(startRow + r, startCol + c);
+      if (!shouldCheck(r, c, address)) continue;
+      const value = range.values[r][c];
+      const formula = range.formulas[r][c];
+      if (value !== null && value !== "" && value !== void 0 || typeof formula === "string" && formula.startsWith("=")) {
+        nonEmpty.push(address);
+      }
+    }
+  }
+  return nonEmpty;
+}
+function rangeCellAddresses(range) {
+  const addresses = /* @__PURE__ */ new Set();
+  const { startCol, startRow } = parseRangeAddress(range.address);
+  for (let r = 0; r < range.rowCount; r++) {
+    for (let c = 0; c < range.columnCount; c++) {
+      addresses.add(cellAddress(startRow + r, startCol + c));
+    }
+  }
+  return addresses;
+}
+function throwOverwriteError(addresses) {
+  if (addresses.length === 0) return;
+  const unique = Array.from(new Set(addresses));
+  const cellList = unique.length <= 10 ? unique.join(", ") : `${unique.slice(0, 10).join(", ")}...`;
+  throw new Error(
+    `Would overwrite ${unique.length} non-empty cell(s): ${cellList}. To proceed with overwriting existing data, retry with allow_overwrite set to true.`
+  );
+}
 function excelColorToHex(color) {
   const c = color;
   if (!c.color || c.color === "null") return void 0;
@@ -168,6 +202,12 @@ async function getWorksheetStableId(context, sheet) {
 }
 async function getCellRanges(sheetId, ranges, options = {}) {
   const { includeStyles = true, cellLimit = 2e3 } = options;
+  if (!Array.isArray(ranges) || ranges.length === 0) {
+    throw new Error("ranges must be a non-empty array");
+  }
+  if (!Number.isInteger(cellLimit) || cellLimit <= 0) {
+    throw new Error("cellLimit must be a positive integer");
+  }
   return Excel.run(async (context) => {
     const sheet = await getWorksheetById(context, sheetId);
     if (!sheet) {
@@ -184,10 +224,7 @@ async function getCellRanges(sheetId, ranges, options = {}) {
     let totalCells = 0;
     let hasMore = false;
     for (const rangeAddr of ranges) {
-      if (totalCells >= cellLimit) {
-        hasMore = true;
-        break;
-      }
+      if (hasMore) break;
       const range = sheet.getRange(rangeAddr);
       range.load("values,formulas,address,rowCount,columnCount");
       await context.sync();
@@ -196,24 +233,22 @@ async function getCellRanges(sheetId, ranges, options = {}) {
       const startCol = startMatch ? startMatch[1].split("").reduce((acc, c) => acc * 26 + c.charCodeAt(0) - 64, 0) - 1 : 0;
       const startRow = startMatch ? Number.parseInt(startMatch[2], 10) - 1 : 0;
       const styleTargetsMap = /* @__PURE__ */ new Map();
-      for (let r = 0; r < range.rowCount && totalCells < cellLimit; r++) {
-        for (let c = 0; c < range.columnCount && totalCells < cellLimit; c++) {
+      scanRange: for (let r = 0; r < range.rowCount; r++) {
+        for (let c = 0; c < range.columnCount; c++) {
           const addr = cellAddress(startRow + r, startCol + c);
           const value = range.values[r][c];
           const formula = range.formulas[r][c];
-          if (value !== null && value !== "" && value !== void 0) {
-            cells[addr] = value;
-            totalCells++;
-            if (includeStyles) {
-              styleTargetsMap.set(addr, range.getCell(r, c));
-            }
+          const hasValue = value !== null && value !== "" && value !== void 0;
+          const hasFormula = typeof formula === "string" && formula.startsWith("=");
+          if (!hasValue && !hasFormula) continue;
+          if (totalCells >= cellLimit) {
+            hasMore = true;
+            break scanRange;
           }
-          if (typeof formula === "string" && formula.startsWith("=")) {
-            formulas[addr] = formula;
-            if (includeStyles) {
-              styleTargetsMap.set(addr, range.getCell(r, c));
-            }
-          }
+          if (hasValue) cells[addr] = value;
+          if (hasFormula) formulas[addr] = formula;
+          totalCells++;
+          if (includeStyles) styleTargetsMap.set(addr, range.getCell(r, c));
         }
       }
       if (includeStyles && styleTargetsMap.size > 0) {
@@ -430,6 +465,20 @@ async function getAllObjects(options = {}) {
 }
 async function setCellRange(sheetId, rangeAddr, cells, options = {}) {
   const { copyToRange, resizeWidth, resizeHeight, allowOverwrite } = options;
+  if (!Array.isArray(cells) || cells.length === 0 || !Array.isArray(cells[0]) || cells[0].length === 0) {
+    throw new Error("cells must be a non-empty rectangular 2D array");
+  }
+  const width = cells[0].length;
+  if (cells.some((row) => !Array.isArray(row) || row.length !== width)) {
+    throw new Error("cells must be rectangular; every row must have the same length");
+  }
+  for (const row of cells) {
+    for (const cell of row) {
+      if (cell.formula !== void 0 && !cell.formula.startsWith("=")) {
+        throw new Error("cell formulas must start with '='");
+      }
+    }
+  }
   return Excel.run(async (context) => {
     const sheet = await getWorksheetById(context, sheetId);
     if (!sheet) throw new Error(`Worksheet with ID ${sheetId} not found`);
@@ -451,52 +500,56 @@ async function setCellRange(sheetId, rangeAddr, cells, options = {}) {
       range.load("rowCount,columnCount,values,formulas,address");
       await context.sync();
     }
+    let copyDestination = null;
+    if (copyToRange && !allowOverwrite) {
+      copyDestination = sheet.getRange(copyToRange);
+      copyDestination.load("rowCount,columnCount,values,formulas,address");
+      await context.sync();
+    }
     if (!allowOverwrite) {
-      const nonEmptyCells = [];
-      const { startCol, startRow } = parseRangeAddress(range.address);
-      for (let r = 0; r < range.rowCount; r++) {
-        for (let c = 0; c < range.columnCount; c++) {
-          const value = range.values[r][c];
-          const formula = range.formulas[r][c];
-          const hasValue = value !== null && value !== "" && value !== void 0;
-          const hasFormula = typeof formula === "string" && formula.startsWith("=");
-          if (hasValue || hasFormula) {
-            nonEmptyCells.push(cellAddress(startRow + r, startCol + c));
-          }
-        }
-      }
-      if (nonEmptyCells.length > 0) {
-        const cellList = nonEmptyCells.length <= 10 ? nonEmptyCells.join(", ") : `${nonEmptyCells.slice(0, 10).join(", ")}...`;
-        throw new Error(
-          `Would overwrite ${nonEmptyCells.length} non-empty cell(s): ${cellList}. To proceed with overwriting existing data, retry with allow_overwrite set to true.`
+      const overwritten = nonEmptyCellAddresses(range, (r, c) => {
+        const cell = cells[r]?.[c];
+        return Boolean(
+          cell?.formula || cell && Object.prototype.hasOwnProperty.call(cell, "value")
+        );
+      });
+      if (copyDestination) {
+        const sourceAddresses = rangeCellAddresses(range);
+        overwritten.push(
+          ...nonEmptyCellAddresses(
+            copyDestination,
+            (_r, _c, address) => !sourceAddresses.has(address)
+          )
         );
       }
+      throwOverwriteError(overwritten);
     }
-    const values = [];
+    const writeMatrix = [];
     const formulas = [];
+    let hasDataWrites = false;
     let hasFormulas = false;
     for (let r = 0; r < cells.length; r++) {
-      values[r] = [];
+      writeMatrix[r] = [];
       formulas[r] = [];
       for (let c = 0; c < cells[r].length; c++) {
         const cell = cells[r][c];
-        if (cell.formula) {
+        if (cell.formula !== void 0) {
+          writeMatrix[r][c] = cell.formula;
           formulas[r][c] = cell.formula;
-          values[r][c] = null;
+          hasDataWrites = true;
           hasFormulas = true;
+        } else if (Object.prototype.hasOwnProperty.call(cell, "value")) {
+          writeMatrix[r][c] = cell.value ?? null;
+          formulas[r][c] = null;
+          hasDataWrites = true;
         } else {
-          values[r][c] = cell.value ?? null;
+          const existingFormula = range.formulas[r][c];
+          writeMatrix[r][c] = typeof existingFormula === "string" && existingFormula.startsWith("=") ? existingFormula : range.values[r][c];
           formulas[r][c] = null;
         }
       }
     }
-    if (hasFormulas) {
-      range.formulas = formulas.map(
-        (row, r) => row.map((f, c) => f ?? values[r][c])
-      );
-    } else {
-      range.values = values;
-    }
+    if (hasDataWrites) range.formulas = writeMatrix;
     for (let r = 0; r < cells.length; r++) {
       for (let c = 0; c < cells[r].length; c++) {
         const cell = cells[r][c];
@@ -572,7 +625,7 @@ async function setCellRange(sheetId, rangeAddr, cells, options = {}) {
     }
     await context.sync();
     if (copyToRange) {
-      const destRange = sheet.getRange(copyToRange);
+      const destRange = copyDestination ?? sheet.getRange(copyToRange);
       destRange.copyFrom(range, Excel.RangeCopyType.all);
       await context.sync();
     }
@@ -634,12 +687,21 @@ async function clearCellRange(sheetId, rangeAddr, clearType = "contents") {
     return { success: true, clearedRange: rangeAddr };
   });
 }
-async function copyTo(sheetId, sourceRange, destinationRange) {
+async function copyTo(sheetId, sourceRange, destinationRange, allowOverwrite = false) {
   return Excel.run(async (context) => {
     const sheet = await getWorksheetById(context, sheetId);
     if (!sheet) throw new Error(`Worksheet with ID ${sheetId} not found`);
     const source = sheet.getRange(sourceRange);
     const dest = sheet.getRange(destinationRange);
+    if (!allowOverwrite) {
+      source.load("rowCount,columnCount,address");
+      dest.load("rowCount,columnCount,values,formulas,address");
+      await context.sync();
+      const sourceAddresses = rangeCellAddresses(source);
+      throwOverwriteError(
+        nonEmptyCellAddresses(dest, (_r, _c, address) => !sourceAddresses.has(address))
+      );
+    }
     dest.copyFrom(source, Excel.RangeCopyType.all);
     await context.sync();
     return {
@@ -657,6 +719,23 @@ async function modifySheetStructure(sheetId, params) {
     count = 1,
     position = "before"
   } = params;
+  if (!Number.isInteger(count) || count <= 0) {
+    throw new Error("count must be a positive integer");
+  }
+  if (!["freeze", "unfreeze"].includes(operation)) {
+    if (!reference?.trim()) {
+      throw new Error(`reference is required for ${operation}`);
+    }
+    if (dimension === "rows" && !/^[1-9]\d*$/.test(reference)) {
+      throw new Error("row reference must be a positive row number");
+    }
+    if (dimension === "columns" && !/^[A-Za-z]{1,3}$/.test(reference)) {
+      throw new Error("column reference must contain only column letters");
+    }
+    if (dimension === "columns" && letterToColumnIndex(reference) > 16383) {
+      throw new Error("column reference must be between A and XFD");
+    }
+  }
   return Excel.run(async (context) => {
     const sheet = await getWorksheetById(context, sheetId);
     if (!sheet) throw new Error(`Worksheet with ID ${sheetId} not found`);
