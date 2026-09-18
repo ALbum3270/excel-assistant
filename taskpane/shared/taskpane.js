@@ -767,6 +767,7 @@ async function runOfficeTool(msg) {
           sheetId: args.sheetId,
           range: args.range,
           offset: args.offset,
+          cursor: args.cursor,
           ...args.options,
         });
         break;

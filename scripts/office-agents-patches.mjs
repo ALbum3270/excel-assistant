@@ -2,6 +2,7 @@
 // Each replacement must match exactly once. An upstream change therefore
 // stops the build instead of silently dropping a safety fix.
 import { patchBoundedReads } from "./office-agents-read-patches.mjs";
+import { readFileSync } from "node:fs";
 
 function replaceOnce(source, name, before, after) {
   const first = source.indexOf(before);
@@ -385,5 +386,23 @@ function excelColorToHex(
   return Excel.run(async (context) => {`,
   );
 
+  const searchStart = source.indexOf("export async function searchData(");
+  const searchEnd = source.indexOf("export interface ExcelObject {", searchStart);
+  if (searchStart < 0 || searchEnd < 0) throw new Error("Missing upstream search function");
+  source = replaceOnce(
+    source,
+    "bounded search with scan cursor",
+    source.slice(searchStart, searchEnd),
+    readFileSync(new URL("./office-agents-search.ts", import.meta.url), "utf8") + "\n\n",
+  );
+  source = replaceOnce(
+    source,
+    "search continuation result type",
+    "export interface SearchDataResult {",
+    `export interface SearchDataResult {
+  nextCursor: string | null;
+  scannedCells: number;
+  totalFoundIsExact: boolean;`,
+  );
   return patchBoundedReads(source, replaceOnce);
 }

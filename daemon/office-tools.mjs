@@ -268,19 +268,30 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
 
   const excel_search_data = tool(
     "excel_search_data",
-    "READ. Find text or values across the spreadsheet. Returns matching cells with their addresses and values. Supports regex, case-sensitive and formula search, with pagination.",
+    "READ. Find text, values or formulas in bounded chunks, scanning at most 20000 cells per call. Supports regex and case-sensitive search. If hasMore is true, pass nextCursor unchanged as cursor with the same search arguments, even when matches is empty. hasMore means unscanned cells remain, not guaranteed hits. totalFound is cumulative and exact only when totalFoundIsExact is true. Search reads live data; restart after workbook structure changes.",
     {
       searchTerm: z.string().describe("The text or pattern to search for."),
       sheetId: sheetId.optional().describe("Limit to a specific sheet."),
       range: z.string().optional().describe("Limit search scope, e.g. 'A1:Z100'."),
-      offset: z.number().int().optional().describe("Pagination offset. Default: 0."),
+      offset: z
+        .number()
+        .int()
+        .nonnegative()
+        .optional()
+        .describe("Initial matching results to skip. Default: 0. Use cursor for continuation."),
+      cursor: z
+        .string()
+        .optional()
+        .describe(
+          "Opaque nextCursor from the previous result. Keep all search arguments unchanged.",
+        ),
       options: z
         .object({
           matchCase: z.boolean().optional(),
           matchEntireCell: z.boolean().optional(),
           matchFormulas: z.boolean().optional(),
           useRegex: z.boolean().optional(),
-          maxResults: z.number().int().optional(),
+          maxResults: z.number().int().positive().max(5000).optional(),
         })
         .optional(),
       explanation,

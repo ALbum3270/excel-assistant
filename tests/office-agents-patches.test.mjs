@@ -75,11 +75,10 @@ function installExcel(ranges, { usedAddress = "A1:A3" } = {}) {
     name: "Sheet1",
     load() {},
     notes: { add() {} },
-    getUsedRangeOrNullObject: () => ({
-      isNullObject: false,
-      address: `Sheet1!${usedAddress}`,
-      load() {},
-    }),
+    getUsedRangeOrNullObject: () =>
+      typeof ranges === "function"
+        ? { ...ranges(usedAddress), isNullObject: false }
+        : { isNullObject: false, address: `Sheet1!${usedAddress}`, load() {} },
     getRange(address) {
       const result = typeof ranges === "function" ? ranges(address) : ranges[address];
       assert.ok(result, `Unexpected range request: ${address}`);
@@ -106,6 +105,8 @@ function installExcel(ranges, { usedAddress = "A1:A3" } = {}) {
     BorderWeight: { thin: "thin", medium: "medium", thick: "thick" },
   };
   return {
+    sheet,
+    context,
     get runCalls() {
       return runCalls;
     },
@@ -143,31 +144,114 @@ test("getCellRanges reports truncation within one range", async () => {
 
 // Generate values only when Office.js requests them, so an accidental
 // full-range load fails before allocating a whole-sheet matrix.
-function installReadGrid(valueAt, maxChunk) {
+function installReadGrid(valueAt, maxChunk, { usedAddress = "A1:A3", formulaAt = valueAt } = {}) {
   const reads = [];
   const col = (letters) => [...letters].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
-  installExcel((address) => {
-    const match = address.match(/^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/);
-    assert.ok(match, address);
-    const firstRow = Number(match[2]);
-    const firstCol = col(match[1]);
-    const rowCount = Number(match[4] ?? match[2]) - firstRow + 1;
-    const columnCount = col(match[3] ?? match[1]) - firstCol + 1;
-    const target = { address: `Sheet1!${address}`, rowCount, columnCount };
-    target.load = (properties) => {
-      if (!properties.includes("values")) return;
-      const size = rowCount * columnCount;
-      assert.ok(size <= maxChunk, `Unbounded host read: ${size} cells`);
-      reads.push(size);
-      target.values = Array.from({ length: rowCount }, (_, r) =>
-        Array.from({ length: columnCount }, (_, c) => valueAt(firstRow + r, firstCol + c)),
-      );
-      target.formulas = target.values;
-    };
-    return target;
+  const installed = installExcel(
+    (address) => {
+      const match = address.match(/^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/);
+      assert.ok(match, address);
+      const firstRow = Number(match[2]);
+      const firstCol = col(match[1]);
+      const rowCount = Number(match[4] ?? match[2]) - firstRow + 1;
+      const columnCount = col(match[3] ?? match[1]) - firstCol + 1;
+      const target = { address: `Sheet1!${address}`, rowCount, columnCount };
+      target.load = (properties) => {
+        if (!properties.includes("values")) return;
+        const size = rowCount * columnCount;
+        assert.ok(size <= maxChunk, `Unbounded host read: ${size} cells`);
+        reads.push(size);
+        target.values = Array.from({ length: rowCount }, (_, r) =>
+          Array.from({ length: columnCount }, (_, c) => valueAt(firstRow + r, firstCol + c)),
+        );
+        target.formulas = Array.from({ length: rowCount }, (_, r) =>
+          Array.from({ length: columnCount }, (_, c) => formulaAt(firstRow + r, firstCol + c)),
+        );
+      };
+      return target;
+    },
+    { usedAddress },
+  );
+  Object.defineProperties(reads, {
+    sheet: { value: installed.sheet },
+    context: { value: installed.context },
   });
   return reads;
 }
+
+test("search resumes after a blank scan page without rereading the full used range", async () => {
+  const reads = installReadGrid((r) => (r === 25001 ? "needle" : ""), 2000, {
+    usedAddress: "A1:A25001",
+  });
+  const first = await api.searchData("needle");
+  assert.equal(first.scannedCells, 20000);
+  assert.equal(
+    reads.reduce((a, b) => a + b, 0),
+    20000,
+  );
+  assert.deepEqual(first.matches, []);
+  assert.equal(first.hasMore, true);
+  assert.equal(first.totalFoundIsExact, false);
+  const second = await api.searchData("needle", { cursor: first.nextCursor });
+  assert.equal(second.scannedCells, 5001);
+  assert.equal(
+    reads.reduce((a, b) => a + b, 0),
+    25001,
+  );
+  assert.deepEqual(
+    second.matches.map((match) => match.a1),
+    ["A25001"],
+  );
+  assert.equal(second.totalFound, 1);
+  assert.equal(second.totalFoundIsExact, true);
+  assert.equal(second.nextCursor, null);
+});
+
+test("search cursors preserve row order across result pages and worksheets", async () => {
+  const reads = installReadGrid(() => "hit", 2000, { usedAddress: "B3:D5" });
+  reads.context.workbook.worksheets.items.push({ ...reads.sheet, id: "sheet-two", name: "Sheet2" });
+  const addresses = [];
+  let cursor, lastPage;
+  do {
+    lastPage = await api.searchData("hit", { maxResults: 4, cursor });
+    addresses.push(...lastPage.matches.map((match) => `${match.sheetName}!${match.a1}`));
+    cursor = lastPage.nextCursor;
+    assert.ok(addresses.length <= 18, "Cursor must advance without duplicate results");
+  } while (cursor);
+  assert.deepEqual(
+    addresses,
+    ["Sheet1", "Sheet2"].flatMap((sheet) =>
+      [3, 4, 5].flatMap((row) => ["B", "C", "D"].map((col) => `${sheet}!${col}${row}`)),
+    ),
+  );
+  assert.equal(lastPage.totalFound, 18);
+  assert.equal(lastPage.totalFoundIsExact, true);
+});
+
+test("bounded search retains case, whole-cell, regex and formula matching", async () => {
+  installReadGrid((r) => ["Needle", "needles", 42][r - 1], 2000, {
+    formulaAt: (r) => ["Needle", "needles", "=SUM(B1:B2)"][r - 1],
+  });
+  const exact = await api.searchData("needle", { matchEntireCell: true });
+  assert.deepEqual(
+    exact.matches.map((match) => match.a1),
+    ["A1"],
+  );
+  const sensitive = await api.searchData("needle", { matchCase: true });
+  assert.deepEqual(
+    sensitive.matches.map((match) => match.a1),
+    ["A2"],
+  );
+  const regex = await api.searchData("^needles?$", { useRegex: true });
+  assert.deepEqual(
+    regex.matches.map((match) => match.a1),
+    ["A1", "A2"],
+  );
+  const formula = await api.searchData("SUM\\(B1:B2\\)", { useRegex: true, matchFormulas: true });
+  assert.equal(formula.matches[0].a1, "A3");
+  assert.equal(formula.matches[0].value, 42);
+  assert.equal(formula.matches[0].formula, "=SUM(B1:B2)");
+});
 
 test("bounded sparse pages preserve every cell and stop scanning huge blank ranges", async () => {
   const reads = installReadGrid((r, c) => r * 10 + c, 2000);

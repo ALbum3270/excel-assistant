@@ -2,41 +2,6 @@
 // Source: https://github.com/hewliyang/office-agents @ 95fb654491a9d394dc85ea2b8c93dee2ca4546b9
 // License: MIT (c) hewliyang
 
-// packages/excel/src/lib/excel/search-data-pagination.ts
-function createSearchPageCollector(offset, maxResults) {
-  const pageOffset = Math.max(0, Math.floor(offset));
-  const pageSize = Math.max(1, Math.floor(maxResults));
-  const matches = [];
-  let totalMatched = 0;
-  let hasMore = false;
-  return {
-    pageOffset,
-    pageSize,
-    matches,
-    add(match) {
-      if (hasMore) return true;
-      const matchIndex = totalMatched;
-      totalMatched += 1;
-      if (matchIndex < pageOffset) return false;
-      if (matches.length < pageSize) {
-        matches.push(match);
-        return false;
-      }
-      hasMore = true;
-      return true;
-    },
-    toPage() {
-      return {
-        totalFound: totalMatched,
-        returned: matches.length,
-        offset: pageOffset,
-        hasMore,
-        nextOffset: hasMore ? pageOffset + matches.length : null
-      };
-    }
-  };
-}
-
 // packages/excel/src/lib/excel/sheet-id-map.ts
 var SETTINGS_KEY_MAP = "openexcel-sheet-id-map";
 var SETTINGS_KEY_COUNTER = "openexcel-sheet-id-counter";
@@ -399,81 +364,125 @@ async function searchData(searchTerm, options = {}) {
     sheetId,
     range,
     offset = 0,
+    cursor,
     matchCase = false,
     matchEntireCell = false,
     matchFormulas = false,
     useRegex = false,
     maxResults = 500
   } = options;
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(maxResults) || maxResults < 1 || maxResults > 5e3) {
+    throw new Error("offset must be nonnegative; maxResults must be between 1 and 5000");
+  }
+  const scope = JSON.stringify([
+    searchTerm,
+    sheetId ?? null,
+    range ?? null,
+    offset,
+    matchCase,
+    matchEntireCell,
+    matchFormulas,
+    useRegex
+  ]);
+  const resume = cursor ? JSON.parse(cursor) : null;
+  if (resume && (resume.scope !== scope || !Number.isInteger(resume.sheetId) || !Number.isSafeInteger(resume.cellOffset) || resume.cellOffset < 0 || !Number.isSafeInteger(resume.matchedCount) || resume.matchedCount < 0)) {
+    throw new Error("Search cursor does not match this search; restart without cursor");
+  }
+  const pattern = useRegex ? new RegExp(searchTerm, matchCase ? "" : "i") : null;
+  const compareTerm = matchCase ? searchTerm : searchTerm.toLowerCase();
   return Excel.run(async (context) => {
     const sheets = context.workbook.worksheets;
     sheets.load("items");
     await context.sync();
-    for (const sheet of sheets.items) {
-      sheet.load("id");
-    }
+    for (const sheet of sheets.items) sheet.load("id,name");
     await context.sync();
-    const stableIdMap = await preloadSheetIds(sheets.items);
-    const pageCollector = createSearchPageCollector(
-      offset,
-      maxResults
-    );
-    let stopSearch = false;
-    const sheetsToSearch = sheetId ? [await getWorksheetById(context, sheetId)].filter(
-      Boolean
-    ) : sheets.items;
-    const pattern = useRegex ? new RegExp(searchTerm, matchCase ? "" : "i") : null;
-    for (const sheet of sheetsToSearch) {
-      if (stopSearch) break;
-      sheet.load("name,id");
-      const searchRange = range ? sheet.getRange(range) : sheet.getUsedRangeOrNullObject();
-      searchRange.load("values,formulas,address,rowCount,columnCount");
+    const ids = await preloadSheetIds(sheets.items);
+    const targets = sheetId === void 0 ? sheets.items : sheets.items.filter((sheet) => ids.get(sheet.id) === sheetId);
+    if (sheetId !== void 0 && targets.length === 0) {
+      throw new Error(`Worksheet with ID ${sheetId} not found`);
+    }
+    const firstSheet = resume ? targets.findIndex((sheet) => ids.get(sheet.id) === resume.sheetId) : 0;
+    if (firstSheet < 0)
+      throw new Error("Search worksheet no longer exists; restart without cursor");
+    const matches = [];
+    let matchedCount = resume?.matchedCount ?? 0;
+    let scannedCells = 0;
+    let loadedCells = 0;
+    const result = (nextCursor) => ({
+      success: true,
+      matches,
+      totalFound: matchedCount,
+      totalFoundIsExact: nextCursor === null,
+      returned: matches.length,
+      offset: Math.max(offset, resume?.matchedCount ?? 0),
+      hasMore: nextCursor !== null,
+      scannedCells,
+      searchTerm,
+      searchScope: sheetId === void 0 ? "All sheets" : `Sheet ${sheetId}`,
+      // Match offsets alone cannot advance through a page with no hits.
+      nextOffset: null,
+      nextCursor
+    });
+    const continuation = (index, cellOffset) => JSON.stringify({
+      sheetId: ids.get(targets[index].id),
+      cellOffset,
+      matchedCount,
+      scope
+    });
+    for (let index = firstSheet; index < targets.length; index++) {
+      const sheet = targets[index];
+      const target = range ? sheet.getRange(range) : sheet.getUsedRangeOrNullObject();
+      target.load("address,rowCount,columnCount");
       await context.sync();
-      if (searchRange.isNullObject) continue;
-      const { startCol, startRow } = parseRangeAddress(searchRange.address);
-      const stableSheetId = stableIdMap.get(sheet.id) || await getStableSheetId(sheet.id);
-      for (let r = 0; r < searchRange.rowCount && !stopSearch; r++) {
-        for (let c = 0; c < searchRange.columnCount; c++) {
-          const value = searchRange.values[r][c];
-          const formula = searchRange.formulas[r][c];
-          const searchTarget = matchFormulas && formula ? String(formula) : String(value ?? "");
-          let isMatch = false;
-          if (pattern) {
-            isMatch = pattern.test(searchTarget);
-          } else {
-            const compareVal = matchCase ? searchTarget : searchTarget.toLowerCase();
-            const compareTerm = matchCase ? searchTerm : searchTerm.toLowerCase();
-            isMatch = matchEntireCell ? compareVal === compareTerm : compareVal.includes(compareTerm);
-          }
-          if (!isMatch) continue;
-          const shouldStop = pageCollector.add({
-            sheetName: sheet.name,
-            sheetId: stableSheetId,
-            a1: cellAddress(startRow + r, startCol + c),
-            value,
-            formula: typeof formula === "string" && formula.startsWith("=") ? formula : null,
-            row: startRow + r + 1,
-            column: startCol + c + 1
-          });
-          if (shouldStop) {
-            stopSearch = true;
-            break;
+      if (target.isNullObject) continue;
+      const { startRow, startCol } = parseRangeAddress(target.address);
+      const totalCells = target.rowCount * target.columnCount;
+      let position = index === firstSheet && resume ? resume.cellOffset : 0;
+      while (position < totalCells) {
+        if (loadedCells >= 2e4 || matches.length >= maxResults) {
+          return result(continuation(index, position));
+        }
+        const row = Math.floor(position / target.columnCount);
+        const column = position % target.columnCount;
+        const capacity = Math.min(2e3, 2e4 - loadedCells);
+        const width = Math.min(target.columnCount - column, capacity);
+        const height = column === 0 && width === target.columnCount ? Math.min(target.rowCount - row, Math.floor(capacity / width)) : 1;
+        const block = sheet.getRange(
+          cellAddress(startRow + row, startCol + column) + ":" + cellAddress(startRow + row + height - 1, startCol + column + width - 1)
+        );
+        block.load("values,formulas");
+        await context.sync();
+        loadedCells += width * height;
+        for (let r = 0; r < height; r++) {
+          for (let c = 0; c < width; c++) {
+            const value = block.values[r][c];
+            const formula = block.formulas[r][c];
+            const text = matchFormulas && formula ? String(formula) : String(value ?? "");
+            const compared = matchCase ? text : text.toLowerCase();
+            const isMatch = pattern ? pattern.test(text) : matchEntireCell ? compared === compareTerm : compared.includes(compareTerm);
+            position++;
+            scannedCells++;
+            if (!isMatch) continue;
+            matchedCount++;
+            if (matchedCount <= offset) continue;
+            matches.push({
+              sheetName: sheet.name,
+              sheetId: ids.get(sheet.id),
+              a1: cellAddress(startRow + row + r, startCol + column + c),
+              value,
+              formula: typeof formula === "string" && formula.startsWith("=") ? formula : null,
+              row: startRow + row + r + 1,
+              column: startCol + column + c + 1
+            });
+            if (matches.length >= maxResults) {
+              if (position < totalCells) return result(continuation(index, position));
+              return result(index + 1 < targets.length ? continuation(index + 1, 0) : null);
+            }
           }
         }
       }
     }
-    const page = pageCollector.toPage();
-    return {
-      success: true,
-      matches: pageCollector.matches,
-      totalFound: page.totalFound,
-      returned: page.returned,
-      offset: page.offset,
-      hasMore: page.hasMore,
-      searchTerm,
-      searchScope: sheetId ? `Sheet ${sheetId}` : "All sheets",
-      nextOffset: page.nextOffset
-    };
+    return result(null);
   });
 }
 async function getAllObjects(options = {}) {

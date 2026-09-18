@@ -13,7 +13,7 @@ Read freely:
 - `excel_get_selected_range` — the user's current selection with a bounded values preview. If it reports `truncated: true`, use `excel_get_cell_ranges` for the specific rows or columns you need. Use when the user says "this", "these cells", "the selection".
 - `excel_get_cell_ranges` — values, formulas and styles as a sparse A1-keyed object. Reads in bounded chunks; when `hasMore` is true, pass `remainingRanges` as the next call's `ranges` with the same sheet and options. Unread ranges may contain blanks.
 - `excel_get_range_as_csv` — a bounded page of tabular data as CSV. When `hasMore` is true, continue with `nextRange` and `includeHeaders: true` to retain the first row of the next page.
-- `excel_search_data` — find text, values or formula references (regex supported).
+- `excel_search_data` — find text, values or formula references (regex supported), scanning at most 20000 cells per call. If `hasMore` is true, continue with `nextCursor` as `cursor` and keep the search arguments unchanged, even if this page has no matches. `totalFound` is cumulative and exact only when `totalFoundIsExact` is true. Reads use live workbook data; restart after structural edits.
 - `excel_get_all_objects` — charts and pivot tables.
 
 Write only when the user asks to modify, add or delete:
