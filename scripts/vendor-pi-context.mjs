@@ -10,13 +10,19 @@ import { copyFile, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { patchChangeTracker, patchSelectionContext, patchWorkbookOverview } from "./pi-context-patches.mjs";
+import {
+  patchChangeTracker,
+  patchRecoveryFormatState,
+  patchSelectionContext,
+  patchWorkbookOverview,
+} from "./pi-context-patches.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceRoot = resolve(process.argv[2] ?? join(projectRoot, "..", "_sdks", "pi-for-excel"));
 const selectionFile = join(sourceRoot, "src", "context", "selection.ts");
 const changeTrackerFile = join(sourceRoot, "src", "context", "change-tracker.ts");
 const overviewFile = join(sourceRoot, "src", "tools", "get-workbook-overview.ts");
+const formatStateFile = join(sourceRoot, "src", "workbook", "recovery", "format-state.ts");
 const outfile = join(projectRoot, "taskpane", "shared", "vendor", "pi-context.js");
 const licenseOutfile = join(projectRoot, "taskpane", "shared", "vendor", "pi-context.LICENSE");
 const EXPECTED_COMMIT = "fd6c9e3c3b206d6e2e39a2957c70714fdc879727";
@@ -44,6 +50,7 @@ if (sourceStatus) {
 const patchedSelection = patchSelectionContext(await readFile(selectionFile, "utf8"));
 const patchedChangeTracker = patchChangeTracker(await readFile(changeTrackerFile, "utf8"));
 const patchedOverview = patchWorkbookOverview(await readFile(overviewFile, "utf8"));
+const patchedFormatState = patchRecoveryFormatState(await readFile(formatStateFile, "utf8"));
 
 await build({
   absWorkingDir: sourceRoot,
@@ -136,6 +143,10 @@ await build({
     {
       name: "excel-assistant-pi-recovery",
       setup(builder) {
+        builder.onLoad({ filter: /format-state\.ts$/ }, (args) => {
+          if (resolve(args.path) !== resolve(formatStateFile)) return null;
+          return { contents: patchedFormatState, loader: "ts", resolveDir: dirname(formatStateFile) };
+        });
         builder.onResolve({ filter: /\/host\/current\.js$/ }, () => ({ path: "host-current", namespace: "pi-stub" }));
         builder.onResolve({ filter: /\/storage\/local\/app-storage\.js$/ }, () => ({ path: "app-storage", namespace: "pi-stub" }));
         builder.onResolve({ filter: /^@earendil-works\/pi-ai$/ }, () => ({ path: "pi-ai", namespace: "pi-stub" }));

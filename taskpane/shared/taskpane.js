@@ -755,7 +755,10 @@ function hasFormulaInput(args) {
 }
 
 async function describeOfficeToolError(error, args) {
-  const message = error?.message ?? String(error);
+  // Office.js names the failing API (e.g. "RangeFormat.columnWidth") only in
+  // debugInfo; the localized message alone doesn't say what was rejected.
+  const location = error?.debugInfo?.errorLocation;
+  const message = `${error?.message ?? String(error)}${location ? ` [at ${location}]` : ""}`;
   if (error?.code === "InvalidArgument" && hasFormulaInput(args)) {
     return (
       `${message} (Excel rejected the write as an invalid argument; check the formula uses Excel syntax: ` +

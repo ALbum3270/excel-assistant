@@ -195,3 +195,20 @@ export function patchWorkbookOverview(input) {
   );
   return source;
 }
+
+// Excel on Windows reports an unfilled cell's fill color as "" and rejects ""
+// when it is written back (InvalidArgument at RangeFill.color), so restoring
+// "no fill" failed. fill.clear() is how Office.js removes a fill.
+export function patchRecoveryFormatState(input) {
+  return replaceOnce(
+    input.replace(/\r\n/g, "\n"),
+    "restore no fill with clear()",
+    `  if (state.fillColor !== undefined) {
+    range.format.fill.color = state.fillColor;
+  }`,
+    `  if (state.fillColor !== undefined) {
+    if (state.fillColor === "") range.format.fill.clear();
+    else range.format.fill.color = state.fillColor;
+  }`,
+  );
+}

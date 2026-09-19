@@ -12584,7 +12584,8 @@ function applyFormatRangeStateToArea(range, state) {
     range.numberFormat = cloneStringGrid(state.numberFormat);
   }
   if (state.fillColor !== void 0) {
-    range.format.fill.color = state.fillColor;
+    if (state.fillColor === "") range.format.fill.clear();
+    else range.format.fill.color = state.fillColor;
   }
   if (state.fontColor !== void 0) {
     range.format.font.color = state.fontColor;

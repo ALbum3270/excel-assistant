@@ -247,8 +247,28 @@ async function qualifiedAddress(target) {
   });
 }
 
+// Pi records one format state per area and gives up when an area mixes formats
+// (a header row with one bold cell, banded fills). A single cell is never mixed,
+// so ranges small enough to list are captured cell by cell. The snapshot keeps
+// that address, so the inverse checkpoint Pi takes when restoring does too.
+const MAX_CELLWISE_FORMAT_CELLS = 500;
+
+function cellwiseAddress(address) {
+  const { sheetName, a1 } = splitSheetAddress(address);
+  const match = /^\$?([A-Z]+)\$?(\d+)(?::\$?([A-Z]+)\$?(\d+))?$/i.exec(a1 ?? "");
+  if (!match) return null;
+  const column = (label) => [...label.toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
+  const letters = (n) => (n > 0 ? letters(Math.floor((n - 1) / 26)) + String.fromCharCode(65 + ((n - 1) % 26)) : "");
+  const [c1, r1, c2, r2] = [column(match[1]), Number(match[2]), column(match[3] ?? match[1]), Number(match[4] ?? match[2])];
+  if ((c2 - c1 + 1) * (r2 - r1 + 1) > MAX_CELLWISE_FORMAT_CELLS) return null;
+  const cells = [];
+  for (let r = r1; r <= r2; r += 1) for (let c = c1; c <= c2; c += 1) cells.push(`${letters(c)}${r}`);
+  return `${sheetName ? `'${sheetName.replaceAll("'", "''")}'!` : ""}${cells.join(",")}`;
+}
+
 async function captureFormatSnapshot(target, selection = CELL_FORMAT_PROPERTIES) {
-  const address = await qualifiedAddress(target);
+  const rangeAddress = await qualifiedAddress(target);
+  const address = cellwiseAddress(rangeAddress) ?? rangeAddress;
   const captured = await captureFormatCellsState(address, selection, {
     maxCellCount: MAX_RECOVERY_CELLS,
   });
