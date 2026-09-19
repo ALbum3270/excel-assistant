@@ -24,6 +24,7 @@ import {
   setCellRange,
 } from "./vendor/office-agents-excel-api.js";
 import { buildOverview, ChangeTracker, readSelectionContext } from "./vendor/pi-context.js";
+import { prepareMutationRecovery, workbookHistory } from "./recovery.js";
 import { isInOrUnder, docDirFromActiveUrl } from "./paths.js";
 import { marked } from "/npm/marked.esm.js";
 import DOMPurify from "/npm/purify.es.mjs";
@@ -821,6 +822,11 @@ async function contextSnapshot({ selectionAddress = null } = {}) {
     workbook: workbookParts.join("\n\n") || null,
     selection: limitContextText(selection?.text ?? null, 12000, true),
     changes: limitContextText(changeTracker.flush(), 3000),
+    sheets: metadata?.sheetsMetadata?.map((sheet) => ({
+      id: sheet.id,
+      name: sheet.name,
+      active: sheet.id === metadata.activeSheetId,
+    })) ?? [],
   };
 }
 
@@ -839,10 +845,66 @@ const WRITE_TOOLS = new Set([
   "excel_add_table_rows",
 ]);
 
+function isMutationCall(name, args) {
+  return WRITE_TOOLS.has(name) || (name === "excel_workbook_history" && args?.action === "restore");
+}
+
+function mutationTargets(name, args, result) {
+  switch (name) {
+    case "excel_set_cell_range":
+      return [result?.writtenRange ?? args.copyToRange ?? args.range].filter(Boolean);
+    case "excel_clear_cell_range":
+      return [result?.clearedRange ?? args.range].filter(Boolean);
+    case "excel_copy_to":
+      return [result?.destination ?? args.destinationRange].filter(Boolean);
+    case "excel_set_format":
+    case "excel_sort_range":
+    case "excel_create_table":
+      return [result?.address ?? result?.range ?? args.address].filter(Boolean);
+    case "excel_resize_range":
+      return [args.range ?? "entire worksheet"];
+    case "excel_modify_sheet_structure":
+      return [`${args.dimension ?? "dimension"}:${args.reference ?? "pane"}:${args.count ?? 1}`];
+    case "excel_modify_workbook_structure":
+      return [result?.sheetName ?? args.newName ?? args.sheetName ?? `sheetId:${args.sheetId ?? "new"}`];
+    case "excel_modify_object":
+      return [result?.id ?? args.id ?? args.properties?.range ?? args.properties?.anchor ?? args.objectType].filter(Boolean);
+    case "excel_autofilter":
+      return [args.clear ? "worksheet autofilter" : (result?.address ?? args.address)].filter(Boolean);
+    case "excel_add_table_rows":
+      return [args.table].filter(Boolean);
+    case "excel_workbook_history":
+      return result?.addresses ?? [];
+    default:
+      return [];
+  }
+}
+
+function withMutationReceipt(name, args, result, receiptId) {
+  if (!isMutationCall(name, args)) return result;
+  const success = result?.success !== false;
+  const readBack = name === "excel_set_cell_range" || name === "excel_copy_to";
+  return {
+    ...(result && typeof result === "object" ? result : { result }),
+    success,
+    commitStatus: result?.commitStatus ?? (success ? "committed" : "not_committed"),
+    receiptId,
+    operation: name,
+    affectedTargets: mutationTargets(name, args, result),
+    verification: {
+      status: readBack ? "read_back" : "commit_acknowledged",
+      semanticCheckRequired: true,
+    },
+  };
+}
+
 async function runOfficeTool(msg) {
   const { id, name, args } = msg;
   if (cancelledToolCalls.delete(id)) return;
   try {
+    const commitRecovery = WRITE_TOOLS.has(name)
+      ? await prepareMutationRecovery(name, args, id)
+      : null;
     let result;
     switch (name) {
       case "excel_get_selected_range":
@@ -949,6 +1011,9 @@ async function runOfficeTool(msg) {
       case "excel_add_table_rows":
         result = await toolExcelAddTableRows(args);
         break;
+      case "excel_workbook_history":
+        result = await workbookHistory(args);
+        break;
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -956,17 +1021,31 @@ async function runOfficeTool(msg) {
     // daemon timeout/session stop must prevent a late result from being
     // mistaken for the current turn's result.
     if (cancelledToolCalls.delete(id)) return;
-    // Excel.run has synced by the time a tool resolves, so every write that
-    // returns is committed. Timeouts and disconnects are reported as "unknown"
-    // by the daemon. One field for all writes keeps the contract uniform.
-    if (WRITE_TOOLS.has(name) && result && typeof result === "object" && !("commitStatus" in result)) {
-      result = { ...result, commitStatus: "committed" };
+    if (commitRecovery) {
+      result = { ...result, recovery: await commitRecovery(result) };
     }
+    // Excel.run has synced by the time a tool resolves. Attach one receipt
+    // shape to every mutation and distinguish mechanical read-back from the
+    // semantic check the agent still has to perform.
+    result = withMutationReceipt(name, args, result, id);
     wsSend({ type: "tool_result", id, ok: true, result });
   } catch (err) {
     if (cancelledToolCalls.delete(id)) return;
     console.error(`[tool ${name}] failed:`, err);
-    wsSend({ type: "tool_result", id, ok: false, error: await describeOfficeToolError(err, args) });
+    wsSend({
+      type: "tool_result",
+      id,
+      ok: false,
+      error: {
+        message: await describeOfficeToolError(err, args),
+        ...(err?.code ? { code: err.code } : {}),
+        ...(err?.commitStatus
+          ? { commitStatus: err.commitStatus }
+          : isMutationCall(name, args)
+            ? { commitStatus: "unknown" }
+            : {}),
+      },
+    });
   }
 }
 

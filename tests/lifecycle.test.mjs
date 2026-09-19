@@ -72,6 +72,8 @@ function harness(t, overrides = {}) {
     customPermissionHandler() {},
     touchFolder: async () => {},
     buildSystemPromptAppend: async () => "test prompt",
+    buildMutationScope: () => ({ ranges: [] }),
+    bindScopeSheetIds: (scope) => scope,
     createOfficeBridgeMcp: () => ({}),
     getSessionId: async () => null,
     saveSessionId: async () => {},

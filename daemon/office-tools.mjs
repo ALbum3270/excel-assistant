@@ -2,6 +2,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { diag } from "./diag.mjs";
 import { COMPUTE_TOOL_DESCRIPTION, createComputeShell } from "./compute-tool.mjs";
+import { assertMutationAuthorized, bindMutationSheet } from "./mutation-scope.mjs";
 
 // Wrap a bridge tool result for MCP. Handlers return {content: [...]}.
 function asMcpResult(result, { isError = false } = {}) {
@@ -162,11 +163,25 @@ function asMcpError(err) {
  * @param {{ callTaskpaneTool: (name: string, args: object) => Promise<any> }} bridge
  * @param {"excel"|null} host
  */
-export function createOfficeBridgeMcp(bridge, host = null, paneKey = null, { signal } = {}) {
+export function createOfficeBridgeMcp(
+  bridge,
+  host = null,
+  paneKey = null,
+  { signal, getMutationScope, onWorkbookMetadata } = {},
+) {
   // `paneKey` routes every call to the exact workbook pane this session
   // belongs to (so two open workbooks don't cross-talk).
-  const call = (name, args, options = {}) =>
-    bridge.callTaskpaneTool(name, args, paneKey, { signal: options.signal ?? signal });
+  const call = (name, args, options = {}) => {
+    const scope = getMutationScope?.();
+    const routedArgs = bindMutationSheet(name, args ?? {}, scope);
+    if (getMutationScope) assertMutationAuthorized(name, routedArgs, scope);
+    const pending = bridge.callTaskpaneTool(name, routedArgs, paneKey, { signal: options.signal ?? signal });
+    if (name !== "excel_get_workbook_metadata" || !onWorkbookMetadata) return pending;
+    return pending.then((result) => {
+      onWorkbookMetadata(result);
+      return result;
+    });
+  };
 
   const excel_get_selected_range = tool(
     "excel_get_selected_range",
@@ -293,6 +308,17 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null, { sig
       index: z.number().int().nonnegative().optional().describe("Insert position; omit to append."),
     },
     wrap("excel_add_table_rows"),
+  );
+
+  const excel_workbook_history = tool(
+    "excel_workbook_history",
+    "List or restore automatic recovery checkpoints for this workbook. Use restore only when the user asks to undo or recover a prior assistant edit. Delete removes one checkpoint; clear removes this workbook's checkpoints.",
+    {
+      action: z.enum(["list", "restore", "delete", "clear"]).default("list"),
+      snapshot_id: z.string().optional().describe("Checkpoint id. Restore uses the latest checkpoint when omitted."),
+      limit: z.number().int().min(1).max(50).optional().describe("Maximum checkpoints returned by list."),
+    },
+    wrap("excel_workbook_history"),
   );
 
   // ---- Excel tools ported from hewliyang/office-agents (MIT) ----
@@ -674,6 +700,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null, { sig
     excel_autofilter,
     excel_create_table,
     excel_add_table_rows,
+    excel_workbook_history,
     excel_bash,
   ];
   const tools = excelTools;

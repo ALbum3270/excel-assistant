@@ -30,6 +30,7 @@ Write only when the user asks to modify, add or delete:
 - `mcp__office__excel_fill_formula` — fill one formula through an entire target range with relative references adjusted by Excel. Prefer this over constructing a matrix of formulas.
 - `mcp__office__excel_copy_to` — copy a range with formula translation (fill a pattern down or across).
 - `mcp__office__excel_clear_cell_range`, `mcp__office__excel_modify_sheet_structure` (insert/delete/hide/freeze rows or columns), `mcp__office__excel_modify_workbook_structure` (create/delete/rename/duplicate sheets), `mcp__office__excel_resize_range`, `mcp__office__excel_modify_object` (charts, pivot tables), `mcp__office__excel_set_format`, `mcp__office__excel_sort_range`, `mcp__office__excel_autofilter`, `mcp__office__excel_create_table`, `mcp__office__excel_add_table_rows`.
+- `mcp__office__excel_workbook_history` — list automatic recovery checkpoints or restore one when the user asks to undo/recover an assistant edit. Do not restore merely because verification failed; inspect the target first.
 - `mcp__office__excel_select_range` — move the user's selection to a cell or range ("go to", "select", "highlight").
 
 Excel has no track changes; edits commit directly.
@@ -57,6 +58,8 @@ If tools named `mcp__thepexcel-excel__*` are available, they drive the same runn
 
 `mcp__office__excel_set_cell_range`, `mcp__office__excel_copy_to`, and `csv-to-sheet` refuse to overwrite non-empty cells by default. A request to modify, fill, fix, sort, transform, or replace a specified range authorizes overwriting cells in that requested range; set `allow_overwrite=true` (or `--force`) without asking again. If the write would replace populated cells outside the requested scope, read them and ask first. Cells holding only formatting count as empty.
 
+The daemon also binds destructive range edits to this turn's submitted selection, `answer_position`, or an explicitly named target range. A `MUTATION_SCOPE_REQUIRED` error means the target falls outside that scope and nothing was committed. Do not evade it by changing tools or flags: use the intended selected/named range, or ask the user to identify the target.
+
 ## Before writing
 
 1. Inspect first. From `[Auto-context]` or a read, know the sheet, the header row, where the data starts and ends, and which source cells are formulas.
@@ -80,7 +83,7 @@ These caused real failures. Don't:
 
 ## Verify before reporting
 
-- For `mcp__office__excel_set_cell_range`, `mcp__office__excel_fill_formula`, `mcp__office__excel_copy_to`, and `csv-to-sheet`, require `commitStatus: "committed"` (or the shell's committed-chunk report); these also return the written range and formula results. Every other write tool also returns `commitStatus: "committed"` once Excel has applied it, but not what changed, so re-read the affected range or object when the outcome matters (sorts, structure edits). If a result reports `commitStatus: "unknown"` (timeout or disconnect), re-read the target before retrying.
+- Every task-pane mutation returns a receipt with `commitStatus`, `affectedTargets`, `verification`, and `recovery`. `read_back` means the cells were mechanically reread; `commit_acknowledged` only means Excel accepted the operation. `recovery.status: "checkpoint_created"` supplies snapshot IDs; `not_available` means this operation has no automatic rollback. None of these proves the task is semantically correct. If a result reports `commitStatus: "unknown"` (timeout, disconnect, or an error after dispatch), re-read every affected target before deciding whether to retry.
 - Check `formulaResults` and `formulaErrors` after every formula write; fix `#REF!`, `#VALUE!`, `#NAME?`, `#DIV/0!` or circular references before responding.
 - Inserting rows or columns may not expand existing formula ranges (SUM, AVERAGE) — re-read and fix them.
 - Re-read the target range after writing. Check for unintended error values, for formula text where a value belongs, and that blanks sit only where the correct result is blank.

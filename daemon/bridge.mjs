@@ -395,7 +395,15 @@ export function createBridge({
           if (msg.ok) {
             pending.resolve(msg.result);
           } else {
-            pending.reject(new Error(msg.error ?? "Unknown tool error"));
+            const detail = msg.error && typeof msg.error === "object"
+              ? msg.error
+              : { message: msg.error ?? "Unknown tool error" };
+            pending.reject(
+              Object.assign(new Error(detail.message ?? "Unknown tool error"), {
+                ...(detail.code ? { code: detail.code } : {}),
+                ...(detail.commitStatus ? { commitStatus: detail.commitStatus } : {}),
+              }),
+            );
           }
           break;
         }

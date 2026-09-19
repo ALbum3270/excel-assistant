@@ -246,3 +246,35 @@ test("an Excel InvalidArgument on a formula write names likely syntax causes", a
   assert.match(formulaWrite, /<> not !=/);
   assert.equal(valueWrite, invalid.message);
 });
+
+test("every mutation receives a uniform receipt with its verification level", () => {
+  const start = source.indexOf("const WRITE_TOOLS = new Set(");
+  const end = source.indexOf("async function runOfficeTool(msg)", start);
+  assert.ok(start >= 0 && end > start);
+  const sandbox = {};
+  vm.createContext(sandbox);
+  vm.runInContext(
+    `${source.slice(start, end)}\n` +
+      `globalThis.makeReceipt = withMutationReceipt;`,
+    sandbox,
+  );
+  const formula = sandbox.makeReceipt(
+    "excel_set_cell_range",
+    { range: "B2:B5" },
+    { success: true, writtenRange: "B2:B5", commitStatus: "committed" },
+    "receipt-1",
+  );
+  assert.equal(formula.verification.status, "read_back");
+  assert.deepEqual(Array.from(formula.affectedTargets), ["B2:B5"]);
+  assert.equal(formula.verification.semanticCheckRequired, true);
+
+  const sort = sandbox.makeReceipt(
+    "excel_sort_range",
+    { address: "A1:D10" },
+    { sheet: "Sheet1", address: "Sheet1!A1:D10" },
+    "receipt-2",
+  );
+  assert.equal(sort.commitStatus, "committed");
+  assert.equal(sort.verification.status, "commit_acknowledged");
+  assert.deepEqual(Array.from(sort.affectedTargets), ["Sheet1!A1:D10"]);
+});

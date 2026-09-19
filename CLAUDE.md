@@ -41,7 +41,7 @@ node --check daemon/index.mjs taskpane/shared/taskpane.js app/main.mjs
 - `daemon/office-tools.mjs` — Word + Excel tool defs (zod schemas)
 - `daemon/workspace.mjs` — workspace = the document's own folder
 - `daemon/context.mjs` — per-workspace CONTEXT-FILES block in CLAUDE.md
-- `daemon/sessions.mjs` — per-(host, workspace) session-id persistence
+- `daemon/sessions.mjs` — per-document/workbook session-id persistence
 - `daemon/transcript.mjs` — replay reconstruction from the SDK `.jsonl`
 - `daemon/system-paths.mjs` — OS-managed `$HOME` children deny-list
 - `daemon/diag.mjs` — opt-in `[diag]` logger (`CC_OFFICE_DEBUG=1`)

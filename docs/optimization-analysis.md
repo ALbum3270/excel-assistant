@@ -552,3 +552,18 @@ node 111/111，评测脚本测试通过。
 - 金融技能按“Office JS 环境”编写，而本项目没有执行原始 Office.js 的工具。提示词说明了如何改用对应工具，并忽略技能中的 openpyxl 和 recalc 步骤。
 
 node 112/112，评测脚本测试通过。
+
+**三十六、写入回执和单元格范围授权收口**
+
+- 所有 Office.js 修改工具统一返回 `commitStatus`、`receiptId`、`operation`、`affectedTargets` 和 `verification`。单元格写入、公式填充和复制标为 `read_back`；其余修改只标为 `commit_acknowledged`，不会把 Excel 接受操作说成题意已经正确。
+- 面板错误改为结构化传递。桥接保留 `code` 和 `commitStatus`；写操作在派发后发生错误但无法确认状态时返回 `unknown`，代理必须先重读，不能直接重试。
+- daemon 从每轮消息的提交时选区、SpreadsheetBench 的 `answer_position` 和带修改语义的明确 A1 目标提取授权范围，同时绑定工作表 ID。覆盖写入、覆盖复制、清空、格式、排序和行列尺寸修改若超出范围，会在调用 Excel 前以 `MUTATION_SCOPE_REQUIRED/not_committed` 拒绝。
+- 公式中的引用和带“根据/来自/from/using”等来源标记的范围不作为修改授权；矩阵从单个起点自动扩展时，按实际扩展区域检查。
+- 此约束暂不覆盖工作表增删改名、行列结构、图表/透视表和外部 COM 工具。这些目标不是统一的矩形单元格范围，需要按操作类型建立授权语义，不能假装已由 A1 范围解决。
+
+**三十七、自动恢复点接入**
+
+- 复用 pi-for-excel 的 `WorkbookRecoveryLog`、格式快照和恢复实现；本项目只维护 Office.js 工作表定位、本地存储和工具回执适配。
+- 单元格写入、清空、复制、格式、排序和行列尺寸修改会在执行前捕获必要状态，成功后把恢复点 ID 放进统一回执。恢复操作会再生成反向恢复点，因此可以撤销一次恢复。
+- 新增 `excel_workbook_history`，支持当前工作簿的恢复点列表、恢复、删除和清空。恢复点按工作簿哈希隔离，本地保存，不持久化原始文件路径。
+- 表格、筛选、工作表结构、图表/透视表和批注暂时返回 `recovery.status: "not_available"`。没有为这些对象堆叠不完整的通用快照；后续只在实现对应结构状态时扩展。

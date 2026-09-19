@@ -32,6 +32,7 @@
   "devDependencies": {
     "electron": "^42.0.1",
     "esbuild": "^0.28.2",
-    "prettier": "3.8.3"
+    "prettier": "3.8.3",
+    "typebox": "1.3.7"
   }
 }

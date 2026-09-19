@@ -122,3 +122,35 @@ test("aborting a tool call notifies the owning pane and rejects with unknown com
     await bridge.close();
   }
 });
+
+test("structured taskpane errors preserve code and commit state", async () => {
+  const bridge = createBridge({ port: 0, token: "test-token", allowedOrigins: [] });
+  let client;
+  try {
+    await waitForListening(bridge);
+    client = new WebSocket(`ws://127.0.0.1:${bridge.address().port}`);
+    await once(client, "open");
+    const welcome = once(client, "message");
+    client.send(JSON.stringify({ type: "hello", token: "test-token", host: "excel", active_doc: "book.xlsx" }));
+    await welcome;
+    const message = once(client, "message");
+    const pending = bridge.callTaskpaneTool("excel_clear_cell_range", { range: "A1" }, "excel\0book.xlsx");
+    const [raw] = await message;
+    const call = JSON.parse(raw.toString());
+    client.send(JSON.stringify({
+      type: "tool_result",
+      id: call.id,
+      ok: false,
+      error: { message: "scope denied", code: "MUTATION_SCOPE_REQUIRED", commitStatus: "not_committed" },
+    }));
+    await assert.rejects(pending, (error) => {
+      assert.equal(error.message, "scope denied");
+      assert.equal(error.code, "MUTATION_SCOPE_REQUIRED");
+      assert.equal(error.commitStatus, "not_committed");
+      return true;
+    });
+  } finally {
+    client?.terminate();
+    await bridge.close();
+  }
+});
