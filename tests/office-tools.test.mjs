@@ -118,3 +118,60 @@ test("set-cell normalizes model-shaped payloads and fills a larger target", asyn
     },
   });
 });
+
+test("range reads accept a model-supplied bracketed string", async () => {
+  const calls = [];
+  const server = createOfficeBridgeMcp(
+    {
+      async callTaskpaneTool(name, args) {
+        calls.push({ name, args });
+        return { success: true };
+      },
+    },
+    "excel",
+    "test-pane",
+  );
+
+  await server.instance._registeredTools.excel_get_cell_ranges.handler({
+    sheetId: 1,
+    ranges: "\n[A1:E15]\n",
+  });
+
+  assert.deepEqual(calls[0], {
+    name: "excel_get_cell_ranges",
+    args: { sheetId: 1, ranges: ["A1:E15"], includeStyles: false },
+  });
+});
+
+test("set-cell recovers unescaped formula JSON and expands a row pattern", async () => {
+  const calls = [];
+  const server = createOfficeBridgeMcp(
+    {
+      async callTaskpaneTool(name, args) {
+        calls.push({ name, args });
+        return { success: true, commitStatus: "committed" };
+      },
+    },
+    "excel",
+    "test-pane",
+  );
+  const handler = server.instance._registeredTools.excel_set_cell_range.handler;
+
+  await handler({
+    sheetId: 1,
+    range: "C2:D11",
+    cells: '[["=IF(A2="","",A2)"], ["=IF(B2="","",B2)"]]',
+    allow_overwrite: true,
+  });
+
+  assert.deepEqual(calls[0], {
+    name: "excel_set_cell_range",
+    args: {
+      sheetId: 1,
+      range: "C2:D2",
+      cells: [[{ formula: '=IF(A2="","",A2)' }, { formula: '=IF(B2="","",B2)' }]],
+      copyToRange: "C2:D11",
+      allow_overwrite: true,
+    },
+  });
+});

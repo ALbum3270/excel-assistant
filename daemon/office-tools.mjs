@@ -31,7 +31,40 @@ function parseA1RangeSize(address) {
     rows: endRow - startRow + 1,
     columns: endColumn - startColumn + 1,
     start: `${match[1].toUpperCase()}${startRow}`,
+    startColumn,
+    startRow,
   };
+}
+
+function columnLetters(number) {
+  let result = "";
+  for (let value = number; value > 0; value = Math.floor((value - 1) / 26)) {
+    result = String.fromCharCode(65 + ((value - 1) % 26)) + result;
+  }
+  return result;
+}
+
+function trimUnbalancedClosingBrackets(formula) {
+  let opens = 0;
+  for (const char of formula) {
+    if (char === "[") opens++;
+    if (char === "]") opens--;
+  }
+  while (opens < 0 && formula.endsWith("]")) {
+    formula = formula.slice(0, -1);
+    opens++;
+  }
+  return formula;
+}
+
+function recoverFormulaCells(text) {
+  const formulas = [];
+  const boundary = /(=[\s\S]*?)"\s*\](?=\s*(?:,|\]))/g;
+  for (const match of text.matchAll(boundary)) {
+    const formula = trimUnbalancedClosingBrackets(match[1].trim());
+    if (formula.startsWith("=")) formulas.push(formula);
+  }
+  return formulas.length > 0 ? formulas : null;
 }
 
 function parseCellsPayload(raw) {
@@ -41,8 +74,25 @@ function parseCellsPayload(raw) {
   try {
     return JSON.parse(text);
   } catch (error) {
+    const formulas = recoverFormulaCells(text);
+    if (formulas) return formulas;
     throw new Error(`cells contains invalid JSON: ${error.message}`);
   }
+}
+
+function normalizeRanges(raw) {
+  if (Array.isArray(raw)) return raw;
+  const text = String(raw ?? "").trim();
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) return parsed;
+  } catch {}
+  const unwrapped = text.replace(/^\s*\[/, "").replace(/\]\s*$/, "");
+  return unwrapped
+    .split(",")
+    .map((part) => part.trim().replace(/^['"]|['"]$/g, ""))
+    .filter(Boolean);
 }
 
 function normalizeCellMatrix(raw, range) {
@@ -70,6 +120,16 @@ function normalizeCellMatrix(raw, range) {
       rows = [parsed];
     }
   }
+  const size = parseA1RangeSize(range);
+  if (
+    size &&
+    size.rows > 1 &&
+    size.columns > 1 &&
+    rows.length === size.columns &&
+    rows.every((row) => row.length === 1)
+  ) {
+    rows = [rows.map((row) => row[0])];
+  }
   return rows.map((row) => row.map(toCellInput));
 }
 
@@ -79,14 +139,19 @@ function prepareCellWrite(args, cellMatrix) {
   // A single formula/value aimed at a larger explicit range means "fill this
   // pattern through the range". Preserve Excel's relative-reference
   // translation by writing the first cell and using copyToRange.
+  const height = cellMatrix.length;
   if (
     !args.copyToRange &&
     size &&
-    size.rows * size.columns > 1 &&
-    cellMatrix.length === 1 &&
-    width === 1
+    (height < size.rows || width < size.columns) &&
+    size.rows % height === 0 &&
+    size.columns % width === 0
   ) {
-    return { ...args, range: size.start, copyToRange: args.range, cells: cellMatrix };
+    const patternRange =
+      height === 1 && width === 1
+        ? size.start
+        : `${size.start}:${columnLetters(size.startColumn + width - 1)}${size.startRow + height - 1}`;
+    return { ...args, range: patternRange, copyToRange: args.range, cells: cellMatrix };
   }
   return { ...args, cells: cellMatrix };
 }
@@ -310,6 +375,10 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null, { sig
     .describe(
       "Cell data as a rectangular 2D array, a 1D row/column, one cell, or a JSON string containing one of those forms.",
     );
+  const rangesPayload = z.union([
+    z.array(z.string().min(1)).min(1),
+    z.string().min(1),
+  ]);
   const size = z
     .object({ type: z.enum(["points", "standard"]), value: z.number().positive() })
     .optional();
@@ -326,10 +395,9 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null, { sig
     "READ. Read cell values and formulas (plus formatting with includeStyles) as a sparse A1-keyed object. Each call scans at most 20000 cells in bounded chunks. If hasMore is true, pass remainingRanges as ranges in the next call with the same sheetId and options; unread ranges may contain blanks. Use this to inspect data before modifying it.",
     {
       sheetId,
-      ranges: z
-        .array(z.string().min(1))
-        .min(1)
-        .describe("Ranges in A1 notation, e.g. ['A1:C10', 'E1:E100']."),
+      ranges: rangesPayload.describe(
+        "One range or an array of ranges in A1 notation, e.g. 'A1:C10' or ['A1:C10', 'E1:E100'].",
+      ),
       includeStyles: z
         .boolean()
         .optional()
@@ -343,7 +411,12 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null, { sig
         .describe("Maximum populated cells to return. Default: 2000."),
       explanation,
     },
-    (args) => wrap("excel_get_cell_ranges")({ ...args, includeStyles: args.includeStyles ?? false }),
+    (args) =>
+      wrap("excel_get_cell_ranges")({
+        ...args,
+        ranges: normalizeRanges(args.ranges),
+        includeStyles: args.includeStyles ?? false,
+      }),
   );
 
   const excel_get_range_as_csv = tool(

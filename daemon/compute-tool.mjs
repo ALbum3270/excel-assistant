@@ -115,8 +115,12 @@ function workbookCommands(call) {
     try {
       const text = await ctx.fs.readFile(resolvePath(ctx, file));
       const parsed = Papa.parse(text.replace(/\r?\n$/, ""), { skipEmptyLines: false });
-      if (parsed.errors.length > 0) {
-        return failure(`CSV parse failed: ${parsed.errors[0].message}`);
+      // PapaParse reports a warning when a valid one-column file has no
+      // delimiter to detect. That is a supported CSV shape, not a parse
+      // failure. Preserve real quote/field errors.
+      const parseErrors = parsed.errors.filter((error) => error.code !== "UndetectableDelimiter");
+      if (parseErrors.length > 0) {
+        return failure(`CSV parse failed: ${parseErrors[0].message}`);
       }
       const rows = parsed.data;
       if (rows.length === 0) return failure("CSV file is empty");

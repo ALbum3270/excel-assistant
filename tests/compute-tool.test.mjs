@@ -28,3 +28,19 @@ test("csv-to-sheet writes parsed values through the workbook bridge", async () =
     [{ value: "Bob" }, { value: 7 }],
   ]);
 });
+
+test("csv-to-sheet accepts a valid one-column CSV", async () => {
+  const calls = [];
+  const shell = createComputeShell(async (name, args) => {
+    calls.push({ name, args });
+    return { success: true, commitStatus: "committed", writtenRange: args.range };
+  });
+
+  const result = await shell({
+    command: "printf 'Alpha\\nBeta\\n' > one.csv && csv-to-sheet one.csv 1 A1 --force",
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(calls[0].args.range, "A1:A2");
+  assert.deepEqual(calls[0].args.cells, [[{ value: "Alpha" }], [{ value: "Beta" }]]);
+});
