@@ -488,6 +488,40 @@ export function createOfficeBridgeMcp(
     wrap("excel_get_all_objects"),
   );
 
+  // Ported from pi-for-excel's explain_formula / trace_dependencies (MIT); the
+  // task pane runs Pi's implementations, these mirror their schemas.
+  const formulaCell = z
+    .string()
+    .min(1)
+    .describe('Single cell, e.g. "D10" or "Sheet2!F5" (sheet name, not sheetId). Not a range.');
+
+  const excel_explain_formula = tool(
+    "excel_explain_formula",
+    "READ. Explain what a formula cell does in plain language, with its direct input references and their current values. Use before editing or debugging a formula you didn't write.",
+    {
+      cell: formulaCell,
+      max_references: z
+        .number()
+        .int()
+        .min(1)
+        .max(20)
+        .optional()
+        .describe("Max direct references to preview. Default: 8."),
+    },
+    wrap("excel_explain_formula"),
+  );
+
+  const excel_trace_dependencies = tool(
+    "excel_trace_dependencies",
+    "READ. Trace formula lineage for a cell: precedents (what feeds it) or dependents (what it feeds, i.e. what breaks if it changes), recursively up to depth 5.",
+    {
+      cell: formulaCell,
+      mode: z.enum(["precedents", "dependents"]).optional().describe("Default: precedents."),
+      depth: z.number().int().min(1).max(5).optional().describe("Levels to trace. Default: 2."),
+    },
+    wrap("excel_trace_dependencies"),
+  );
+
   const excel_set_cell_range = tool(
     "excel_set_cell_range",
     "WRITE. Write values, formulas, and formatting to cells. Accepts 2D matrices, a single cell, or a 1D list (a row, or a column when range is one column wide). A formula pattern smaller than range is filled across it with relative-reference translation; values are written once from the top-left cell. Computed formula values and errors come back for verification. OVERWRITE PROTECTION: use allow_overwrite=true immediately when the user's requested edit targets existing cells; ask only when the overwrite is outside the requested scope. Use copyToRange to expand larger patterns.",
@@ -676,6 +710,8 @@ export function createOfficeBridgeMcp(
     excel_get_range_as_csv,
     excel_search_data,
     excel_get_all_objects,
+    excel_explain_formula,
+    excel_trace_dependencies,
     excel_set_cell_range,
     excel_fill_formula,
     excel_clear_cell_range,

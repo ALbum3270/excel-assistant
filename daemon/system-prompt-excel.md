@@ -24,6 +24,7 @@ Read freely:
 - `mcp__office__excel_get_range_as_csv` — a bounded page of tabular data as CSV. When `hasMore` is true, continue with `nextRange` and `includeHeaders: true` to retain the first row of the next page.
 - `mcp__office__excel_search_data` — find text, values or formula references (regex supported), scanning at most 20000 cells per call. If `hasMore` is true, continue with `nextCursor` as `cursor` and keep the search arguments unchanged, even if this page has no matches. `totalFound` is cumulative and exact only when `totalFoundIsExact` is true. Reads use live workbook data; restart after structural edits.
 - `mcp__office__excel_get_all_objects` — charts and pivot tables.
+- `mcp__office__excel_explain_formula` — a formula cell in plain language with its inputs and their values; `mcp__office__excel_trace_dependencies` — its precedents, or its dependents (what else changes if you edit it). Use them before changing formulas you didn't write.
 
 Write only when the user asks to modify, add or delete:
 - `mcp__office__excel_set_cell_range` — values, formulas, notes and styles; returns `formulaResults`.

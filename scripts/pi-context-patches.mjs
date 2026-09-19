@@ -212,3 +212,47 @@ export function patchRecoveryFormatState(input) {
   }`,
   );
 }
+
+// Excel returns range precedents/dependents as areas ("Sheet1!A1:A3"), and
+// upstream kept only each area's top-left cell, so SUM(A1:A3) traced to A1
+// alone. Expand areas into their cells (bounded by the per-node child cap).
+export function patchTraceDependencies(input) {
+  let source = input.replace(/\r\n/g, "\n");
+  source = replaceOnce(
+    source,
+    "area expansion helper",
+    "const MAX_DEPENDENT_SCAN_FORMULA_CELLS = 50_000;",
+    `const MAX_DEPENDENT_SCAN_FORMULA_CELLS = 50_000;
+
+function expandTraversalAddresses(address: string, sheetName: string): string[] {
+  const bang = address.lastIndexOf("!");
+  const prefix = bang >= 0 ? address.slice(0, bang + 1) : "";
+  const [start, end] = address.slice(bang + 1).split(":");
+  const isCell = (part: string | undefined) => /^\\$?[A-Z]+\\$?\\d+$/i.test(part ?? "");
+  if (!isCell(start) || !isCell(end)) {
+    const single = normalizeTraversalAddress(address, sheetName);
+    return single ? [single] : [];
+  }
+  const from = parseCell(start as string);
+  const to = parseCell(end as string);
+  const cells: string[] = [];
+  for (let row = from.row; row <= to.row; row++) {
+    for (let col = from.col; col <= to.col; col++) {
+      const cell = normalizeTraversalAddress(prefix + cellAddress(col, row), sheetName);
+      if (cell) cells.push(cell);
+      if (cells.length > MAX_CHILDREN_PER_NODE) return cells;
+    }
+  }
+  return cells;
+}`,
+  );
+  for (const indent of ["          ", "        "]) {
+    source = replaceOnce(
+      source,
+      `expand areas (${indent.length}-space loop)`,
+      `\n${indent}addChild(normalizeTraversalAddress(address, sheetName));`,
+      `\n${indent}for (const cell of expandTraversalAddresses(address, sheetName)) addChild(cell);`,
+    );
+  }
+  return source;
+}

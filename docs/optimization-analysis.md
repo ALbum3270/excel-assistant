@@ -609,3 +609,13 @@ node 112/112，评测脚本测试通过。
 - 对最后一次恢复生成的反向恢复点再做恢复，B2:B3 回到 40 和 20，重做可用。
 
 node 114/114。
+
+**四十、移植 Pi 的公式解释与依赖追踪**
+
+新增两个只读工具：`excel_explain_formula`（用自然语言解释公式，并列出直接引用及其当前值）和 `excel_trace_dependencies`（上游或下游依赖树，最深 5 层）。实现直接复用 pi-for-excel 的工具对象（`createExplainFormulaTool`、`createTraceDependenciesTool`），随 `pi-context.js` 一起打包。任务窗格调用它们的执行函数，把输出文本作为结果返回；daemon 这边的参数定义与 Pi 一致。
+
+真实 Excel 验证：A1:A3 → B1 `=SUM(A1:A3)` → C1 `=B1*2` → Sheet2!A1 `=Sheet1!C1+1`。解释、跨表的下游追踪、静态值识别都正确。
+
+发现并修复一个上游问题：Excel 的 `getDirectPrecedents` / `getDirectDependents` 以区域形式返回（如 `Sheet1!A1:A3`），Pi 只保留了每个区域的左上角，导致 `SUM(A1:A3)` 只追踪到 A1，会让模型误以为 A2、A3 不影响结果。构建时打补丁，把区域展开为逐个单元格，受 Pi 原有的每节点 80 个上限约束；整列引用仍按 Pi 原来的方式处理（`patchTraceDependencies`，要求恰好匹配）。修复后上游树正确列出 A1、A2、A3。
+
+node 114/114。

@@ -1,6 +1,6 @@
-// Bundles the workbook-context readers from tmustier/pi-for-excel (MIT) —
-// workbook overview, selection context and change tracker — into a browser
-// ES module the task pane imports directly.
+// Bundles from tmustier/pi-for-excel (MIT) the workbook-context readers
+// (overview, selection context, change tracker), the formula explain/trace
+// tools and the recovery log into browser ES modules the task pane imports.
 //
 // Usage: node scripts/vendor-pi-context.mjs [path-to-pi-for-excel-checkout]
 
@@ -14,6 +14,7 @@ import {
   patchChangeTracker,
   patchRecoveryFormatState,
   patchSelectionContext,
+  patchTraceDependencies,
   patchWorkbookOverview,
 } from "./pi-context-patches.mjs";
 
@@ -23,6 +24,7 @@ const selectionFile = join(sourceRoot, "src", "context", "selection.ts");
 const changeTrackerFile = join(sourceRoot, "src", "context", "change-tracker.ts");
 const overviewFile = join(sourceRoot, "src", "tools", "get-workbook-overview.ts");
 const formatStateFile = join(sourceRoot, "src", "workbook", "recovery", "format-state.ts");
+const traceFile = join(sourceRoot, "src", "tools", "trace-dependencies.ts");
 const outfile = join(projectRoot, "taskpane", "shared", "vendor", "pi-context.js");
 const licenseOutfile = join(projectRoot, "taskpane", "shared", "vendor", "pi-context.LICENSE");
 const EXPECTED_COMMIT = "fd6c9e3c3b206d6e2e39a2957c70714fdc879727";
@@ -50,6 +52,7 @@ if (sourceStatus) {
 const patchedSelection = patchSelectionContext(await readFile(selectionFile, "utf8"));
 const patchedChangeTracker = patchChangeTracker(await readFile(changeTrackerFile, "utf8"));
 const patchedOverview = patchWorkbookOverview(await readFile(overviewFile, "utf8"));
+const patchedTrace = patchTraceDependencies(await readFile(traceFile, "utf8"));
 const patchedFormatState = patchRecoveryFormatState(await readFile(formatStateFile, "utf8"));
 
 await build({
@@ -59,6 +62,8 @@ await build({
       'export { buildOverview } from "./src/tools/get-workbook-overview.ts";',
       'export { readSelectionContext } from "./src/context/selection.ts";',
       'export { ChangeTracker } from "./src/context/change-tracker.ts";',
+      'export { createExplainFormulaTool } from "./src/tools/explain-formula.ts";',
+      'export { createTraceDependenciesTool } from "./src/tools/trace-dependencies.ts";',
     ].join("\n"),
     resolveDir: sourceRoot,
     loader: "ts",
@@ -80,6 +85,10 @@ await build({
         builder.onLoad({ filter: /change-tracker\.ts$/ }, (args) => {
           if (resolve(args.path) !== resolve(changeTrackerFile)) return null;
           return { contents: patchedChangeTracker, loader: "ts", resolveDir: dirname(changeTrackerFile) };
+        });
+        builder.onLoad({ filter: /trace-dependencies\.ts$/ }, (args) => {
+          if (resolve(args.path) !== resolve(traceFile)) return null;
+          return { contents: patchedTrace, loader: "ts", resolveDir: dirname(traceFile) };
         });
         builder.onLoad({ filter: /get-workbook-overview\.ts$/ }, (args) => {
           if (resolve(args.path) !== resolve(overviewFile)) return null;

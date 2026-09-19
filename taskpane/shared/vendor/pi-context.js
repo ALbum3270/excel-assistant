@@ -9,6 +9,19 @@ var Type = new Proxy({}, { get: () => () => ({}) });
 async function excelRun(fn) {
   return Excel.run(fn);
 }
+function parseRangeRef(ref) {
+  if (ref.includes("!")) {
+    const idx = ref.lastIndexOf("!");
+    const sheet = ref.substring(0, idx).replace(/^'|'$/g, "").replace(/''/g, "'");
+    return { sheet, address: ref.substring(idx + 1) };
+  }
+  return { address: ref };
+}
+function getRange(context, ref) {
+  const parsed = parseRangeRef(ref);
+  const sheet = parsed.sheet ? context.workbook.worksheets.getItem(parsed.sheet) : context.workbook.worksheets.getActiveWorksheet();
+  return { sheet, range: sheet.getRange(parsed.address) };
+}
 function qualifiedAddress(sheetName, address) {
   const clean = address.includes("!") ? address.slice(address.lastIndexOf("!") + 1) : address;
   const escaped = sheetName.replace(/'/g, "''");
@@ -42,6 +55,45 @@ function parseCell(cell) {
     throw new Error(`Invalid cell address: ${cell}`);
   }
   return { col: letterToCol(colLetters.toUpperCase()), row: parseInt(rowDigits, 10) };
+}
+function cellAddress(col, row) {
+  return `${colToLetter(col)}${row}`;
+}
+function isOfficeItemNotFound(error) {
+  if (typeof error !== "object" || error === null) return false;
+  if ("code" in error && typeof error.code === "string") {
+    return error.code === "ItemNotFound";
+  }
+  if ("message" in error && typeof error.message === "string") {
+    return /item\s*not\s*found/iu.test(error.message);
+  }
+  return false;
+}
+async function getDirectPrecedentsSafe(context, range) {
+  try {
+    const precedents = range.getDirectPrecedents();
+    precedents.load("addresses");
+    await context.sync();
+    return precedents.addresses.map((s) => s.split(",").map((x) => x.trim()).filter(Boolean));
+  } catch (error) {
+    if (isOfficeItemNotFound(error)) {
+      return [];
+    }
+    return null;
+  }
+}
+async function getDirectDependentsSafe(context, range) {
+  try {
+    const dependents = range.getDirectDependents();
+    dependents.load("addresses");
+    await context.sync();
+    return dependents.addresses.map((s) => s.split(",").map((x) => x.trim()).filter(Boolean));
+  } catch (error) {
+    if (isOfficeItemNotFound(error)) {
+      return [];
+    }
+    return null;
+  }
 }
 
 // src/utils/errors.ts
@@ -355,8 +407,728 @@ var ChangeTracker = class {
     return this.changes.length > 0;
   }
 };
+
+// src/tools/explain-formula-logic.ts
+var MAX_PREVIEW_CHARS = 120;
+var FUNCTION_SUMMARIES = {
+  SUM: "adds values",
+  AVERAGE: "calculates an average",
+  MIN: "returns the smallest value",
+  MAX: "returns the largest value",
+  IF: "applies conditional logic",
+  IFS: "evaluates multiple conditional branches",
+  IFERROR: "substitutes a fallback when an error occurs",
+  XLOOKUP: "looks up a matching value and returns a related result",
+  VLOOKUP: "looks up a value in the first column and returns a related result",
+  HLOOKUP: "looks up a value in the first row and returns a related result",
+  INDEX: "returns a value from a row/column position",
+  MATCH: "finds a position within a range",
+  SUMIFS: "adds values that meet multiple criteria",
+  COUNTIF: "counts cells that meet one criterion",
+  COUNTIFS: "counts cells that meet multiple criteria",
+  ROUND: "rounds a number",
+  ROUNDUP: "rounds a number up",
+  ROUNDDOWN: "rounds a number down",
+  TEXT: "formats a value as text",
+  CONCAT: "concatenates values into text",
+  CONCATENATE: "concatenates values into text"
+};
+function truncate(value, maxChars) {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, Math.max(maxChars - 1, 1))}\u2026`;
+}
+function previewCellValue(value) {
+  if (value === null || value === void 0 || value === "") {
+    return "(blank)";
+  }
+  let rendered;
+  if (typeof value === "string") {
+    rendered = value;
+  } else if (typeof value === "number" || typeof value === "boolean") {
+    rendered = String(value);
+  } else {
+    rendered = JSON.stringify(value);
+  }
+  return truncate(rendered, MAX_PREVIEW_CHARS);
+}
+function extractFormulaFunctionNames(formula) {
+  const seen = /* @__PURE__ */ new Set();
+  const names = [];
+  const pattern = /\b([A-Za-z][A-Za-z0-9_.]*)\s*\(/gu;
+  for (const match of formula.matchAll(pattern)) {
+    const candidate = match[1]?.toUpperCase();
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+    names.push(candidate);
+  }
+  return names;
+}
+function formatFunctionList(functionNames) {
+  if (functionNames.length === 0) return "computes a result from referenced cells";
+  const labels = functionNames.map((name) => FUNCTION_SUMMARIES[name] ?? `uses ${name}`);
+  const [firstLabel, secondLabel] = labels;
+  if (firstLabel === void 0) return "computes a result from referenced cells";
+  if (secondLabel === void 0) return firstLabel;
+  if (labels.length === 2) return `${firstLabel} and ${secondLabel}`;
+  const lastLabel = labels[labels.length - 1];
+  if (lastLabel === void 0) return `${firstLabel} and ${secondLabel}`;
+  return `${labels.slice(0, -1).join(", ")}, and ${lastLabel}`;
+}
+function buildExplainFormulaNarrative(input) {
+  const refsLabel = `${input.referenceCount} direct reference${input.referenceCount === 1 ? "" : "s"}`;
+  const functionSummary = formatFunctionList(input.functionNames);
+  const parts = [
+    `Current value: ${input.valuePreview}.`,
+    `The formula ${functionSummary} across ${refsLabel}.`
+  ];
+  if (input.truncated) {
+    parts.push("Reference preview is truncated; inspect cited cells for the complete lineage.");
+  }
+  return parts.join(" ");
+}
+
+// src/tools/trace-dependencies-logic.ts
+var FORMULA_REF_PATTERN = /(?:'(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_.]*)!\$?[A-Z]+\$?\d+(?::\$?[A-Z]+\$?\d+)?|\$?[A-Z]+\$?\d+(?::\$?[A-Z]+\$?\d+)?/gu;
+function normalizeTraceMode(mode) {
+  return mode === "dependents" ? "dependents" : "precedents";
+}
+function normalizeSheetKey(sheetName) {
+  return sheetName.trim().toLowerCase();
+}
+function stripQuotedStringLiterals(formula) {
+  return formula.replace(/"(?:[^"]|"")*"/gu, "");
+}
+function parseQualifiedCellAddress(cellRef, defaultSheet) {
+  try {
+    const parsed = parseRangeRef(cellRef);
+    const sheetName = parsed.sheet ?? defaultSheet;
+    if (!sheetName) return null;
+    const firstArea = parsed.address.split(",")[0]?.trim();
+    if (!firstArea) return null;
+    const firstCell = firstArea.split(":")[0]?.replace(/\$/gu, "").trim();
+    if (!firstCell) return null;
+    const { col, row } = parseCell(firstCell);
+    return { sheet: sheetName, col, row };
+  } catch {
+    return null;
+  }
+}
+function normalizeTraversalAddress(address, defaultSheet) {
+  const parsed = parseQualifiedCellAddress(address, defaultSheet);
+  if (!parsed) return null;
+  return qualifiedAddress(parsed.sheet, cellAddress(parsed.col, parsed.row));
+}
+function extractFormulaReferences(formula, currentSheet) {
+  const references = [];
+  const seen = /* @__PURE__ */ new Set();
+  const searchFormula = stripQuotedStringLiterals(formula);
+  for (const match of searchFormula.matchAll(FORMULA_REF_PATTERN)) {
+    const token = match[0];
+    if (!token) continue;
+    let sheetName = currentSheet;
+    let addressPart = token;
+    if (token.includes("!")) {
+      const parsed = parseRangeRef(token);
+      if (parsed.sheet) {
+        sheetName = parsed.sheet;
+      }
+      addressPart = parsed.address;
+    }
+    const normalized = addressPart.replace(/\$/gu, "");
+    const [rawStart, rawEnd] = normalized.split(":");
+    if (!rawStart) continue;
+    const startToken = rawStart.trim();
+    const endToken = (rawEnd ?? rawStart).trim();
+    if (!startToken || !endToken) continue;
+    try {
+      const start = parseCell(startToken);
+      const end = parseCell(endToken);
+      const startCol = Math.min(start.col, end.col);
+      const endCol = Math.max(start.col, end.col);
+      const startRow = Math.min(start.row, end.row);
+      const endRow = Math.max(start.row, end.row);
+      const key = [normalizeSheetKey(sheetName), startCol, startRow, endCol, endRow].join("|");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      references.push({
+        sheet: sheetName,
+        startCol,
+        startRow,
+        endCol,
+        endRow,
+        startAddress: qualifiedAddress(sheetName, cellAddress(startCol, startRow))
+      });
+    } catch {
+    }
+  }
+  return references;
+}
+function parsedReferencesContainTarget(references, target) {
+  const targetSheetKey = normalizeSheetKey(target.sheet);
+  return references.some((ref) => {
+    if (normalizeSheetKey(ref.sheet) !== targetSheetKey) return false;
+    return target.col >= ref.startCol && target.col <= ref.endCol && target.row >= ref.startRow && target.row <= ref.endRow;
+  });
+}
+function summarizeTraceTree(root) {
+  let nodeCount = 0;
+  let edgeCount = 0;
+  const stack = [root];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node) continue;
+    nodeCount += 1;
+    edgeCount += node.precedents.length;
+    for (const child of node.precedents) {
+      stack.push(child);
+    }
+  }
+  return { nodeCount, edgeCount };
+}
+
+// src/tools/explain-formula.ts
+var DEFAULT_MAX_REFERENCES = 8;
+var MAX_REFERENCES_LIMIT = 20;
+var schema2 = Type.Object({
+  cell: Type.String({
+    description: 'Single formula cell to explain, e.g. "D10" or "Sheet2!F5".'
+  }),
+  max_references: Type.Optional(
+    Type.Number({
+      description: "Max number of direct references to preview. Default: 8. Max: 20."
+    })
+  )
+});
+function toQualifiedReferenceAddress(reference) {
+  const start = cellAddress(reference.startCol, reference.startRow);
+  const end = cellAddress(reference.endCol, reference.endRow);
+  const localAddress = start === end ? start : `${start}:${end}`;
+  return qualifiedAddress(reference.sheet, localAddress);
+}
+function clampMaxReferences(value) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return DEFAULT_MAX_REFERENCES;
+  }
+  const rounded = Math.floor(value);
+  if (rounded < 1) return 1;
+  if (rounded > MAX_REFERENCES_LIMIT) return MAX_REFERENCES_LIMIT;
+  return rounded;
+}
+function isSingleCellReference(reference) {
+  try {
+    const parsed = parseRangeRef(reference);
+    const localAddress = parsed.address.trim();
+    if (localAddress.includes(":") || localAddress.includes(",")) {
+      return false;
+    }
+    parseCell(localAddress);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function createExplainFormulaTool() {
+  return {
+    name: "explain_formula",
+    label: "Explain Formula",
+    description: "Explain what a formula cell is doing in plain language, including direct input references and current values.",
+    parameters: schema2,
+    execute: async (_toolCallId, params) => {
+      try {
+        if (!isSingleCellReference(params.cell)) {
+          return {
+            content: [{ type: "text", text: "Error: explain_formula expects a single cell, not a range." }],
+            details: {
+              kind: "explain_formula",
+              cell: params.cell,
+              hasFormula: false,
+              explanation: "The request was rejected because the input is not a single cell.",
+              references: [],
+              truncated: false
+            }
+          };
+        }
+        const maxReferences = clampMaxReferences(params.max_references);
+        const details = await excelRun(async (context) => {
+          const { sheet, range } = getRange(context, params.cell);
+          sheet.load("name");
+          range.load("address,values,formulas");
+          await context.sync();
+          const resolvedCell = qualifiedAddress(sheet.name, range.address);
+          const valuePreview = previewCellValue(range.values[0]?.[0]);
+          const rawFormula = range.formulas[0]?.[0];
+          const formula = typeof rawFormula === "string" && rawFormula.startsWith("=") ? rawFormula : void 0;
+          if (!formula) {
+            return {
+              kind: "explain_formula",
+              cell: resolvedCell,
+              hasFormula: false,
+              valuePreview,
+              explanation: "This cell currently contains a static value, not a formula.",
+              references: [],
+              truncated: false
+            };
+          }
+          const parsedReferences = extractFormulaReferences(formula, sheet.name);
+          const truncated = parsedReferences.length > maxReferences;
+          const referencesToLoad = parsedReferences.slice(0, maxReferences);
+          const loadedReferences = [];
+          for (const reference of referencesToLoad) {
+            const address = toQualifiedReferenceAddress(reference);
+            const { range: refRange } = getRange(context, reference.startAddress);
+            refRange.load("values,formulas");
+            loadedReferences.push({ address, range: refRange });
+          }
+          if (loadedReferences.length > 0) {
+            await context.sync();
+          }
+          const referenceDetails = loadedReferences.map((reference) => {
+            const preview = previewCellValue(reference.range.values[0]?.[0]);
+            const rawRefFormula = reference.range.formulas[0]?.[0];
+            const formulaPreview = typeof rawRefFormula === "string" && rawRefFormula.startsWith("=") ? rawRefFormula : void 0;
+            return {
+              address: reference.address,
+              valuePreview: preview,
+              ...formulaPreview !== void 0 ? { formulaPreview } : {}
+            };
+          });
+          const functionNames = extractFormulaFunctionNames(formula);
+          const explanation = buildExplainFormulaNarrative({
+            valuePreview,
+            functionNames,
+            referenceCount: parsedReferences.length,
+            truncated
+          });
+          return {
+            kind: "explain_formula",
+            cell: resolvedCell,
+            hasFormula: true,
+            formula,
+            valuePreview,
+            explanation,
+            references: referenceDetails,
+            truncated
+          };
+        });
+        if (!details.hasFormula) {
+          return {
+            content: [{
+              type: "text",
+              text: `**Formula explanation for ${details.cell}**
+
+${details.explanation}`
+            }],
+            details
+          };
+        }
+        const referenceLines = details.references.length > 0 ? details.references.map((reference) => {
+          const preview = reference.valuePreview ? ` \u2192 ${reference.valuePreview}` : "";
+          const formulaPreview = reference.formulaPreview ? ` (formula: \`${reference.formulaPreview}\`)` : "";
+          return `- ${reference.address}${preview}${formulaPreview}`;
+        }) : ["- (No direct references detected)"];
+        const lines = [
+          `**Formula explanation for ${details.cell}**`,
+          "",
+          `- Current value: ${details.valuePreview ?? "(blank)"}`,
+          `- Formula: \`${details.formula}\``,
+          "",
+          details.explanation,
+          "",
+          `Direct references (${details.references.length} shown):`,
+          ...referenceLines
+        ];
+        if (details.truncated) {
+          lines.push("", `_Showing first ${details.references.length} reference(s)._`);
+        }
+        return {
+          content: [{ type: "text", text: lines.join("\n") }],
+          details
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: `Error explaining formula: ${getErrorMessage(error)}` }],
+          details: {
+            kind: "explain_formula",
+            cell: params.cell,
+            hasFormula: false,
+            explanation: `Failed to explain formula: ${getErrorMessage(error)}`,
+            references: [],
+            truncated: false
+          }
+        };
+      }
+    }
+  };
+}
+
+// src/tools/trace-dependencies.ts
+var schema3 = Type.Object({
+  cell: Type.String({
+    description: 'Cell to trace, e.g. "D10", "Sheet2!F5". Must be a single cell, not a range.'
+  }),
+  mode: Type.Optional(
+    Type.Union([
+      Type.Literal("precedents"),
+      Type.Literal("dependents")
+    ], {
+      description: "Trace direction: precedents (upstream) or dependents (downstream). Default: precedents."
+    })
+  ),
+  depth: Type.Optional(
+    Type.Number({
+      description: "How many levels of dependencies to trace. Default: 2. Max: 5."
+    })
+  )
+});
+var MAX_DEPTH = 5;
+var MAX_PRECEDENT_FALLBACK_REFS = 20;
+var MAX_CHILDREN_PER_NODE = 80;
+var MAX_DEPENDENT_SCAN_FORMULA_CELLS = 5e4;
+function expandTraversalAddresses(address, sheetName) {
+  const bang = address.lastIndexOf("!");
+  const prefix = bang >= 0 ? address.slice(0, bang + 1) : "";
+  const [start, end] = address.slice(bang + 1).split(":");
+  const isCell = (part) => /^\$?[A-Z]+\$?\d+$/i.test(part ?? "");
+  if (!isCell(start) || !isCell(end)) {
+    const single = normalizeTraversalAddress(address, sheetName);
+    return single ? [single] : [];
+  }
+  const from = parseCell(start);
+  const to = parseCell(end);
+  const cells = [];
+  for (let row = from.row; row <= to.row; row++) {
+    for (let col = from.col; col <= to.col; col++) {
+      const cell = normalizeTraversalAddress(prefix + cellAddress(col, row), sheetName);
+      if (cell) cells.push(cell);
+      if (cells.length > MAX_CHILDREN_PER_NODE) return cells;
+    }
+  }
+  return cells;
+}
+function resolveTraceSource(state) {
+  if (state.usedApi && state.usedFormulaScan) return "mixed";
+  if (state.usedApi) return "api";
+  if (state.usedFormulaScan) return "formula_scan";
+  return "none";
+}
+async function loadLeafNode(context, cellRef) {
+  const { sheet, range } = getRange(context, cellRef);
+  range.load("values,formulas,address,numberFormat");
+  sheet.load("name");
+  await context.sync();
+  const rawFmt = range.numberFormat[0]?.[0];
+  const rawFormula = range.formulas[0]?.[0];
+  const numberFormat = typeof rawFmt === "string" && rawFmt !== "" ? rawFmt : void 0;
+  const formula = typeof rawFormula === "string" && rawFormula.startsWith("=") ? rawFormula : void 0;
+  return {
+    address: qualifiedAddress(sheet.name, range.address),
+    value: range.values[0]?.[0],
+    ...numberFormat !== void 0 ? { numberFormat } : {},
+    ...formula !== void 0 ? { formula } : {},
+    precedents: []
+  };
+}
+function estimateAddressCellCount(address) {
+  const parsed = parseRangeRef(address);
+  const areas = parsed.address.split(",").map((part) => part.trim()).filter((part) => part.length > 0);
+  let total = 0;
+  for (const area of areas) {
+    const [rawStart, rawEnd] = area.split(":");
+    if (!rawStart) continue;
+    const startToken = rawStart.replace(/\$/gu, "").trim();
+    const endToken = (rawEnd ?? rawStart).replace(/\$/gu, "").trim();
+    if (!startToken || !endToken) continue;
+    try {
+      const start = parseCell(startToken);
+      const end = parseCell(endToken);
+      const width = Math.abs(end.col - start.col) + 1;
+      const height = Math.abs(end.row - start.row) + 1;
+      total += width * height;
+    } catch {
+    }
+  }
+  return total;
+}
+async function buildDependentFormulaCandidates(context, state) {
+  const worksheets = context.workbook.worksheets;
+  worksheets.load("items/name");
+  await context.sync();
+  const rangesToInspect = [];
+  for (const worksheet of worksheets.items) {
+    const usedRange = worksheet.getUsedRangeOrNullObject();
+    usedRange.load("isNullObject,address");
+    rangesToInspect.push({ sheetName: worksheet.name, range: usedRange });
+  }
+  await context.sync();
+  let remainingCellBudget = MAX_DEPENDENT_SCAN_FORMULA_CELLS;
+  const loadedRanges = [];
+  for (const candidate of rangesToInspect) {
+    if (candidate.range.isNullObject) continue;
+    const cellCount = estimateAddressCellCount(candidate.range.address);
+    if (cellCount <= 0) continue;
+    if (cellCount > remainingCellBudget) {
+      state.truncated = true;
+      continue;
+    }
+    const parsedRange = parseRangeRef(candidate.range.address);
+    const startToken = parsedRange.address.split(":")[0]?.replace(/\$/gu, "").trim();
+    if (!startToken) continue;
+    let startCellRef;
+    try {
+      startCellRef = parseCell(startToken);
+    } catch {
+      continue;
+    }
+    candidate.range.load("formulas");
+    loadedRanges.push({
+      sheetName: candidate.sheetName,
+      range: candidate.range,
+      startCol: startCellRef.col,
+      startRow: startCellRef.row
+    });
+    remainingCellBudget -= cellCount;
+  }
+  if (loadedRanges.length > 0) {
+    await context.sync();
+  }
+  const formulaCandidates = [];
+  for (const loaded of loadedRanges) {
+    const formulasGrid = loaded.range.formulas;
+    if (!Array.isArray(formulasGrid)) continue;
+    for (const [rowIndex, rowValue] of formulasGrid.entries()) {
+      if (!Array.isArray(rowValue)) continue;
+      for (const [colIndex, formulaValue] of rowValue.entries()) {
+        if (typeof formulaValue !== "string" || !formulaValue.startsWith("=")) {
+          continue;
+        }
+        const references = extractFormulaReferences(formulaValue, loaded.sheetName);
+        if (references.length === 0) continue;
+        formulaCandidates.push({
+          dependentAddress: qualifiedAddress(
+            loaded.sheetName,
+            cellAddress(loaded.startCol + colIndex, loaded.startRow + rowIndex)
+          ),
+          references
+        });
+      }
+    }
+  }
+  return formulaCandidates;
+}
+async function findDirectDependentsByFormulaScan(context, targetAddress, state) {
+  const target = parseQualifiedCellAddress(targetAddress, "");
+  if (!target) return [];
+  if (!state.dependentFormulaCandidates) {
+    state.dependentFormulaCandidates = await buildDependentFormulaCandidates(context, state);
+  }
+  const dependents = /* @__PURE__ */ new Set();
+  for (const candidate of state.dependentFormulaCandidates) {
+    if (!parsedReferencesContainTarget(candidate.references, target)) {
+      continue;
+    }
+    dependents.add(candidate.dependentAddress);
+    if (dependents.size >= MAX_CHILDREN_PER_NODE) {
+      state.truncated = true;
+      break;
+    }
+  }
+  return [...dependents];
+}
+async function resolveChildAddresses(context, range, sheetName, fullAddress, formula, mode, state) {
+  const children = /* @__PURE__ */ new Set();
+  const addChild = (address) => {
+    if (!address) return;
+    if (children.size >= MAX_CHILDREN_PER_NODE) {
+      state.truncated = true;
+      return;
+    }
+    children.add(address);
+  };
+  if (mode === "precedents") {
+    const precedents = await getDirectPrecedentsSafe(context, range);
+    if (precedents !== null) {
+      state.usedApi = true;
+      for (const group of precedents) {
+        for (const address of group) {
+          for (const cell of expandTraversalAddresses(address, sheetName)) addChild(cell);
+          if (children.size >= MAX_CHILDREN_PER_NODE) {
+            return [...children];
+          }
+        }
+      }
+      return [...children];
+    }
+    if (!formula) {
+      return [];
+    }
+    state.usedFormulaScan = true;
+    const refs = extractFormulaReferences(formula, sheetName);
+    if (refs.length > MAX_PRECEDENT_FALLBACK_REFS) {
+      state.truncated = true;
+    }
+    for (const ref of refs.slice(0, MAX_PRECEDENT_FALLBACK_REFS)) {
+      addChild(ref.startAddress);
+    }
+    return [...children];
+  }
+  const dependents = await getDirectDependentsSafe(context, range);
+  if (dependents !== null) {
+    state.usedApi = true;
+    for (const group of dependents) {
+      for (const address of group) {
+        for (const cell of expandTraversalAddresses(address, sheetName)) addChild(cell);
+        if (children.size >= MAX_CHILDREN_PER_NODE) {
+          return [...children];
+        }
+      }
+    }
+    return [...children];
+  }
+  state.usedFormulaScan = true;
+  const scannedDependents = await findDirectDependentsByFormulaScan(context, fullAddress, state);
+  for (const address of scannedDependents) {
+    addChild(address);
+  }
+  return [...children];
+}
+async function traceCell(context, cellRef, maxDepth, currentDepth, visited, mode, state) {
+  const { sheet, range } = getRange(context, cellRef);
+  range.load("values,formulas,address,numberFormat");
+  sheet.load("name");
+  await context.sync();
+  const fullAddr = qualifiedAddress(sheet.name, range.address);
+  const rawFmt = range.numberFormat[0]?.[0];
+  const numberFormat = typeof rawFmt === "string" && rawFmt !== "" ? rawFmt : void 0;
+  if (visited.has(fullAddr)) {
+    return {
+      address: fullAddr,
+      value: range.values[0]?.[0],
+      ...numberFormat !== void 0 ? { numberFormat } : {},
+      formula: "(circular reference \u2014 already visited)",
+      precedents: []
+    };
+  }
+  visited.add(fullAddr);
+  const rawFormula = range.formulas[0]?.[0];
+  const value = range.values[0]?.[0];
+  const formula = typeof rawFormula === "string" && rawFormula.startsWith("=") ? rawFormula : void 0;
+  if (mode === "precedents" && !formula) {
+    return null;
+  }
+  const node = {
+    address: fullAddr,
+    value,
+    ...numberFormat !== void 0 ? { numberFormat } : {},
+    ...formula !== void 0 ? { formula } : {},
+    precedents: []
+  };
+  if (currentDepth >= maxDepth) return node;
+  const childAddresses = await resolveChildAddresses(
+    context,
+    range,
+    sheet.name,
+    fullAddr,
+    formula,
+    mode,
+    state
+  );
+  for (const childAddress of childAddresses) {
+    const child = await traceCell(
+      context,
+      childAddress,
+      maxDepth,
+      currentDepth + 1,
+      visited,
+      mode,
+      state
+    );
+    if (child) {
+      node.precedents.push(child);
+      continue;
+    }
+    const leaf = await loadLeafNode(context, childAddress);
+    node.precedents.push(leaf);
+  }
+  return node;
+}
+function renderTree(node, lines, prefix, isLast) {
+  const connector = isLast ? "\u2514\u2500\u2500 " : "\u251C\u2500\u2500 ";
+  const rawVal = node.value;
+  const valueStr = rawVal !== "" && rawVal !== null && rawVal !== void 0 ? ` = ${typeof rawVal === "string" || typeof rawVal === "number" || typeof rawVal === "boolean" ? String(rawVal) : JSON.stringify(rawVal)}` : "";
+  const formulaStr = node.formula ? ` (${node.formula})` : "";
+  lines.push(`${prefix}${connector}**${node.address}**${valueStr}${formulaStr}`);
+  const childPrefix = prefix + (isLast ? "    " : "\u2502   ");
+  for (const [index, child] of node.precedents.entries()) {
+    renderTree(child, lines, childPrefix, index === node.precedents.length - 1);
+  }
+}
+function createTraceDependenciesTool() {
+  return {
+    name: "trace_dependencies",
+    label: "Trace Dependencies",
+    description: "Trace formula lineage for a cell. Supports precedents (inputs) and dependents (downstream impact), recursively up to the specified depth.",
+    parameters: schema3,
+    execute: async (_toolCallId, params) => {
+      try {
+        if (params.cell.includes(":")) {
+          return {
+            content: [{ type: "text", text: "Error: trace_dependencies expects a single cell, not a range." }],
+            details: void 0
+          };
+        }
+        const mode = normalizeTraceMode(params.mode);
+        const maxDepth = Math.min(params.depth ?? 2, MAX_DEPTH);
+        const traceState = {
+          usedApi: false,
+          usedFormulaScan: false,
+          truncated: false,
+          dependentFormulaCandidates: null
+        };
+        const tree = await excelRun(async (context) => {
+          return traceCell(context, params.cell, maxDepth, 0, /* @__PURE__ */ new Set(), mode, traceState);
+        });
+        if (!tree) {
+          return {
+            content: [{ type: "text", text: `${params.cell} has no formula \u2014 it's a direct value or empty.` }],
+            details: void 0
+          };
+        }
+        const heading = mode === "dependents" ? "Dependents" : "Precedents";
+        const lines = [`**${heading} tree for ${tree.address}:**`, ""];
+        renderTree(tree, lines, "", true);
+        if (mode === "dependents" && tree.precedents.length === 0) {
+          lines.push("", "_No direct dependents found._");
+        }
+        if (traceState.truncated) {
+          lines.push("", "_Trace output was truncated to keep the result responsive._");
+        }
+        const summary = summarizeTraceTree(tree);
+        return {
+          content: [{ type: "text", text: lines.join("\n") }],
+          details: {
+            kind: "trace_dependencies",
+            root: tree,
+            mode,
+            maxDepth,
+            nodeCount: summary.nodeCount,
+            edgeCount: summary.edgeCount,
+            source: resolveTraceSource(traceState),
+            truncated: traceState.truncated
+          }
+        };
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `Error tracing dependencies: ${getErrorMessage(e)}` }],
+          details: void 0
+        };
+      }
+    }
+  };
+}
 export {
   ChangeTracker,
   buildOverview,
+  createExplainFormulaTool,
+  createTraceDependenciesTool,
   readSelectionContext
 };

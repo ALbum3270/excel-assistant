@@ -23,11 +23,27 @@ import {
   searchData,
   setCellRange,
 } from "./vendor/office-agents-excel-api.js";
-import { buildOverview, ChangeTracker, readSelectionContext } from "./vendor/pi-context.js";
+import {
+  buildOverview,
+  ChangeTracker,
+  createExplainFormulaTool,
+  createTraceDependenciesTool,
+  readSelectionContext,
+} from "./vendor/pi-context.js";
 import { prepareMutationRecovery, workbookHistory } from "./recovery.js";
 import { isInOrUnder, docDirFromActiveUrl } from "./paths.js";
 import { marked } from "/npm/marked.esm.js";
 import DOMPurify from "/npm/purify.es.mjs";
+
+// pi-for-excel's read-only formula tools, used as-is. They report failures in
+// their text output rather than throwing, so the text is the whole result.
+const explainFormulaTool = createExplainFormulaTool();
+const traceDependenciesTool = createTraceDependenciesTool();
+
+async function runPiTool(piTool, toolCallId, args) {
+  const output = await piTool.execute(toolCallId, args ?? {});
+  return { text: output.content.map((part) => part.text ?? "").join("\n") };
+}
 
 // Daemon endpoints. The HTTP server that loaded this taskpane is on
 // HTTP_PORT; the WebSocket bridge is on WS_PORT (one less by daemon convention).
@@ -251,6 +267,8 @@ const TOOL_STATUS_LABELS = {
   excel_get_range_as_csv: "Reading cells…",
   excel_search_data: "Searching…",
   excel_get_all_objects: "Listing charts and pivots…",
+  excel_explain_formula: "Explaining a formula…",
+  excel_trace_dependencies: "Tracing formula dependencies…",
   excel_set_cell_range: "Writing cells…",
   excel_clear_cell_range: "Clearing cells…",
   excel_copy_to: "Copying cells…",
@@ -937,6 +955,12 @@ async function runOfficeTool(msg) {
         break;
       case "excel_get_all_objects":
         result = await getAllObjects({ sheetId: args.sheetId, id: args.id });
+        break;
+      case "excel_explain_formula":
+        result = await runPiTool(explainFormulaTool, id, args);
+        break;
+      case "excel_trace_dependencies":
+        result = await runPiTool(traceDependenciesTool, id, args);
         break;
       case "excel_set_cell_range":
         result = await setCellRange(args.sheetId, args.range, args.cells, {
