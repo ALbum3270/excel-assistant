@@ -278,3 +278,66 @@ test("every mutation receives a uniform receipt with its verification level", ()
   assert.equal(sort.verification.status, "commit_acknowledged");
   assert.deepEqual(Array.from(sort.affectedTargets), ["Sheet1!A1:D10"]);
 });
+
+test("approval summaries include the material arguments of each write", () => {
+  const start = source.indexOf("const APPROVAL_FIELDS_BY_TOOL = {");
+  const end = source.indexOf("function appendApprovalRequest(msg)", start);
+  assert.ok(start >= 0 && end > start);
+  const sandbox = {};
+  vm.createContext(sandbox);
+  vm.runInContext(`${source.slice(start, end)}\nglobalThis.describeApproval = describeApproval;`, sandbox);
+
+  const copy = sandbox.describeApproval("excel_copy_to", {
+    sheetId: 1,
+    sourceRange: "A1:A5",
+    destinationRange: "B1:B5",
+  });
+  assert.match(copy, /sourceRange: A1:A5/);
+  assert.match(copy, /destinationRange: B1:B5/);
+
+  const object = sandbox.describeApproval("excel_modify_object", {
+    operation: "update",
+    id: "Chart 1",
+    properties: { title: "Revenue", chartType: "line" },
+  });
+  assert.match(object, /id: Chart 1/);
+  assert.match(object, /"title":"Revenue"/);
+});
+
+test("a failed mutation persists its captured recovery checkpoint", async () => {
+  const start = source.indexOf("async function runOfficeTool(msg)");
+  const end = source.indexOf("// Selection tracking", start);
+  assert.ok(start >= 0 && end > start);
+  const sent = [];
+  let recoveryResult;
+  const sandbox = {
+    cancelledToolCalls: new Set(),
+    WRITE_TOOLS: new Set(["excel_set_cell_range"]),
+    async prepareMutationRecovery() {
+      return async (result) => {
+        recoveryResult = result;
+        return { status: "checkpoint_created", snapshotIds: ["before-write"] };
+      };
+    },
+    async setCellRange() {
+      throw new Error("format sync failed after values were written");
+    },
+    isMutationCall: () => true,
+    describeOfficeToolError: async (error) => error.message,
+    wsSend: (message) => sent.push(message),
+    console: { error() {} },
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(`${source.slice(start, end)}\nglobalThis.runOfficeTool = runOfficeTool;`, sandbox);
+
+  await sandbox.runOfficeTool({
+    id: "write-1",
+    name: "excel_set_cell_range",
+    args: { sheetId: 1, range: "A1", cells: [[{ value: 1 }]] },
+  });
+
+  assert.equal(recoveryResult, undefined);
+  assert.equal(sent[0].ok, false);
+  assert.equal(sent[0].error.commitStatus, "unknown");
+  assert.equal(sent[0].error.recovery.status, "checkpoint_created");
+});

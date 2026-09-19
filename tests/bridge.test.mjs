@@ -141,12 +141,18 @@ test("structured taskpane errors preserve code and commit state", async () => {
       type: "tool_result",
       id: call.id,
       ok: false,
-      error: { message: "write rejected", code: "OVERWRITE_BLOCKED", commitStatus: "not_committed" },
+      error: {
+        message: "write rejected",
+        code: "OVERWRITE_BLOCKED",
+        commitStatus: "not_committed",
+        recovery: { status: "checkpoint_created", snapshotIds: ["before-write"] },
+      },
     }));
     await assert.rejects(pending, (error) => {
       assert.equal(error.message, "write rejected");
       assert.equal(error.code, "OVERWRITE_BLOCKED");
       assert.equal(error.commitStatus, "not_committed");
+      assert.deepEqual(error.recovery, { status: "checkpoint_created", snapshotIds: ["before-write"] });
       return true;
     });
   } finally {

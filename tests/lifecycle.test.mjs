@@ -6,6 +6,7 @@ import vm from "node:vm";
 import { once } from "node:events";
 import WebSocket from "ws";
 import { createBridge } from "../daemon/bridge.mjs";
+import { ApprovalManager, needsApproval } from "../daemon/approval.mjs";
 
 // index.mjs boots HTTP servers, reads credentials and starts the SDK when
 // imported. Evaluate its actual lifecycle/handler code without that boot
@@ -70,6 +71,8 @@ function harness(t, overrides = {}) {
     agentPlugins: [],
     agentConfig: {},
     customPermissionHandler() {},
+    ApprovalManager,
+    needsApproval,
     touchFolder: async () => {},
     buildSystemPromptAppend: async () => "test prompt",
     createOfficeBridgeMcp: () => ({}),

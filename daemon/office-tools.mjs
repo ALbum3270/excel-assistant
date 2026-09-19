@@ -150,6 +150,7 @@ function asMcpError(err) {
       error: err?.message ?? String(err),
       ...(err?.code ? { code: err.code } : {}),
       ...(err?.commitStatus ? { commitStatus: err.commitStatus } : {}),
+      ...(err?.recovery ? { recovery: err.recovery } : {}),
     },
     { isError: true },
   );

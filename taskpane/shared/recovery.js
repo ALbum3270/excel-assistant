@@ -458,6 +458,7 @@ async function newSheetAbsentState(newSheetId) {
 async function prepareStructureRecovery(name, args, toolCallId) {
   let prepared = null;
   let failure = null;
+  const limitations = [];
   // Deleting rows or columns turns same-sheet formulas that referenced them
   // into #REF!, and re-inserting the data does not repair them. Keep the
   // sheet's values and formulas too; restore puts them back after re-inserting.
@@ -469,18 +470,34 @@ async function prepareStructureRecovery(name, args, toolCallId) {
       prepared = state ? { address: prepared.renameOf, state } : null;
     }
     if (name === "excel_modify_sheet_structure" && args.operation === "delete") {
-      sheetValues = await captureRangeSnapshot({ sheetId: args.sheetId, useUsedRange: true }).catch(() => null);
+      try {
+        sheetValues = await captureRangeSnapshot({ sheetId: args.sheetId, useUsedRange: true });
+      } catch (error) {
+        limitations.push(`The sheet-wide formula snapshot failed: ${error?.message ?? String(error)}`);
+      }
+      limitations.push("Formulas on other worksheets that referenced the deleted rows or columns are not restored.");
+    }
+    if (name === "excel_modify_workbook_structure" && args.operation === "delete") {
+      limitations.push("Formulas on other worksheets that referenced the deleted sheet are not restored.");
     }
   } catch (error) {
     failure = error?.message ?? String(error);
   }
   return async function commitStructureRecovery(result) {
     try {
+      const createdSheetId = prepared?.after ? prepared.after(result).newSheetId : null;
       const checkpoint = prepared?.after
-        ? await newSheetAbsentState(prepared.after(result).newSheetId)
+        ? createdSheetId === undefined || createdSheetId === null
+          ? null
+          : await newSheetAbsentState(createdSheetId)
         : prepared;
       if (!checkpoint?.state) {
-        return { status: "not_available", reason: failure ?? "The sheet structure state could not be captured." };
+        return {
+          status: "not_available",
+          reason: failure ?? (prepared?.after
+            ? "The new sheet ID was unavailable after the operation failed."
+            : "The sheet structure state could not be captured."),
+        };
       }
       const valuesSnapshot = sheetValues
         ? await recoveryLog.append({
@@ -500,7 +517,12 @@ async function prepareStructureRecovery(name, args, toolCallId) {
       });
       const created = [snapshot, valuesSnapshot].filter(Boolean);
       return created.length
-        ? { status: "checkpoint_created", snapshotIds: created.map((item) => item.id), targets: created.map((item) => item.address) }
+        ? {
+            status: "checkpoint_created",
+            snapshotIds: created.map((item) => item.id),
+            targets: created.map((item) => item.address),
+            ...(limitations.length ? { partial: true, unavailableReasons: limitations } : {}),
+          }
         : { status: "not_available", reason: "The recovery log did not accept the checkpoint." };
     } catch (error) {
       return { status: "not_available", reason: error?.message ?? String(error) };

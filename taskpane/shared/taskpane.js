@@ -417,30 +417,68 @@ function appendError(text) {
 
 // Approve-before-apply card: what the assistant is about to change, with
 // approve / approve the rest of this turn / reject.
-const APPROVAL_FIELDS = [
-  "sheet", "sheetId", "sheetName", "range", "address", "destinationRange", "copyToRange",
-  "operation", "dimension", "reference", "count", "formula", "action", "snapshot_id", "command",
-];
+const APPROVAL_FIELDS_BY_TOOL = {
+  excel_set_cell_range: ["sheetId", "range", "cells", "copyToRange", "resizeWidth", "resizeHeight", "allow_overwrite"],
+  excel_fill_formula: ["sheetId", "range", "formula", "allow_overwrite"],
+  excel_copy_to: ["sheetId", "sourceRange", "destinationRange", "allow_overwrite"],
+  excel_clear_cell_range: ["sheetId", "range", "clearType"],
+  excel_modify_sheet_structure: ["sheetId", "operation", "dimension", "reference", "count", "position"],
+  excel_modify_workbook_structure: ["operation", "sheetId", "sheetName", "newName", "tabColor"],
+  excel_resize_range: ["sheetId", "range", "width", "height"],
+  excel_modify_object: ["sheetId", "operation", "objectType", "id", "properties"],
+  excel_set_format: ["sheet", "address", "number_format", "bold", "italic", "font_size", "font_name", "font_color", "fill_color", "border"],
+  excel_sort_range: ["sheet", "address", "key", "ascending", "has_headers"],
+  excel_autofilter: ["sheet", "address", "clear"],
+  excel_create_table: ["sheet", "address", "name", "has_headers"],
+  excel_add_table_rows: ["table", "values", "index"],
+  excel_workbook_history: ["action", "snapshot_id"],
+  excel_bash: ["command"],
+};
 
-function describeApproval(input = {}) {
-  const lines = APPROVAL_FIELDS.filter((field) => input[field] !== undefined && input[field] !== "")
-    .map((field) => `${field}: ${String(input[field]).slice(0, 160)}`);
-  if (Array.isArray(input.cells)) {
-    const rows = input.cells.length;
-    const columns = Array.isArray(input.cells[0]) ? input.cells[0].length : 1;
-    const sample = JSON.stringify(input.cells.slice(0, 3));
-    lines.push(`cells: ${rows}×${columns} ${sample.length > 160 ? sample.slice(0, 157) + "..." : sample}`);
+function approvalValue(value) {
+  if (Array.isArray(value)) {
+    const rows = value.length;
+    const columns = Array.isArray(value[0]) ? Math.max(0, ...value.slice(0, 20).map((row) => row.length)) : null;
+    const sample = JSON.stringify(value.slice(0, 3));
+    const shape = columns === null ? `${rows} items` : `${rows}×${columns}`;
+    return `${shape}; sample: ${sample.length > 500 ? sample.slice(0, 497) + "..." : sample}`;
   }
-  if (!lines.length) {
-    const raw = JSON.stringify(input);
-    lines.push(raw.length > 300 ? raw.slice(0, 297) + "..." : raw);
+  if (value && typeof value === "object") {
+    const json = JSON.stringify(value);
+    return json.length > 500 ? json.slice(0, 497) + "..." : json;
   }
-  return lines.join("\n");
+  const text = String(value);
+  return text.length > 500 ? text.slice(0, 497) + "..." : text;
+}
+
+function describeApproval(tool, input = {}) {
+  const preferred = APPROVAL_FIELDS_BY_TOOL[tool] ?? ["action"];
+  const fields = [...preferred, ...Object.keys(input).filter((field) => !preferred.includes(field))];
+  const lines = fields
+    .filter((field) => input[field] !== undefined && input[field] !== "")
+    .map((field) => `${field}: ${approvalValue(input[field])}`);
+  return lines.length ? lines.join("\n") : "No arguments";
+}
+
+function resolveApprovalCard(requestId, decision, error = null) {
+  const el = $messages.querySelector(`[data-approval-request-id="${requestId}"]`);
+  if (!el) return;
+  const labels = {
+    approve: "Approved",
+    approve_turn: "Approved for the rest of this turn",
+    reject: "Rejected",
+    timeout: "Approval timed out",
+    cancelled: "Approval cancelled",
+    disabled: "Approval turned off; change allowed",
+  };
+  el.querySelector(".approval-actions").textContent = error || labels[decision] || "Approval closed";
 }
 
 function appendApprovalRequest(msg) {
+  $messages.querySelector(`[data-approval-request-id="${msg.request_id}"]`)?.remove();
   const el = document.createElement("div");
   el.className = "msg approval";
+  el.dataset.approvalRequestId = msg.request_id;
   el.innerHTML = `<div class="tool-name"></div><div class="tool-args"></div>
     <div class="approval-actions">
       <button type="button" class="btn-primary btn-small" data-decision="approve">Approve</button>
@@ -448,13 +486,21 @@ function appendApprovalRequest(msg) {
       <button type="button" class="btn-secondary btn-small" data-decision="reject">Reject</button>
     </div>`;
   el.querySelector(".tool-name").textContent = `Approve change? ${statusForTool(msg.tool)}`;
-  el.querySelector(".tool-args").textContent = describeApproval(msg.input);
-  el.querySelector(".approval-actions").addEventListener("click", (event) => {
+  el.querySelector(".tool-args").textContent = describeApproval(msg.tool, msg.input);
+  el.querySelector(".approval-actions").addEventListener("click", async (event) => {
     const decision = event.target?.dataset?.decision;
     if (!decision) return;
-    wsSend({ type: "approval_response", request_id: msg.request_id, decision });
-    const labels = { approve: "Approved", approve_turn: "Approved for the rest of this turn", reject: "Rejected" };
-    el.querySelector(".approval-actions").textContent = labels[decision];
+    for (const button of el.querySelectorAll("button")) button.disabled = true;
+    try {
+      const response = await sendRequest("approval_response", {
+        approval_request_id: msg.request_id,
+        decision,
+      });
+      resolveApprovalCard(msg.request_id, response.decision, response.ok ? null : response.error);
+    } catch (error) {
+      for (const button of el.querySelectorAll("button")) button.disabled = false;
+      el.querySelector(".tool-args").textContent = `${describeApproval(msg.tool, msg.input)}\n\n${error.message}`;
+    }
   });
   $messages.appendChild(el);
   maybeScrollToBottom();
@@ -743,6 +789,8 @@ async function handleServerMessage(msg) {
         endTurn();
       } else if (msg.event === "approval_request") {
         appendApprovalRequest(msg);
+      } else if (msg.event === "approval_resolved") {
+        resolveApprovalCard(msg.request_id, msg.decision);
       } else if (msg.event === "info") {
         appendNotice(msg.message);
       } else if (msg.event === "error") {
@@ -981,8 +1029,9 @@ function withMutationReceipt(name, args, result, receiptId) {
 async function runOfficeTool(msg) {
   const { id, name, args } = msg;
   if (cancelledToolCalls.delete(id)) return;
+  let commitRecovery = null;
   try {
-    const commitRecovery = WRITE_TOOLS.has(name)
+    commitRecovery = WRITE_TOOLS.has(name)
       ? await prepareMutationRecovery(name, args, id)
       : null;
     let result;
@@ -1106,7 +1155,10 @@ async function runOfficeTool(msg) {
     // Office.js cannot interrupt a context.sync already in progress, but a
     // daemon timeout/session stop must prevent a late result from being
     // mistaken for the current turn's result.
-    if (cancelledToolCalls.delete(id)) return;
+    if (cancelledToolCalls.delete(id)) {
+      if (commitRecovery) await commitRecovery(result);
+      return;
+    }
     if (commitRecovery) {
       result = { ...result, recovery: await commitRecovery(result) };
     }
@@ -1116,6 +1168,9 @@ async function runOfficeTool(msg) {
     result = withMutationReceipt(name, args, result, id);
     wsSend({ type: "tool_result", id, ok: true, result });
   } catch (err) {
+    const recovery = commitRecovery && isMutationCall(name, args)
+      ? await commitRecovery()
+      : null;
     if (cancelledToolCalls.delete(id)) return;
     console.error(`[tool ${name}] failed:`, err);
     wsSend({
@@ -1128,8 +1183,9 @@ async function runOfficeTool(msg) {
         ...(err?.commitStatus
           ? { commitStatus: err.commitStatus }
           : isMutationCall(name, args)
-            ? { commitStatus: "unknown" }
-            : {}),
+             ? { commitStatus: "unknown" }
+             : {}),
+        ...(recovery ? { recovery } : {}),
       },
     });
   }

@@ -400,9 +400,10 @@ export function createBridge({
               : { message: msg.error ?? "Unknown tool error" };
             pending.reject(
               Object.assign(new Error(detail.message ?? "Unknown tool error"), {
-                ...(detail.code ? { code: detail.code } : {}),
-                ...(detail.commitStatus ? { commitStatus: detail.commitStatus } : {}),
-              }),
+                 ...(detail.code ? { code: detail.code } : {}),
+                 ...(detail.commitStatus ? { commitStatus: detail.commitStatus } : {}),
+                 ...(detail.recovery ? { recovery: detail.recovery } : {}),
+               }),
             );
           }
           break;

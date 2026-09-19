@@ -119,6 +119,26 @@ test("set-cell normalizes model-shaped payloads and fills a larger target", asyn
   });
 });
 
+test("write errors expose a recovery checkpoint to the model", async () => {
+  const error = Object.assign(new Error("write result unknown"), {
+    commitStatus: "unknown",
+    recovery: { status: "checkpoint_created", snapshotIds: ["before-write"] },
+  });
+  const server = createOfficeBridgeMcp(
+    { async callTaskpaneTool() { throw error; } },
+    "excel",
+    "test-pane",
+  );
+  const result = await server.instance._registeredTools.excel_clear_cell_range.handler({
+    sheetId: 1,
+    range: "A1",
+  });
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(result.isError, true);
+  assert.equal(payload.commitStatus, "unknown");
+  assert.deepEqual(payload.recovery, { status: "checkpoint_created", snapshotIds: ["before-write"] });
+});
+
 test("range reads accept a model-supplied bracketed string", async () => {
   const calls = [];
   const server = createOfficeBridgeMcp(
