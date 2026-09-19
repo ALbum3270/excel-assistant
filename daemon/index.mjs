@@ -537,6 +537,7 @@ function onPaneClose(key) {
   explicitWorkspaceKeys.delete(key);
   modelByKey.delete(key);
   startQueue.delete(key);
+  approvalByKey.delete(key);
 }
 
 // Called when a user message arrives from a pane, BEFORE it's queued.
@@ -744,6 +745,14 @@ const bridge = createBridge({
           request_id: msg.request_id,
         });
       }
+    },
+    set_approval: async (msg, reply, key) => {
+      approvalByKey.set(key, Boolean(msg.enabled));
+      reply({ type: "set_approval_result", ok: true, enabled: Boolean(msg.enabled), request_id: msg.request_id });
+    },
+    approval_response: async (msg, reply, key) => {
+      const pending = pendingApprovals.get(msg.request_id);
+      if (pending?.key === key) pending.settle(msg.decision === "approve_turn" || msg.decision === "approve" ? msg.decision : "reject");
     },
     set_model: async (msg, reply, key, host) => {
       // A pane that reconnects mid-evaluation (e.g. after machine sleep)
@@ -1218,6 +1227,66 @@ function denyWithOfficeMessage() {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Approve before apply (optional, per pane, off by default). The idea comes
+// from MS-Excel-AI-plugin's staged change-sets and ExcelLLMAddin's
+// approve-before-apply; here each workbook-changing call waits in canUseTool
+// for the user's decision, so the model still sees every real result.
+// ---------------------------------------------------------------------------
+const approvalByKey = new Map(); // paneKey -> true when the pane asked for approvals
+const pendingApprovals = new Map(); // requestId -> { key, settle(decision) }
+const APPROVAL_TIMEOUT_MS = 10 * 60_000;
+const OFFICE_WRITE_TOOLS = new Set(
+  [
+    "set_cell_range", "fill_formula", "copy_to", "clear_cell_range", "modify_sheet_structure",
+    "modify_workbook_structure", "resize_range", "modify_object", "set_format", "sort_range",
+    "autofilter", "create_table", "add_table_rows",
+  ].map((name) => `mcp__office__excel_${name}`),
+);
+
+function needsApproval(toolName, input) {
+  if (OFFICE_WRITE_TOOLS.has(toolName)) return true;
+  if (toolName === "mcp__office__excel_workbook_history") return input?.action && input.action !== "list";
+  if (toolName === "mcp__office__excel_bash") return /\bcsv-to-sheet\b/.test(String(input?.command ?? ""));
+  return toolName.startsWith("mcp__thepexcel-excel__");
+}
+
+function requestApproval(key, session, toolName, input) {
+  if (session?.approveRestOfTurn) return Promise.resolve("approve");
+  const requestId = randomUUID();
+  return new Promise((resolve) => {
+    const settle = (decision) => {
+      if (!pendingApprovals.delete(requestId)) return;
+      clearTimeout(timer);
+      session?.abortController?.signal.removeEventListener("abort", onAbort);
+      resolve(decision);
+    };
+    const onAbort = () => settle("reject");
+    const timer = setTimeout(() => settle("reject"), APPROVAL_TIMEOUT_MS);
+    session?.abortController?.signal.addEventListener("abort", onAbort, { once: true });
+    pendingApprovals.set(requestId, { key, settle });
+    bridge.sendAssistantEvent(
+      { event: "approval_request", request_id: requestId, tool: toolName.replace(/^mcp__[^_]+__/, ""), input },
+      key,
+    );
+  });
+}
+
+async function permissionFor(key, session, host, toolName, input) {
+  // Evaluations run unattended even if the user turned approvals on in the pane.
+  if (approvalByKey.get(key) && !evalObservers.has(key) && needsApproval(toolName, input)) {
+    const decision = await requestApproval(key, session, toolName, input);
+    if (decision === "approve_turn" && session) session.approveRestOfTurn = true;
+    if (decision === "reject") {
+      return {
+        behavior: "deny",
+        message: "The user rejected this workbook change. Do not retry it; ask what they would like instead.",
+      };
+    }
+  }
+  return customPermissionHandler(toolName, input, { host });
+}
+
 function customPermissionHandler(toolName, input, { host = null } = {}) {
   if (toolName === "Write" || toolName === "Edit" || toolName === "MultiEdit") {
     const path = input?.file_path ?? input?.path;
@@ -1294,6 +1363,7 @@ async function* userMessageStream(key, session) {
       session.slashCommandPending = isSlashCommand;
       session.turnProducedOutput = false;
       session.turnOpen = true;
+      session.approveRestOfTurn = false;
     }
     yield {
       type: "user",
@@ -1511,7 +1581,7 @@ async function startSessionForFolder(
           tools: agentConfig.builtinTools,
           disallowedTools: agentConfig.disallowedTools,
           settingSources: agentConfig.settingSources,
-          canUseTool: (toolName, input) => customPermissionHandler(toolName, input, { host }),
+          canUseTool: (toolName, input) => permissionFor(key, session, host, toolName, input),
           includePartialMessages: true,
           // User-chosen model (composer dropdown); always explicit.
           model: modelArgFor(key),

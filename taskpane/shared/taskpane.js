@@ -415,6 +415,52 @@ function appendError(text) {
   assistantTurnElem = null;
 }
 
+// Approve-before-apply card: what the assistant is about to change, with
+// approve / approve the rest of this turn / reject.
+const APPROVAL_FIELDS = [
+  "sheet", "sheetId", "sheetName", "range", "address", "destinationRange", "copyToRange",
+  "operation", "dimension", "reference", "count", "formula", "action", "snapshot_id", "command",
+];
+
+function describeApproval(input = {}) {
+  const lines = APPROVAL_FIELDS.filter((field) => input[field] !== undefined && input[field] !== "")
+    .map((field) => `${field}: ${String(input[field]).slice(0, 160)}`);
+  if (Array.isArray(input.cells)) {
+    const rows = input.cells.length;
+    const columns = Array.isArray(input.cells[0]) ? input.cells[0].length : 1;
+    const sample = JSON.stringify(input.cells.slice(0, 3));
+    lines.push(`cells: ${rows}×${columns} ${sample.length > 160 ? sample.slice(0, 157) + "..." : sample}`);
+  }
+  if (!lines.length) {
+    const raw = JSON.stringify(input);
+    lines.push(raw.length > 300 ? raw.slice(0, 297) + "..." : raw);
+  }
+  return lines.join("\n");
+}
+
+function appendApprovalRequest(msg) {
+  const el = document.createElement("div");
+  el.className = "msg approval";
+  el.innerHTML = `<div class="tool-name"></div><div class="tool-args"></div>
+    <div class="approval-actions">
+      <button type="button" class="btn-primary btn-small" data-decision="approve">Approve</button>
+      <button type="button" class="btn-secondary btn-small" data-decision="approve_turn">Approve rest of turn</button>
+      <button type="button" class="btn-secondary btn-small" data-decision="reject">Reject</button>
+    </div>`;
+  el.querySelector(".tool-name").textContent = `Approve change? ${statusForTool(msg.tool)}`;
+  el.querySelector(".tool-args").textContent = describeApproval(msg.input);
+  el.querySelector(".approval-actions").addEventListener("click", (event) => {
+    const decision = event.target?.dataset?.decision;
+    if (!decision) return;
+    wsSend({ type: "approval_response", request_id: msg.request_id, decision });
+    const labels = { approve: "Approved", approve_turn: "Approved for the rest of this turn", reject: "Rejected" };
+    el.querySelector(".approval-actions").textContent = labels[decision];
+  });
+  $messages.appendChild(el);
+  maybeScrollToBottom();
+  assistantTurnElem = null;
+}
+
 function appendToolUse(name, args) {
   const el = document.createElement("div");
   el.className = "msg tool";
@@ -502,6 +548,8 @@ function defaultSettings() {
     // Global, sticky. Cheaper models use less of your monthly Claude
     // programmatic credit. "default" defers to the Claude Code CLI config.
     model: "sonnet", // "haiku" | "sonnet" | "opus" | "default"
+    // Ask before each workbook change (approve-before-apply). Off by default.
+    approveWrites: false,
   };
 }
 
@@ -535,7 +583,20 @@ function applySettings() {
   if ($showDiag) $showDiag.checked = settings.showDiagnostics;
   const $model = document.getElementById("composer-model");
   if ($model) $model.value = settings.model || "sonnet";
+  const $approve = document.getElementById("setting-approve-writes");
+  if ($approve) $approve.checked = Boolean(settings.approveWrites);
 }
+
+function sendApproval() {
+  if (wsReady) wsSend({ type: "set_approval", enabled: Boolean(settings.approveWrites) });
+}
+
+document.getElementById("setting-approve-writes")?.addEventListener("change", (e) => {
+  settings.approveWrites = e.target.checked;
+  saveSettings(settings);
+  applySettings();
+  sendApproval();
+});
 
 // Push the chosen model to the daemon. The SDK model is fixed per agent
 // loop, so changing it mid-conversation triggers a resuming restart
@@ -577,6 +638,7 @@ function wsConnect() {
     // Record the sticky model for this pane key right after the hello
     // binds it, so the lazy first-message session start uses it.
     sendModel();
+    sendApproval();
   };
 
   ws.onclose = () => {
@@ -679,6 +741,8 @@ async function handleServerMessage(msg) {
           setAgentStatus("idle", msg.interrupted ? "Stopped" : "Ready");
         }
         endTurn();
+      } else if (msg.event === "approval_request") {
+        appendApprovalRequest(msg);
       } else if (msg.event === "info") {
         appendNotice(msg.message);
       } else if (msg.event === "error") {

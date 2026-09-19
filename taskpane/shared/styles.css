@@ -401,6 +401,26 @@ body {
   display: none;
 }
 
+/* Approve-before-apply card; always visible, it needs a decision. */
+.msg.approval {
+  border: 1px solid var(--status-warn);
+  background: var(--bubble-tool);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.msg.approval .tool-args {
+  white-space: pre-wrap;
+  font-size: 12px;
+  margin: 4px 0 8px;
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .messages {
   flex: 1;
   overflow-y: auto;
