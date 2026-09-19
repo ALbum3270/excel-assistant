@@ -232,33 +232,3 @@ test("write receipts keep a bounded sample of formula results and errors", async
   assert.equal(receipt.formulaErrors.length, 50);
   assert.equal(receipt.formulaErrorCount, 60);
 });
-
-test("destructive writes are rejected before dispatch when outside the turn scope", async () => {
-  const calls = [];
-  const scope = {
-    ranges: [{
-      sheetName: "Sheet1",
-      sheetId: 1,
-      address: "B2:B5",
-      startColumn: 2,
-      endColumn: 2,
-      startRow: 2,
-      endRow: 5,
-      reason: "answer_position",
-    }],
-  };
-  const server = createOfficeBridgeMcp(
-    { async callTaskpaneTool(name, args) { calls.push({ name, args }); return { success: true }; } },
-    "excel",
-    "test-pane",
-    { getMutationScope: () => scope },
-  );
-  const handler = server.instance._registeredTools.excel_set_cell_range.handler;
-  await handler({ sheetId: 1, range: "B2:B3", cells: [[1], [2]], allow_overwrite: true });
-  const rejected = await handler({ sheetId: 1, range: "C2:C3", cells: [[1], [2]], allow_overwrite: true });
-  assert.equal(calls.length, 1);
-  assert.equal(rejected.isError, true);
-  const error = JSON.parse(rejected.content[0].text);
-  assert.equal(error.code, "MUTATION_SCOPE_REQUIRED");
-  assert.equal(error.commitStatus, "not_committed");
-});

@@ -1,62 +1,69 @@
-# Draftspect — project guidance for Claude Code
+# Excel Assistant — 项目说明（供 Claude Code / Codex 阅读）
 
-**Draftspect** — Microsoft Office (Word + Excel) add-ins that wrap a local Claude Code daemon and expose it inside Office via Office.js task panes. Cross-platform (macOS + Windows).
+个人使用、同时用作作品展示的 **Excel 侧边栏 AI 助手**。只支持 Windows 本机安装的 Microsoft Excel，模型可替换。产品名是 **Excel Assistant**：不要用 Draftspect（本仓库最初 fork 自它）或 Claude Code 作为产品名。
 
-The **product name is "Draftspect"** (independent name, per Anthropic's Agent-SDK branding rule that "Claude Code" must not be the product/marketing name). The sanctioned attribution lockup is **"Powered by Claude"**. Naming convention:
+## 工作方式（先读）
 
-- Product / app name: `Draftspect` — surfaced as `Draftspect for Word`, `Draftspect for Excel`, `Draftspect for Office` (tray), always with the "Powered by Claude" lockup where a tagline fits.
-- npm package: `draftspect-office-addins`
-- GitHub repo: name/description carries the **descriptive** phrase "Add-Ins for Word and Excel, Powered by Claude Code" — that's nominative use (it factually wraps Claude Code), distinct from naming the _product_ "Claude Code".
+- **组合现成项目，只写胶水。** 动手前先广泛搜索，clone 下来读源码核实。先列出三样东西再实现：“模块 → 现有实现”对照表、放弃的候选及原因、需要自写的胶水清单。对标与移植计划见 `docs/open-source-comparison.md`。
+- **目标是达到或超过公开开源方案的水准**，不靠反复跑题、逐题修补。
+- **许可证不是排除参考的理由。** 任何项目的做法都可以参考后自行实现。原样复制进仓库的代码必须附上许可文本，并在 `NOTICE.md` 登记。
+- **只保留影响数据正确性和可恢复性的必要边界。** 不堆防御性代码和重复测试，不用正则猜测用户意图，不为单题调参。反例是已撤销的按消息文本推断修改范围的限制，见优化分析第三十八节。
+- **结论以源码或实测为准。** 费用、用时等估算要明确标注为估算。
 
-**Keep accurate engine references.** Text that tells the user about the _actual_ Claude Code they must install / sign into / whose OAuth is used (README setup, auth-error banner, the Agent SDK running their Claude Code) stays "Claude Code" — that's correct, honest, nominative use; renaming it would be misleading. Only the **product's own name** is Draftspect.
+## 架构
 
-## Architecture (3 paragraphs)
+- **daemon**（`daemon/`）：Claude Agent SDK 会话、WebSocket 桥（`bridge.mjs`）、进程内 MCP 工具（`office-tools.mjs`）。
+  - 每个工作簿（宿主加文档身份）有独立会话，见 `sessions.mjs`。
+  - 每轮开始前从任务窗格拉取自动上下文（`autoContext`）。
+  - 系统提示由 `system-prompt.md` 和 `system-prompt-excel.md` 组成，后者包含从 fabric-rlm 改写的解题规程。
+- **任务窗格**（`taskpane/`）：`excel_*` 工具在这里通过 Office.js 执行。`taskpane/shared/vendor/` 下是打包的上游代码，重建时须锁定 commit 且工作区干净，补丁必须恰好匹配一处：
+  - `office-agents-excel-api.js`：hewliyang/office-agents，锁定 95fb654。由 `scripts/vendor-office-agents.mjs` 加补丁生成。
+  - `pi-context.js`、`pi-recovery.js`：tmustier/pi-for-excel，锁定 fd6c9e3。由 `scripts/vendor-pi-context.mjs` 加补丁生成。
+  - `recovery.js` 是 Pi 恢复日志的胶水：IndexedDB 存储、工作簿身份、各写工具的快照计划。
+- **计算沙箱**（`daemon/compute-tool.mjs`）：基于 just-bash 的 `excel_bash`，内置 `sheet-to-csv` 和 `csv-to-sheet`。只有 Python 标准库，没有网络，也碰不到本地文件。
+- **COM 高级工具**：ThepExcelMCP，经 `agent.config.json` 配置，提供 Power Query、数据透视、数据模型等。
+- **托盘**（`app/`）：Electron 程序，负责启动 daemon 并注册加载项。
 
-The **daemon** (`daemon/`) is the brain. It wraps the Claude Agent SDK, hosts a WebSocket bridge for the taskpane, and registers an in-process MCP server (`office-tools.mjs`) that exposes Word + Excel tools. The daemon inherits the user's MCP servers from `~/.claude.json` and forwards them into the SDK session (the SDK doesn't read that file by default — see `feedback_sdk_does_not_load_claude_json`).
+## 配置
 
-The **Electron shell** (`app/main.mjs`) is the tray app. It spawns the daemon as a child process over an IPC channel (used for native folder pickers and add-in install/uninstall), restarts it on crash, and surfaces status in a menu-bar / system-tray icon. The shell also handles **auto-sideload** (`app/sideload.mjs`) — on first run it copies manifests into Word's and Excel's wef/ folder on macOS, or registers each manifest under the `HKCU\Software\Microsoft\Office\16.0\WEF\Developer` registry key on Windows (no admin, no network share — a local-path Trusted Catalog is silently ignored by Office). No manual XML drops or Trust Center configuration required.
+- **模型**：在项目 `.env`（已被 git 忽略）中设置 `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN` 和各档模型名，不影响用户全局的 Claude Code。
+  - 当前接的是 DashScope 的 Anthropic 兼容接口加 Qwen：haiku 对应 qwen3.7-flash，sonnet 对应 qwen3.7-plus，opus 对应 qwen3.7-max。
+- **`agent.config.json`**（已被 git 忽略；模板是 `agent.config.example.json`），可配置项：
+  - `mcpServers`、`plugins` / `skills`；
+  - `builtinTools`、`settingSources`；
+  - `inheritUserMcpServers`：默认 `false`，即不继承 `~/.claude.json` 中的全局 MCP；
+  - `env`：例如 `ENABLE_TOOL_SEARCH`。
 
-The **taskpane** (`taskpane/`) is what shows up inside Word/Excel. One shared `taskpane.js` handles both hosts; the active host is detected via `Office.context.host` and the tool dispatcher routes `office_*` calls to Word handlers and `excel_*` calls to Excel handlers. The user picks a **workspace folder** (the agent's cwd, where its `CLAUDE.md` lives) and optionally adds **context files** — paths the agent reads on demand via standard `Read`/`Glob`/`Grep`.
+## 硬性约束
 
-## Key constraints
+- 工作簿只能通过 `excel_*` 工具修改。`canUseTool` 禁止用 `Write` / `Edit` 写 Office 文件；VBA 和 Python in Excel 已禁用。
+- 覆盖已有数据需要 `allow_overwrite`。所有写工具都返回 `commitStatus`；超时或断线时为 `unknown`，必须先重读再重试。
+- 写入前自动创建恢复点，可用 `excel_workbook_history` 恢复。以下操作目前没有恢复点：
+  - 工作表的增删和改名；
+  - 表格、图表、透视表、批注；
+  - 所有 COM 写入。
+- 评测提示保持 SpreadsheetBench 官方原文，外加一句 Excel 适配说明，不为单题修改。
+- 端口：WebSocket 用 47833，HTTP 用 47834。
 
-- **Auth.** Each user clones the repo and runs it on their own machine with their own Claude Code OAuth (or `ANTHROPIC_API_KEY`). That per-user model is sanctioned — and explicitly so from **2026-06-15**, when Anthropic's per-user monthly programmatic credit covers third-party Agent SDK apps run on each user's own subscription (no partner approval needed for the per-user model; Draftspect uses the Agent SDK's own auth, not extracted tokens). What is still **not** allowed: pooling one subscription across many users / a hosted multi-tenant service on someone else's plan. See `feedback_subscription_auth_only` and `reference_anthropic_april_2026_policy`; the README "How usage is charged" row is the user-facing version.
-- **Branding.** The product is named **Draftspect** with a **"Powered by Claude"** lockup — an independent name, per Anthropic's Agent-SDK rule that "Claude Code" must not be a product/marketing name. Accurate references to the user's real Claude Code (install, sign-in, OAuth, the SDK driving it) stay as "Claude Code" — nominative/descriptive use is fine and necessary for accuracy. The GitHub repo's name/description may carry the descriptive "…Powered by Claude Code" (it factually wraps Claude Code). See `feedback_product_branding_compliance`.
-- **Filesystem-write safety.** A `canUseTool` guard refuses `Write`/`Edit`/`MultiEdit` against `.docx`/`.docm`/`.xlsx`/`.xlsm` paths — the active doc is held by Office with unsaved changes, and a filesystem write would corrupt it. The agent must use `office_*` / `excel_*` tools instead.
-- **Feature branches, not main.** Per the user's standing preference, every feature goes on a branch and lands via PR — no direct commits to main.
-- **MCP forwarding.** The daemon must forward `~/.claude.json`'s `mcpServers` into the SDK session. The SDK doesn't read that file. If a server is unreachable at daemon startup, the SDK silently drops it for the session's lifetime — restart to retry. See `feedback_sdk_silently_drops_failed_mcp`.
+## 协作
 
-## Useful commands
+- Codex 也在本仓库工作，分支是 `fix/lifecycle-hangs`。开始前先看 `git log` 和共享进度日志 `docs/optimization-analysis.md`（按节追加）。
+- 相关文档：
+  - 对标：`docs/open-source-comparison.md`；
+  - Pi 对照：`docs/pi-for-excel-comparison.md`；
+  - 第三方许可：`NOTICE.md`。
+- `README.md` 仍是 Draftspect 原文，待重写。
+
+## 常用命令
 
 ```bash
-npm start              # Launch the Electron tray app (daemon + UI)
-npm run dev            # Daemon only, in the terminal (for debugging)
-node --check daemon/index.mjs taskpane/shared/taskpane.js app/main.mjs
+npm run dev                  # 只启动 daemon（调试用）
+npm start                    # 启动 Electron 托盘（daemon + 加载项注册）
+npm test                     # Node 测试
+npm run vendor:office-agents # 重建 office-agents 打包
+npm run vendor:pi-context    # 重建 pi-context.js 和 pi-recovery.js
+python -X utf8 evals/run_spreadsheetbench.py --dataset <.../spreadsheetbench_verified_400> --run <name> --model haiku --ids <...>
 ```
 
-## File layout
-
-- `daemon/index.mjs` — Agent SDK loop, per-(host,document) sessions, permission guard
-- `daemon/bridge.mjs` — WebSocket server + per-pane tool-call protocol
-- `daemon/office-tools.mjs` — Word + Excel tool defs (zod schemas)
-- `daemon/workspace.mjs` — workspace = the document's own folder
-- `daemon/context.mjs` — per-workspace CONTEXT-FILES block in CLAUDE.md
-- `daemon/sessions.mjs` — per-document/workbook session-id persistence
-- `daemon/transcript.mjs` — replay reconstruction from the SDK `.jsonl`
-- `daemon/system-paths.mjs` — OS-managed `$HOME` children deny-list
-- `daemon/diag.mjs` — opt-in `[diag]` logger (`CC_OFFICE_DEBUG=1`)
-- `daemon/system-prompt.md` + `system-prompt-word.md` / `system-prompt-excel.md` — shared + per-host system-prompt append
-- `app/main.mjs` — Electron menu-bar shell + daemon lifecycle
-- `app/sideload.mjs` — macOS/Windows add-in install/uninstall
-- `taskpane/shared/taskpane.js` — host-aware taskpane (Word + Excel branches)
-- `taskpane/shared/tools-word.js`, `tools-excel.js` — Office.js tool implementations
-- `taskpane/shared/paths.js` — pure path helpers (URL/Windows/POSIX)
-- `taskpane/shared/styles.css` — taskpane styles
-- `taskpane/word/index.html`, `taskpane/excel/index.html` — per-host entry points
-- `manifests/word.xml`, `manifests/excel.xml` — Office Add-in manifests
-- `examples/{word,excel}-demo/` — ready-to-run demo workspaces
-
-## Where to read more
-
-- `README.md` — user-facing install/usage/troubleshooting docs.
-- Project memories under `~/.claude/projects/<this-project>/memory/` (not in the repo) — non-obvious constraints, Office.js gotchas, SDK behavior notes.
+- 评测要求 Excel 空闲、电脑不休眠，结果写入 `evals/runs/`（已被 git 忽略）。
+- 修改前端代码后，要在 Excel 里重新加载任务窗格才会生效。

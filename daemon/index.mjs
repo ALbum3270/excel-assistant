@@ -15,7 +15,6 @@ import { diag } from "./diag.mjs";
 import { getContextEntries, setContextEntries } from "./context.mjs";
 import { stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { bindScopeSheetIds, buildMutationScope } from "./mutation-scope.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
@@ -1284,7 +1283,6 @@ async function* userMessageStream(key, session) {
     const trimmed = typeof text === "string" ? text.trimStart() : text;
     const isSlashCommand = typeof trimmed === "string" && trimmed.startsWith("/");
     const automaticContext = isSlashCommand ? "" : await autoContext(key, session, context);
-    if (session) session.mutationScope = buildMutationScope(text, context, session.sheetMetadata);
     const header = [renderContextHeader(context), automaticContext]
       .filter(Boolean)
       .join("\n\n");
@@ -1331,7 +1329,6 @@ async function autoContext(key, session, ctx) {
     sections.push(snapshot.workbook);
     if (session) session.lastWorkbookContext = snapshot.workbook;
   }
-  if (session && Array.isArray(snapshot?.sheets)) session.sheetMetadata = snapshot.sheets;
   if (snapshot?.selection) sections.push(snapshot.selection);
   if (snapshot?.changes) sections.push(snapshot.changes);
   return sections.length ? `[Auto-context]\n${sections.join("\n\n")}` : "";
@@ -1467,11 +1464,6 @@ async function startSessionForFolder(
     }
     officeMcp = createOfficeBridgeMcp(bridge, host, key, {
       signal: abortController.signal,
-      getMutationScope: () => session.mutationScope,
-      onWorkbookMetadata: (metadata) => {
-        session.sheetMetadata = metadata?.sheetsMetadata ?? [];
-        bindScopeSheetIds(session.mutationScope, session.sheetMetadata);
-      },
     });
   } catch (err) {
     // Without cleanup the half-built session stays registered as live, so

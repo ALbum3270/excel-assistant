@@ -6,9 +6,9 @@ import {
   captureFormatCellsState,
 } from "./vendor/pi-recovery.js";
 
-const RECOVERY_DB = "draftspect-recovery";
+const RECOVERY_DB = "excel-assistant-recovery";
 const RECOVERY_STORE = "settings";
-const DOCUMENT_TOKEN_KEY = "draftspect-recovery-document-token-v1";
+const DOCUMENT_TOKEN_KEY = "excel-assistant-recovery-document-token-v1";
 
 const CELL_FORMAT_PROPERTIES = Object.freeze({
   numberFormat: true,

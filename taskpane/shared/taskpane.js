@@ -822,11 +822,6 @@ async function contextSnapshot({ selectionAddress = null } = {}) {
     workbook: workbookParts.join("\n\n") || null,
     selection: limitContextText(selection?.text ?? null, 12000, true),
     changes: limitContextText(changeTracker.flush(), 3000),
-    sheets: metadata?.sheetsMetadata?.map((sheet) => ({
-      id: sheet.id,
-      name: sheet.name,
-      active: sheet.id === metadata.activeSheetId,
-    })) ?? [],
   };
 }
 

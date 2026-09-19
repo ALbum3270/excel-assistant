@@ -2,7 +2,6 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { diag } from "./diag.mjs";
 import { COMPUTE_TOOL_DESCRIPTION, createComputeShell } from "./compute-tool.mjs";
-import { assertMutationAuthorized, bindMutationSheet } from "./mutation-scope.mjs";
 
 // Wrap a bridge tool result for MCP. Handlers return {content: [...]}.
 function asMcpResult(result, { isError = false } = {}) {
@@ -167,21 +166,12 @@ export function createOfficeBridgeMcp(
   bridge,
   host = null,
   paneKey = null,
-  { signal, getMutationScope, onWorkbookMetadata } = {},
+  { signal } = {},
 ) {
   // `paneKey` routes every call to the exact workbook pane this session
   // belongs to (so two open workbooks don't cross-talk).
-  const call = (name, args, options = {}) => {
-    const scope = getMutationScope?.();
-    const routedArgs = bindMutationSheet(name, args ?? {}, scope);
-    if (getMutationScope) assertMutationAuthorized(name, routedArgs, scope);
-    const pending = bridge.callTaskpaneTool(name, routedArgs, paneKey, { signal: options.signal ?? signal });
-    if (name !== "excel_get_workbook_metadata" || !onWorkbookMetadata) return pending;
-    return pending.then((result) => {
-      onWorkbookMetadata(result);
-      return result;
-    });
-  };
+  const call = (name, args, options = {}) =>
+    bridge.callTaskpaneTool(name, args ?? {}, paneKey, { signal: options.signal ?? signal });
 
   const excel_get_selected_range = tool(
     "excel_get_selected_range",

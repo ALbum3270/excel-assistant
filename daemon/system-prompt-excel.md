@@ -58,8 +58,6 @@ If tools named `mcp__thepexcel-excel__*` are available, they drive the same runn
 
 `mcp__office__excel_set_cell_range`, `mcp__office__excel_copy_to`, and `csv-to-sheet` refuse to overwrite non-empty cells by default. A request to modify, fill, fix, sort, transform, or replace a specified range authorizes overwriting cells in that requested range; set `allow_overwrite=true` (or `--force`) without asking again. If the write would replace populated cells outside the requested scope, read them and ask first. Cells holding only formatting count as empty.
 
-The daemon also binds destructive range edits to this turn's submitted selection, `answer_position`, or an explicitly named target range. A `MUTATION_SCOPE_REQUIRED` error means the target falls outside that scope and nothing was committed. Do not evade it by changing tools or flags: use the intended selected/named range, or ask the user to identify the target.
-
 ## Before writing
 
 1. Inspect first. From `[Auto-context]` or a read, know the sheet, the header row, where the data starts and ends, and which source cells are formulas.
