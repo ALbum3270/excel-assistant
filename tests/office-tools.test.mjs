@@ -205,3 +205,30 @@ test("fill-formula sends one formula and a translated fill range", async () => {
     },
   });
 });
+
+test("write receipts keep a bounded sample of formula results and errors", async () => {
+  const formulaResults = Object.fromEntries(Array.from({ length: 4999 }, (_, i) => [`F${i + 2}`, i]));
+  const formulaErrors = Array.from({ length: 60 }, (_, i) => ({ address: `F${i + 2}`, value: "#N/A" }));
+  const server = createOfficeBridgeMcp(
+    {
+      async callTaskpaneTool() {
+        return { success: true, commitStatus: "committed", formulaResults, formulaErrors };
+      },
+    },
+    "excel",
+    "test-pane",
+  );
+
+  const result = await server.instance._registeredTools.excel_fill_formula.handler({
+    sheetId: 1,
+    range: "F2:F5000",
+    formula: "=B2",
+  });
+  const receipt = JSON.parse(result.content[0].text);
+
+  assert.equal(receipt.commitStatus, "committed");
+  assert.equal(Object.keys(receipt.formulaResults).length, 20);
+  assert.equal(receipt.formulaResultCount, 4999);
+  assert.equal(receipt.formulaErrors.length, 50);
+  assert.equal(receipt.formulaErrorCount, 60);
+});

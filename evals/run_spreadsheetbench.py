@@ -165,7 +165,11 @@ def tool_error_summary(transcript: Path | None) -> dict:
     categories = {}
     for error in errors:
         lowered = error.lower()
-        if "input validation error" in lowered:
+        if any(term in lowered for term in ("could not be parsed as json", "not valid json", "invalid json")):
+            category = "model_malformed_json"
+        elif "spill outside range" in lowered or "flat list" in lowered:
+            category = "cell_shape"
+        elif "input validation error" in lowered:
             category = "argument_validation"
         elif "would overwrite" in lowered:
             category = "overwrite_guard"
@@ -304,7 +308,9 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
         record["failure_class"] = "infrastructure"
     elif passed:
         record["failure_class"] = "passed"
-    elif error_summary["count"]:
+    # The overwrite guard is the expected first step of an authorized overwrite,
+    # not a tool failure.
+    elif error_summary["count"] - error_summary["categories"].get("overwrite_guard", 0):
         record["failure_class"] = "tool_or_recovery"
     else:
         record["failure_class"] = "agent_or_benchmark"

@@ -122,6 +122,27 @@ function prepareCellWrite(args, cellMatrix) {
   return { ...args, cells: cellMatrix };
 }
 
+// Write receipts read back the whole target, so a 5000-row fill would return
+// every formula value and overflow the tool-output limit. Keep a sample of
+// results and the first errors, with totals, so the receipt stays readable.
+const MAX_FORMULA_RESULTS = 20;
+const MAX_FORMULA_ERRORS = 50;
+
+function boundWriteReceipt(result) {
+  if (!result || typeof result !== "object") return result;
+  const bounded = { ...result };
+  const entries = Object.entries(result.formulaResults ?? {});
+  if (entries.length > MAX_FORMULA_RESULTS) {
+    bounded.formulaResults = Object.fromEntries(entries.slice(0, MAX_FORMULA_RESULTS));
+    bounded.formulaResultCount = entries.length;
+  }
+  if (Array.isArray(result.formulaErrors) && result.formulaErrors.length > MAX_FORMULA_ERRORS) {
+    bounded.formulaErrors = result.formulaErrors.slice(0, MAX_FORMULA_ERRORS);
+    bounded.formulaErrorCount = result.formulaErrors.length;
+  }
+  return bounded;
+}
+
 function asMcpError(err) {
   return asMcpResult(
     {
@@ -186,7 +207,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null, { sig
 
   const wrap = (name) => async (args) => {
     try {
-      return asMcpResult(await call(name, args ?? {}));
+      return asMcpResult(boundWriteReceipt(await call(name, args ?? {})));
     } catch (e) {
       return asMcpError(e);
     }
@@ -339,7 +360,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null, { sig
       scalarCell,
     ])
     .describe(
-      "Cell data as a rectangular 2D array, a 1D row/column, one cell, or a JSON string containing one of those forms.",
+      "Cell data as a JSON array (not a string): a rectangular 2D array of rows, a 1D row/column, or one cell.",
     );
   const rangesPayload = z.union([
     z.array(z.string().min(1)).min(1),

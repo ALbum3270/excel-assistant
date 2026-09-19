@@ -151,6 +151,9 @@ function workbookCommands(call) {
         }
       }
       const rowsPerChunk = Math.max(1, Math.floor(WRITE_CHUNK_CELLS / width));
+      // Formula errors (often an expected #N/A) don't stop the write: stopping
+      // would leave a half-written table. They are listed once everything is in.
+      const formulaErrors = [];
       for (let offset = 0; offset < cells.length; offset += rowsPerChunk) {
         const chunk = cells.slice(offset, offset + rowsPerChunk);
         const top = start.row + offset + 1;
@@ -168,17 +171,18 @@ function workbookCommands(call) {
           );
         }
         committed.push(result?.writtenRange ?? range);
-        if (result?.formulaErrors?.length) {
-          return failure(
-            `Write committed through ${committed.at(-1)}, but formula errors were found: ` +
-              result.formulaErrors.slice(0, 5).map((item) => `${item.address}=${item.value}`).join(", "),
-          );
-        }
+        formulaErrors.push(...(result?.formulaErrors ?? []));
       }
+      const errorNote = formulaErrors.length
+        ? `Formula errors in ${formulaErrors.length} cell(s): ` +
+          formulaErrors.slice(0, 10).map((item) => `${item.address}=${item.value}`).join(", ") +
+          (formulaErrors.length > 10 ? ", ..." : "") +
+          ". Check whether they are expected (e.g. #N/A for no match) before reporting.\n"
+        : "";
       return {
         stdout:
           `Committed ${rows.length} rows x ${width} columns to sheet ${sheetId} at ${target} ` +
-          `in ${committed.length} committed chunk(s)\n`,
+          `in ${committed.length} committed chunk(s)\n${errorNote}`,
         stderr: "",
         exitCode: 0,
       };
