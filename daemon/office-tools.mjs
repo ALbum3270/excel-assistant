@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { diag } from "./diag.mjs";
+import { COMPUTE_TOOL_DESCRIPTION, createComputeShell } from "./compute-tool.mjs";
 
 // Wrap a bridge tool result for MCP. Handlers return {content: [...]}.
 function asMcpResult(result, { isError = false } = {}) {
@@ -8,8 +9,98 @@ function asMcpResult(result, { isError = false } = {}) {
   return { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) };
 }
 
+function toCellInput(cell) {
+  if (cell !== null && typeof cell === "object") return cell;
+  return typeof cell === "string" && cell.startsWith("=") ? { formula: cell } : { value: cell };
+}
+
+function columnNumber(label) {
+  return [...label.toUpperCase()].reduce((value, char) => value * 26 + char.charCodeAt(0) - 64, 0);
+}
+
+function parseA1RangeSize(address) {
+  const local = String(address ?? "").split("!").pop().replaceAll("$", "").trim();
+  const match = /^([A-Z]+)([1-9]\d*)(?::([A-Z]+)([1-9]\d*))?$/i.exec(local);
+  if (!match) return null;
+  const startColumn = columnNumber(match[1]);
+  const startRow = Number(match[2]);
+  const endColumn = columnNumber(match[3] ?? match[1]);
+  const endRow = Number(match[4] ?? match[2]);
+  if (endColumn < startColumn || endRow < startRow) return null;
+  return {
+    rows: endRow - startRow + 1,
+    columns: endColumn - startColumn + 1,
+    start: `${match[1].toUpperCase()}${startRow}`,
+  };
+}
+
+function parseCellsPayload(raw) {
+  if (typeof raw !== "string") return raw;
+  const text = raw.trim();
+  if (!(text.startsWith("[") || text.startsWith("{"))) return raw;
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`cells contains invalid JSON: ${error.message}`);
+  }
+}
+
+function normalizeCellMatrix(raw, range) {
+  const parsed = parseCellsPayload(raw);
+  if (!Array.isArray(parsed)) return [[toCellInput(parsed)]];
+  if (parsed.length === 0) throw new Error("cells must not be empty");
+
+  const nested = parsed.map(Array.isArray);
+  if (nested.some(Boolean) && !nested.every(Boolean)) {
+    throw new Error("cells cannot mix rows with individual cell values");
+  }
+
+  let rows;
+  if (nested.every(Boolean)) {
+    rows = parsed;
+  } else {
+    const size = parseA1RangeSize(range);
+    if (size && size.rows > 1 && size.columns === 1) {
+      rows = parsed.map((cell) => [cell]);
+    } else if (size && size.rows > 1 && size.columns > 1 && parsed.length === size.rows * size.columns) {
+      rows = Array.from({ length: size.rows }, (_, index) =>
+        parsed.slice(index * size.columns, (index + 1) * size.columns),
+      );
+    } else {
+      rows = [parsed];
+    }
+  }
+  return rows.map((row) => row.map(toCellInput));
+}
+
+function prepareCellWrite(args, cellMatrix) {
+  const size = parseA1RangeSize(args.range);
+  const width = cellMatrix[0]?.length ?? 0;
+  // A single formula/value aimed at a larger explicit range means "fill this
+  // pattern through the range". Preserve Excel's relative-reference
+  // translation by writing the first cell and using copyToRange.
+  if (
+    !args.copyToRange &&
+    size &&
+    size.rows * size.columns > 1 &&
+    cellMatrix.length === 1 &&
+    width === 1
+  ) {
+    return { ...args, range: size.start, copyToRange: args.range, cells: cellMatrix };
+  }
+  return { ...args, cells: cellMatrix };
+}
+
 function asMcpError(err) {
-  return asMcpResult(`Error: ${err?.message ?? String(err)}`, { isError: true });
+  return asMcpResult(
+    {
+      success: false,
+      error: err?.message ?? String(err),
+      ...(err?.code ? { code: err.code } : {}),
+      ...(err?.commitStatus ? { commitStatus: err.commitStatus } : {}),
+    },
+    { isError: true },
+  );
 }
 
 /**
@@ -19,10 +110,11 @@ function asMcpError(err) {
  * @param {{ callTaskpaneTool: (name: string, args: object) => Promise<any> }} bridge
  * @param {"excel"|null} host
  */
-export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
+export function createOfficeBridgeMcp(bridge, host = null, paneKey = null, { signal } = {}) {
   // `paneKey` routes every call to the exact workbook pane this session
   // belongs to (so two open workbooks don't cross-talk).
-  const call = (name, args) => bridge.callTaskpaneTool(name, args, paneKey);
+  const call = (name, args, options = {}) =>
+    bridge.callTaskpaneTool(name, args, paneKey, { signal: options.signal ?? signal });
 
   const excel_get_selected_range = tool(
     "excel_get_selected_range",
@@ -160,7 +252,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
     .describe(
       "Worksheet ID from excel_get_workbook_metadata (stable per workbook, not the tab position).",
     );
-  const explanation = z.string().max(50).optional().describe("Brief explanation (max 50 chars).");
+  const explanation = z.string().optional().describe("Brief explanation (a few words).");
   const borderSide = z
     .object({
       style: z.enum(["solid", "dashed", "dotted", "double"]).optional(),
@@ -194,7 +286,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
       .optional(),
   });
   const cellMatrix = z
-    .array(z.array(cellInput).min(1))
+    .array(z.array(z.union([cellInput, scalarCell])).min(1))
     .min(1)
     .superRefine((rows, ctx) => {
       const width = rows[0]?.length;
@@ -208,6 +300,16 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
         }
       });
     });
+  const cellPayload = z
+    .union([
+      cellMatrix,
+      z.array(z.union([cellInput, scalarCell])).min(1),
+      cellInput,
+      scalarCell,
+    ])
+    .describe(
+      "Cell data as a rectangular 2D array, a 1D row/column, one cell, or a JSON string containing one of those forms.",
+    );
   const size = z
     .object({ type: z.enum(["points", "standard"]), value: z.number().positive() })
     .optional();
@@ -221,7 +323,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
 
   const excel_get_cell_ranges = tool(
     "excel_get_cell_ranges",
-    "READ. Read cell values, formulas, and formatting as a sparse A1-keyed object. Each call scans at most 20000 cells in bounded chunks. If hasMore is true, pass remainingRanges as ranges in the next call with the same sheetId and options; unread ranges may contain blanks. Use this to inspect data before modifying it.",
+    "READ. Read cell values and formulas (plus formatting with includeStyles) as a sparse A1-keyed object. Each call scans at most 20000 cells in bounded chunks. If hasMore is true, pass remainingRanges as ranges in the next call with the same sheetId and options; unread ranges may contain blanks. Use this to inspect data before modifying it.",
     {
       sheetId,
       ranges: z
@@ -231,7 +333,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
       includeStyles: z
         .boolean()
         .optional()
-        .describe("Include font/fill styling info. Default: true."),
+        .describe("Include font/fill styling info. Default: false."),
       cellLimit: z
         .number()
         .int()
@@ -241,7 +343,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
         .describe("Maximum populated cells to return. Default: 2000."),
       explanation,
     },
-    wrap("excel_get_cell_ranges"),
+    (args) => wrap("excel_get_cell_ranges")({ ...args, includeStyles: args.includeStyles ?? false }),
   );
 
   const excel_get_range_as_csv = tool(
@@ -312,23 +414,31 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
 
   const excel_set_cell_range = tool(
     "excel_set_cell_range",
-    "WRITE. Write values, formulas, and formatting to cells. The range auto-expands to match the cells array (e.g. A1 with a 1x3 array becomes A1:C1). Computed formula values come back in formulaResults — check them for errors. OVERWRITE PROTECTION: by default the call fails if target cells contain data; read those cells, confirm with the user, then retry with allow_overwrite=true. Only set allow_overwrite=true on the first attempt if the user explicitly asked to replace or overwrite. Use copyToRange to expand a pattern to a larger area.",
+    "WRITE. Write values, formulas, and formatting to cells. Accepts 2D matrices, 1D rows/columns, single cells, and JSON-encoded arrays. A single formula/value with a larger target range is filled across that range with relative-reference translation. Computed formula values and errors come back for verification. OVERWRITE PROTECTION: use allow_overwrite=true immediately when the user's requested edit targets existing cells; ask only when the overwrite is outside the requested scope. Use copyToRange to expand larger patterns.",
     {
       sheetId,
       range: z.string().describe("Target range in A1 notation (auto-expands to match cells)."),
-      cells: cellMatrix.describe(
-        "Non-empty rectangular 2D array of cell data. Outer = rows, inner = columns.",
-      ),
+      cells: cellPayload,
       copyToRange: z
         .string()
         .optional()
         .describe("Expand the written pattern to this larger range."),
       resizeWidth: size,
       resizeHeight: size,
-      allow_overwrite: z.boolean().optional().describe("Confirm overwriting existing data."),
+      allow_overwrite: z
+        .boolean()
+        .optional()
+        .describe("Set true when the user's requested edit includes replacing data in the target range."),
       explanation,
     },
-    wrap("excel_set_cell_range"),
+    (args) => {
+      try {
+        const cells = cellMatrix.parse(normalizeCellMatrix(args.cells, args.range));
+        return wrap("excel_set_cell_range")(prepareCellWrite(args, cells));
+      } catch (error) {
+        return asMcpError(error);
+      }
+    },
   );
 
   const excel_clear_cell_range = tool(
@@ -345,7 +455,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
 
   const excel_copy_to = tool(
     "excel_copy_to",
-    "WRITE. Copy a range to another location with formula translation. If the destination is larger, the source pattern repeats. OVERWRITE PROTECTION: the call fails when destination cells contain data unless the user authorized replacement and allow_overwrite=true.",
+    "WRITE. Copy a range to another location with formula translation. If the destination is larger, the source pattern repeats. Set allow_overwrite=true when the requested edit targets existing destination cells; ask only when replacement falls outside the user's requested scope.",
     {
       sheetId,
       sourceRange: z.string().describe("Source range in A1 notation."),
@@ -353,7 +463,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
       allow_overwrite: z
         .boolean()
         .optional()
-        .describe("Confirm overwriting existing destination data."),
+        .describe("Set true when the user's requested edit includes replacing destination data."),
       explanation,
     },
     wrap("excel_copy_to"),
@@ -442,6 +552,22 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
     wrap("excel_modify_object"),
   );
 
+  let computeShell = null;
+  const excel_bash = tool(
+    "excel_bash",
+    COMPUTE_TOOL_DESCRIPTION,
+    { command: z.string().min(1).describe("The bash command to run in the sandbox.") },
+    async (args) => {
+      try {
+        computeShell ??= createComputeShell(call, { signal });
+        const result = await computeShell(args);
+        return asMcpResult(result, { isError: result.exitCode !== 0 });
+      } catch (e) {
+        return asMcpError(e);
+      }
+    },
+  );
+
   const excelTools = [
     excel_get_workbook_metadata,
     excel_get_selected_range,
@@ -462,6 +588,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null) {
     excel_autofilter,
     excel_create_table,
     excel_add_table_rows,
+    excel_bash,
   ];
   const tools = excelTools;
 

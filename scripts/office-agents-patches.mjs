@@ -66,7 +66,7 @@ function throwOverwriteError(addresses: string[]): void {
       \`\${unique.slice(0, 10).join(", ")}...\`;
   throw new Error(
     \`Would overwrite \${unique.length} non-empty cell(s): \${cellList}. \` +
-      "To proceed with overwriting existing data, retry with allow_overwrite set to true.",
+      "If the requested edit targets these cells, retry with allow_overwrite set to true; otherwise ask before overwriting.",
   );
 }
 
@@ -301,10 +301,67 @@ function excelColorToHex(
   source = replaceOnce(
     source,
     "reuse checked copy destination",
-    `      const destRange = sheet.getRange(copyToRange);
-      destRange.copyFrom(range, Excel.RangeCopyType.all);`,
-    `      const destRange = copyDestination ?? sheet.getRange(copyToRange);
-      destRange.copyFrom(range, Excel.RangeCopyType.all);`,
+    `    if (copyToRange) {
+      const destRange = sheet.getRange(copyToRange);
+      destRange.copyFrom(range, Excel.RangeCopyType.all);
+      await context.sync();
+    }`,
+    `    let verificationRange = range;
+    if (copyToRange) {
+      const destRange = copyDestination ?? sheet.getRange(copyToRange);
+      destRange.copyFrom(range, Excel.RangeCopyType.all);
+      await context.sync();
+      verificationRange = destRange;
+    }`,
+  );
+
+  source = replaceOnce(
+    source,
+    "write verification result",
+    `    const formulaResults: Record<string, unknown> = {};
+    if (hasFormulas) {
+      range.load("values,address");
+      await context.sync();
+      const { startCol, startRow } = parseRangeAddress(range.address);
+      for (let r = 0; r < range.values.length; r++) {
+        for (let c = 0; c < range.values[r].length; c++) {
+          if (formulas[r]?.[c]) {
+            formulaResults[cellAddress(startRow + r, startCol + c)] =
+              range.values[r][c];
+          }
+        }
+      }
+    }
+
+    return {
+      success: true,
+      cellsWritten: cells.flat().length,
+      ...(Object.keys(formulaResults).length > 0 && { formulaResults }),`,
+    `    const formulaResults: Record<string, unknown> = {};
+    const formulaErrors: Array<{ address: string; value: string }> = [];
+    verificationRange.load("values,formulas,address");
+    await context.sync();
+    const { startCol, startRow } = parseRangeAddress(verificationRange.address);
+    for (let r = 0; r < verificationRange.values.length; r++) {
+      for (let c = 0; c < verificationRange.values[r].length; c++) {
+        if (typeof verificationRange.formulas[r]?.[c] !== "string" || !verificationRange.formulas[r][c].startsWith("=")) continue;
+        const address = cellAddress(startRow + r, startCol + c);
+        const value = verificationRange.values[r][c];
+        formulaResults[address] = value;
+        if (typeof value === "string" && /^#(?:REF!|VALUE!|NAME\\?|DIV\\/0!|N\\/A|NUM!|NULL!|SPILL!|CALC!)/i.test(value)) {
+          formulaErrors.push({ address, value });
+        }
+      }
+    }
+
+    return {
+      success: true,
+      commitStatus: "committed",
+      writtenRange: verificationRange.address.split("!")[1] || verificationRange.address,
+      cellsWritten: cells.flat().length,
+      cellsCommitted: verificationRange.values.length * (verificationRange.values[0]?.length ?? 0),
+      ...(Object.keys(formulaResults).length > 0 && { formulaResults }),
+      ...(formulaErrors.length > 0 && { formulaErrors }),`,
   );
 
   source = replaceOnce(
@@ -344,6 +401,41 @@ function excelColorToHex(
       );
     }
     dest.copyFrom(source, Excel.RangeCopyType.all);`,
+  );
+
+  source = replaceOnce(
+    source,
+    "copy commit result",
+    `    return {
+      success: true,
+      source: sourceRange,
+      destination: destinationRange,
+    };`,
+    `    dest.load("values,formulas,address");
+    await context.sync();
+    const formulaErrors: Array<{ address: string; value: string }> = [];
+    const { startCol, startRow } = parseRangeAddress(dest.address);
+    for (let r = 0; r < dest.values.length; r++) {
+      for (let c = 0; c < dest.values[r].length; c++) {
+        const formula = dest.formulas[r]?.[c];
+        const value = dest.values[r][c];
+        if (
+          typeof formula === "string" &&
+          formula.startsWith("=") &&
+          typeof value === "string" &&
+          /^#(?:REF!|VALUE!|NAME\\?|DIV\\/0!|N\\/A|NUM!|NULL!|SPILL!|CALC!)/i.test(value)
+        ) {
+          formulaErrors.push({ address: cellAddress(startRow + r, startCol + c), value });
+        }
+      }
+    }
+    return {
+      success: true,
+      commitStatus: "committed",
+      source: sourceRange,
+      destination: destinationRange,
+      ...(formulaErrors.length > 0 && { formulaErrors }),
+    };`,
   );
 
   source = replaceOnce(

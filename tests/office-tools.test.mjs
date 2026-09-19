@@ -78,3 +78,43 @@ test("table-row schema rejects empty and ragged matrices before dispatch", () =>
     true,
   );
 });
+
+test("set-cell normalizes model-shaped payloads and fills a larger target", async () => {
+  const calls = [];
+  const server = createOfficeBridgeMcp(
+    {
+      async callTaskpaneTool(name, args) {
+        calls.push({ name, args });
+        return { success: true, commitStatus: "committed" };
+      },
+    },
+    "excel",
+    "test-pane",
+  );
+  const handler = server.instance._registeredTools.excel_set_cell_range.handler;
+
+  await handler({
+    sheetId: 1,
+    range: "C2:C3",
+    cells: '[{"formula":"=A2+B2"},{"formula":"=A3+B3"}]',
+  });
+  await handler({ sheetId: 1, range: "F2:F15", cells: [{ formula: "=B2" }] });
+
+  assert.deepEqual(calls[0], {
+    name: "excel_set_cell_range",
+    args: {
+      sheetId: 1,
+      range: "C2:C3",
+      cells: [[{ formula: "=A2+B2" }], [{ formula: "=A3+B3" }]],
+    },
+  });
+  assert.deepEqual(calls[1], {
+    name: "excel_set_cell_range",
+    args: {
+      sheetId: 1,
+      range: "F2",
+      copyToRange: "F2:F15",
+      cells: [[{ formula: "=B2" }]],
+    },
+  });
+});

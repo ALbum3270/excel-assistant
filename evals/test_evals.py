@@ -2,6 +2,7 @@
 uv run --project evals python -m unittest discover -s evals
 """
 
+import json
 import tempfile
 import unittest
 from argparse import Namespace
@@ -9,7 +10,7 @@ from pathlib import Path
 
 import openpyxl
 
-from run_spreadsheetbench import qualified_answer_position, select_tasks, summarize
+from run_spreadsheetbench import qualified_answer_position, select_tasks, summarize, tool_error_summary
 from workbook_diff import authorized_ranges, unauthorized_edits
 
 
@@ -82,6 +83,20 @@ class SelectionTest(unittest.TestCase):
 
 
 class SummaryTest(unittest.TestCase):
+    def test_tool_errors_are_grouped_by_root_cause(self):
+        with tempfile.TemporaryDirectory() as directory:
+            transcript = Path(directory) / "transcript.jsonl"
+            entries = [
+                {"type": "user", "message": {"content": [
+                    {"type": "tool_result", "is_error": True, "content": "Input validation error: cells"},
+                    {"type": "tool_result", "is_error": True, "content": "Would overwrite 2 cells"},
+                ]}},
+            ]
+            transcript.write_text("\n".join(json.dumps(entry) for entry in entries), encoding="utf-8")
+            result = tool_error_summary(transcript)
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(result["categories"], {"argument_validation": 1, "overwrite_guard": 1})
+
     def test_infra_failures_stay_in_the_headline_denominator(self):
         ok = {"instruction_type": "Cell", "infra_status": "ok", "agent_status": "completed", "tool_calls": 3,
               "tool_errors": 0, "agent_duration_s": 10, "unauthorized_cells": 0}
@@ -90,12 +105,14 @@ class SummaryTest(unittest.TestCase):
             {**ok, "passed": True, "unauthorized_cells": 2},
             {**ok, "passed": False, "infra_status": "stalled"},
             {**ok, "passed": False},
+            {**ok, "passed": True, "unauthorized_cells": 50, "gold_unauthorized_cells": 40},
         ]
         summary = summarize("t", results)
-        self.assertEqual(summary["end_to_end_pass_rate"], 0.5)
-        self.assertEqual(summary["infra_completion_rate"], 0.75)
-        self.assertEqual(summary["pass_rate_given_infra_ok"], 0.667)
+        self.assertEqual(summary["end_to_end_pass_rate"], 0.6)
+        self.assertEqual(summary["infra_completion_rate"], 0.8)
+        self.assertEqual(summary["pass_rate_given_infra_ok"], 0.75)
         self.assertEqual(summary["preservation"]["passed_but_damaged"], 1)
+        self.assertEqual(summary["preservation"]["skipped_gold_edits_outside"], 1)
         self.assertIsNone(summary["agent_seconds"]["p90"])
 
 

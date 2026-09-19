@@ -77,3 +77,48 @@ test("user message carries its submit-time selection snapshot", async () => {
     await bridge.close();
   }
 });
+
+test("aborting a tool call notifies the owning pane and rejects with unknown commit state", async () => {
+  const bridge = createBridge({ port: 0, token: "test-token", allowedOrigins: [] });
+  let client;
+  try {
+    await waitForListening(bridge);
+    client = new WebSocket(`ws://127.0.0.1:${bridge.address().port}`);
+    await once(client, "open");
+    const welcome = once(client, "message");
+    client.send(
+      JSON.stringify({
+        type: "hello",
+        token: "test-token",
+        host: "excel",
+        active_doc: "book.xlsx",
+      }),
+    );
+    await welcome;
+
+    const controller = new AbortController();
+    const toolCallMessage = once(client, "message");
+    const pending = bridge.callTaskpaneTool(
+      "excel_set_cell_range",
+      { range: "A1" },
+      "excel\0book.xlsx",
+      { signal: controller.signal },
+    );
+    const [toolCallRaw] = await toolCallMessage;
+    const toolCall = JSON.parse(toolCallRaw.toString());
+    assert.equal(toolCall.type, "tool_call");
+
+    const cancelMessage = once(client, "message");
+    controller.abort();
+    await assert.rejects(pending, (error) => {
+      assert.equal(error.code, "TOOL_CANCELLED");
+      assert.equal(error.commitStatus, "unknown");
+      return true;
+    });
+    const [cancelRaw] = await cancelMessage;
+    assert.deepEqual(JSON.parse(cancelRaw.toString()), { type: "tool_cancel", id: toolCall.id });
+  } finally {
+    client?.terminate();
+    await bridge.close();
+  }
+});

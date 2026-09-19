@@ -262,6 +262,7 @@ const TOOL_STATUS_LABELS = {
   excel_autofilter: "Filtering…",
   excel_create_table: "Creating a table…",
   excel_add_table_rows: "Adding table rows…",
+  excel_bash: "Running a calculation…",
   // Common Claude Code tools
   Read: "Reading a file…",
   Write: "Writing a file…",
@@ -693,6 +694,11 @@ async function handleServerMessage(msg) {
       runOfficeTool(msg);
       break;
 
+    case "tool_cancel":
+      cancelledToolCalls.add(msg.id);
+      setTimeout(() => cancelledToolCalls.delete(msg.id), 65_000);
+      break;
+
     case "pong":
       break;
 
@@ -713,6 +719,7 @@ async function handleServerMessage(msg) {
 
 // ---- Request/response helper (for non-tool round-trips) -------------------
 const pendingRequests = new Map();
+const cancelledToolCalls = new Set();
 const REQUEST_TIMEOUT_MS = 10_000;
 
 function sendRequest(type, payload = {}) {
@@ -739,8 +746,23 @@ function sendRequest(type, payload = {}) {
 // ---------------------------------------------------------------------------
 // Tool dispatcher
 // ---------------------------------------------------------------------------
+async function describeOfficeToolError(error) {
+  const message = error?.message ?? String(error);
+  if (!/Worksheet with ID .+ not found/i.test(message)) return message;
+  try {
+    const metadata = await getWorkbookMetadata();
+    const valid = (metadata.sheetsMetadata ?? [])
+      .map((sheet) => `${sheet.name}=${sheet.id}`)
+      .join(", ");
+    return `${message}. Valid worksheets in the current workbook: ${valid || "none"}. Refresh metadata and retry.`;
+  } catch {
+    return message;
+  }
+}
+
 async function runOfficeTool(msg) {
   const { id, name, args } = msg;
+  if (cancelledToolCalls.delete(id)) return;
   try {
     let result;
     switch (name) {
@@ -848,10 +870,15 @@ async function runOfficeTool(msg) {
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
+    // Office.js cannot interrupt a context.sync already in progress, but a
+    // daemon timeout/session stop must prevent a late result from being
+    // mistaken for the current turn's result.
+    if (cancelledToolCalls.delete(id)) return;
     wsSend({ type: "tool_result", id, ok: true, result });
   } catch (err) {
+    if (cancelledToolCalls.delete(id)) return;
     console.error(`[tool ${name}] failed:`, err);
-    wsSend({ type: "tool_result", id, ok: false, error: err?.message ?? String(err) });
+    wsSend({ type: "tool_result", id, ok: false, error: await describeOfficeToolError(err) });
   }
 }
 

@@ -405,3 +405,49 @@ R6、R7已实施。Context缓存和在途读取现在绑定workspace及请求代
 首次启动 `baseline-dev40-flash` 后，笔记本合盖导致机器休眠；唤醒时taskpane重连并重发界面记住的模型，覆盖了评测指定的flash档。该运行中途停止，不作为有效基线。修复后，评测在清空历史之前先取得pane的模型所有权；评测期间的重连不能改变本轮模型，但会记住用户界面随后选择的档位。评测结束会停止临时模型会话并恢复该档位，下一条普通消息不会继续落入评测消费者。
 
 评测配置清单不再保存 `agent.config` 中环境变量的明文，只记录键名和配置值哈希。新增1项针对本次事故的生命周期回归，并保留9项评测脚本离线测试；node全量98/98通过。当前仍没有一份完成的40题基线结果，重跑前需要使用包含本节修复的新daemon。
+
+**三十、沙箱计算工具 `excel_bash`**
+
+起因：开发集第 118-50 题要处理数千个单元格，代理只能逐块读进上下文再手算，既慢又容易出错。补一个本地计算环境，数据在沙箱里流转，不经过模型上下文。
+
+| 部分 | 采用 | 说明 |
+| --- | --- | --- |
+| 沙箱 shell | vercel-labs/just-bash 3.4.2（Apache-2.0） | 虚拟 bash，内存文件系统，无网络，`python: true` 时带 WASM CPython；另有 awk/sed/sort/jq/sqlite3/xan。要求 Node ≥ 20.18.1，`package.json` 的 engines 已同步 |
+| 工作簿与文件互转 | office-agents `sheet-to-csv` / `csv-to-sheet`（MIT） | 移植其命令语义和值类型推断，改为调用本项目已有的面板工具 `excel_get_range_as_csv`、`excel_get_cell_ranges`、`excel_set_cell_range` |
+| 输出截断 | vercel-labs/bash-tool（MIT） | 每个输出流 30,000 字符上限，截断提示格式沿用 |
+| CSV 解析 | papaparse | |
+
+未采用：
+- pydantic/mcp-run-python：2026-01 已归档，需要 Deno，且数据要经过上下文传递。
+- pi-for-excel 的 Pyodide 工具：和它的审计、恢复模块耦合，还要从 jsdelivr 下载约 15MB。
+- Claude 官方 code execution：Anthropic 服务端工具，Qwen 接口不可用。
+- E2B / Vercel Sandbox：不在本地运行。
+- 放开内置 Bash：可以改动本地文件，第二十八节的顾虑仍然成立。`excel_bash` 碰不到本机文件，所以不冲突。
+
+自有胶水代码：`daemon/compute-tool.mjs`，约 180 行。另在 `office-tools.mjs` 注册工具，在面板加状态文案，在 `system-prompt-excel.md` 加“Computation”一节。与上游不同之处：
+- 读取按 `hasMore/nextRange` 分页。
+- 写入按每块 ≤ 2,000 格分块，避免单次面板调用超过 60 秒桥接超时。
+- 覆盖检查在写第一块之前扫完整个目标区域，并按 `remainingRanges` 续读，所以冲突时不会留下写了一半的数据。
+- `=` 开头的值按公式写入。
+
+使用口径：优先写公式；`excel_bash` 用于分析、核对和一次性数据变换。写回的静态值须在回答中说明。`--force` 服从覆盖保护规则。沙箱文件在会话内保留，daemon 重启后丢失。
+
+验证：
+- 离线模拟：Python 能运行；5,000 行分三页导出；覆盖检查能拒绝写入；1,500×3 分三块写入，公式透传；无网络，无主机文件；截断生效。
+- 真实会话：qwen3.7-flash，模拟面板提供 3,000 行订单表。代理先预览 20 行，随后改用 `excel_bash` 整表导出并用 Python 统计，两项答案与真值完全一致：119 位客户下单超过 10 次，最高为 C087，合计 5,128.93。
+- node 全量测试 98/98 通过。
+- 真实 Excel 中的 `csv-to-sheet` 写入尚未验证，留给下一轮开发集评测。
+
+**三十一、真实任务失败链修复**
+
+针对 `baseline-dev40-flash-3` 暴露的高错误率，本轮修复了基础设施以外的主要执行问题：
+
+- `excel_set_cell_range` 在校验前统一处理二维矩阵、一维行/列、单个值、单元格对象及 JSON 字符串。单个公式配合较大目标范围时自动转成“写入首格并复制到目标范围”，保留 Excel 的相对引用转换。
+- 覆盖授权改为按用户请求范围判断。用户明确要求修改、填充、修复、排序或替换的目标区域可直接使用 `allow_overwrite=true`/`--force`；请求范围外的已有数据仍需确认。
+- 普通单元格任务禁止退回到不可用的 VBA 或 Python in Excel；COM 仍保留给 Power Query、数据模型、页面设置等 Office.js 未覆盖能力。无效工作表 ID 的错误会附上当前工作簿的有效名称与 ID。
+- `excel_bash` 的单次执行上限从 120 秒降到 45 秒，并接入会话取消信号。工作簿调用转发同一信号；分块写入会报告已提交范围，避免超时后静默继续。
+- 桥接工具结果绑定原始 WebSocket 和 pane key。Stop、会话替换或超时时向面板发送取消消息；超时/断线统一返回 `commitStatus: unknown`，代理必须先重读再重试。
+- Office.js 写入在 `context.sync` 后读回最终目标范围，返回 `commitStatus`、`writtenRange`、`cellsCommitted`、`formulaResults` 和 `formulaErrors`。复制填充后的每个公式结果都纳入检查。
+- 评测提示明确答案区覆盖授权；结果把参数校验、覆盖拦截、旧工作表 ID、工具名、沙箱环境和超时错误分组，并把基础设施、工具恢复、代理/基准差异分开报告。
+
+验证集中在实现完成后执行：Node 101/101、评测脚本 10/10，通过语法检查和 `git diff --check`。真实 Excel 集成检查在已有数据 `B2:B4` 上写入 `=A2*2` 并复制填充，返回 `committed`，读回公式为 `=A2*2`、`=A3*2`、`=A4*2`，计算值为 20、40、60。完整 40 题基线尚未重跑。

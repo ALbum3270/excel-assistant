@@ -956,6 +956,31 @@ async function runEvalPrompt({ doc, prompt, model, timeoutMs = 15 * 60_000, pane
   });
 }
 
+async function runEvalTool({ doc, name, args = {}, paneWaitMs = 90_000 }) {
+  if (!doc || !name) return { status: "bad_request", error: "doc and name are required" };
+  const waitUntil = Date.now() + paneWaitMs;
+  let pane;
+  while (!(pane = bridge.listPanes().find((candidate) => samePath(candidate.activeDoc, doc)))) {
+    if (Date.now() > waitUntil) {
+      return { status: "no_pane", error: `No task pane connected for ${doc}` };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  try {
+    return {
+      status: "ok",
+      result: await bridge.callTaskpaneTool(name, args, pane.key),
+    };
+  } catch (error) {
+    return {
+      status: "tool_error",
+      error: error?.message ?? String(error),
+      ...(error?.code ? { code: error.code } : {}),
+      ...(error?.commitStatus ? { commitStatus: error.commitStatus } : {}),
+    };
+  }
+}
+
 // Everything that changes agent behavior without changing the repo commit,
 // so a run manifest can refuse to mix configurations.
 async function evalInfo() {
@@ -986,6 +1011,7 @@ async function evalInfo() {
     plugins: agentPlugins.map((p) => p.path),
     skills: agentConfig.skills ?? null,
     builtinTools: agentConfig.builtinTools,
+    disallowedTools: agentConfig.disallowedTools,
     settingSources: agentConfig.settingSources,
     env: {
       keys: Object.keys(configuredEnv),
@@ -1009,6 +1035,8 @@ async function handleEvalRequest(req, res, urlPath) {
   if (req.headers["x-bridge-token"] !== BRIDGE_TOKEN) return reply(401, { error: "unauthorized" });
   if (req.method === "GET" && urlPath === "/eval/panes") return reply(200, bridge.listPanes());
   if (req.method === "GET" && urlPath === "/eval/info") return reply(200, await evalInfo());
+  if (req.method === "POST" && urlPath === "/eval/tool")
+    return reply(200, await runEvalTool(await readJsonBody(req)));
   if (req.method === "POST" && urlPath === "/eval/run")
     return reply(200, await runEvalPrompt(await readJsonBody(req)));
   return reply(404, { error: "not found" });
@@ -1051,6 +1079,7 @@ const DEFAULT_AGENT_CONFIG = {
   plugins: [],
   skills: undefined,
   builtinTools: ["Read", "Glob", "Grep", "Skill", "ToolSearch", "WebSearch", "WebFetch"],
+  disallowedTools: ["mcp__thepexcel-excel__excel_vba"],
   settingSources: ["project"],
   inheritUserMcpServers: false,
   env: { ENABLE_TOOL_SEARCH: "true" },
@@ -1189,7 +1218,7 @@ function denyWithOfficeMessage() {
   };
 }
 
-function customPermissionHandler(toolName, input) {
+function customPermissionHandler(toolName, input, { host = null } = {}) {
   if (toolName === "Write" || toolName === "Edit" || toolName === "MultiEdit") {
     const path = input?.file_path ?? input?.path;
     if (typeof path === "string" && OFFICE_FILE_EXT.test(path)) {
@@ -1201,6 +1230,24 @@ function customPermissionHandler(toolName, input) {
     if (typeof cmd === "string" && bashMutatesOfficeFile(cmd)) {
       return Promise.resolve(denyWithOfficeMessage());
     }
+  }
+  if (host === "excel" && toolName === "mcp__thepexcel-excel__excel_vba") {
+    return Promise.resolve({
+      behavior: "deny",
+      message:
+        "VBA execution is disabled in this Excel session. Use the mcp__office__ tools and excel_bash, or explain that an explicitly requested macro cannot be installed while VBA is disabled.",
+    });
+  }
+  if (
+    host === "excel" &&
+    toolName === "mcp__thepexcel-excel__excel_range" &&
+    input?.action === "write_py"
+  ) {
+    return Promise.resolve({
+      behavior: "deny",
+      message:
+        "Python in Excel is not available in this session. Use mcp__office__excel_bash for computation and mcp__office__excel_set_cell_range for workbook writes.",
+    });
   }
   // Everything else: auto-approve.
   return Promise.resolve({ behavior: "allow", updatedInput: input ?? {} });
@@ -1381,7 +1428,9 @@ async function startSessionForFolder(
       session.settled = true;
       return null;
     }
-    officeMcp = createOfficeBridgeMcp(bridge, host, key);
+    officeMcp = createOfficeBridgeMcp(bridge, host, key, {
+      signal: abortController.signal,
+    });
   } catch (err) {
     // Without cleanup the half-built session stays registered as live, so
     // ensureLoopForMessage would treat it as a consumer and every later
@@ -1426,8 +1475,9 @@ async function startSessionForFolder(
           plugins: agentPlugins,
           ...(agentConfig.skills ? { skills: agentConfig.skills } : {}),
           tools: agentConfig.builtinTools,
+          disallowedTools: agentConfig.disallowedTools,
           settingSources: agentConfig.settingSources,
-          canUseTool: customPermissionHandler,
+          canUseTool: (toolName, input) => customPermissionHandler(toolName, input, { host }),
           includePartialMessages: true,
           // User-chosen model (composer dropdown); always explicit.
           model: modelArgFor(key),

@@ -117,7 +117,7 @@ function throwOverwriteError(addresses) {
   const unique = Array.from(new Set(addresses));
   const cellList = unique.length <= 10 ? unique.join(", ") : `${unique.slice(0, 10).join(", ")}...`;
   throw new Error(
-    `Would overwrite ${unique.length} non-empty cell(s): ${cellList}. To proceed with overwriting existing data, retry with allow_overwrite set to true.`
+    `Would overwrite ${unique.length} non-empty cell(s): ${cellList}. If the requested edit targets these cells, retry with allow_overwrite set to true; otherwise ask before overwriting.`
   );
 }
 function excelColorToHex(color) {
@@ -564,10 +564,10 @@ async function setCellRange(sheetId, rangeAddr, cells, options = {}) {
     const inputRows = cells.length;
     const inputCols = Math.max(...cells.map((r) => r.length));
     if (inputRows !== range.rowCount || inputCols !== range.columnCount) {
-      const { startCol, startRow } = parseRangeAddress(range.address);
-      const endRow = startRow + inputRows - 1;
-      const endCol = startCol + inputCols - 1;
-      const newAddr = `${cellAddress(startRow, startCol)}:${cellAddress(endRow, endCol)}`;
+      const { startCol: startCol2, startRow: startRow2 } = parseRangeAddress(range.address);
+      const endRow = startRow2 + inputRows - 1;
+      const endCol = startCol2 + inputCols - 1;
+      const newAddr = `${cellAddress(startRow2, startCol2)}:${cellAddress(endRow, endCol)}`;
       messages.push(
         `Adjusted range from ${rangeAddr} to ${newAddr} (row diff: ${inputRows - range.rowCount}, col diff: ${inputCols - range.columnCount})`
       );
@@ -699,10 +699,12 @@ async function setCellRange(sheetId, rangeAddr, cells, options = {}) {
       }
     }
     await context.sync();
+    let verificationRange = range;
     if (copyToRange) {
       const destRange = copyDestination ?? sheet.getRange(copyToRange);
       destRange.copyFrom(range, Excel.RangeCopyType.all);
       await context.sync();
+      verificationRange = destRange;
     }
     if (resizeWidth) {
       const cols = range.getEntireColumn();
@@ -722,22 +724,29 @@ async function setCellRange(sheetId, rangeAddr, cells, options = {}) {
     }
     await context.sync();
     const formulaResults = {};
-    if (hasFormulas) {
-      range.load("values,address");
-      await context.sync();
-      const { startCol, startRow } = parseRangeAddress(range.address);
-      for (let r = 0; r < range.values.length; r++) {
-        for (let c = 0; c < range.values[r].length; c++) {
-          if (formulas[r]?.[c]) {
-            formulaResults[cellAddress(startRow + r, startCol + c)] = range.values[r][c];
-          }
+    const formulaErrors = [];
+    verificationRange.load("values,formulas,address");
+    await context.sync();
+    const { startCol, startRow } = parseRangeAddress(verificationRange.address);
+    for (let r = 0; r < verificationRange.values.length; r++) {
+      for (let c = 0; c < verificationRange.values[r].length; c++) {
+        if (typeof verificationRange.formulas[r]?.[c] !== "string" || !verificationRange.formulas[r][c].startsWith("=")) continue;
+        const address = cellAddress(startRow + r, startCol + c);
+        const value = verificationRange.values[r][c];
+        formulaResults[address] = value;
+        if (typeof value === "string" && /^#(?:REF!|VALUE!|NAME\?|DIV\/0!|N\/A|NUM!|NULL!|SPILL!|CALC!)/i.test(value)) {
+          formulaErrors.push({ address, value });
         }
       }
     }
     return {
       success: true,
+      commitStatus: "committed",
+      writtenRange: verificationRange.address.split("!")[1] || verificationRange.address,
       cellsWritten: cells.flat().length,
+      cellsCommitted: verificationRange.values.length * (verificationRange.values[0]?.length ?? 0),
       ...Object.keys(formulaResults).length > 0 && { formulaResults },
+      ...formulaErrors.length > 0 && { formulaErrors },
       ...messages.length > 0 && { messages }
     };
   });
@@ -779,10 +788,25 @@ async function copyTo(sheetId, sourceRange, destinationRange, allowOverwrite = f
     }
     dest.copyFrom(source, Excel.RangeCopyType.all);
     await context.sync();
+    dest.load("values,formulas,address");
+    await context.sync();
+    const formulaErrors = [];
+    const { startCol, startRow } = parseRangeAddress(dest.address);
+    for (let r = 0; r < dest.values.length; r++) {
+      for (let c = 0; c < dest.values[r].length; c++) {
+        const formula = dest.formulas[r]?.[c];
+        const value = dest.values[r][c];
+        if (typeof formula === "string" && formula.startsWith("=") && typeof value === "string" && /^#(?:REF!|VALUE!|NAME\?|DIV\/0!|N\/A|NUM!|NULL!|SPILL!|CALC!)/i.test(value)) {
+          formulaErrors.push({ address: cellAddress(startRow + r, startCol + c), value });
+        }
+      }
+    }
     return {
       success: true,
+      commitStatus: "committed",
       source: sourceRange,
-      destination: destinationRange
+      destination: destinationRange,
+      ...formulaErrors.length > 0 && { formulaErrors }
     };
   });
 }

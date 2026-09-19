@@ -39,7 +39,7 @@ PROMPT = """You need to solve the given spreadsheet manipulation question, which
 - instruction_type: There are two values (Cell-Level Manipulation, Sheet-Level Manipulation) used to indicate whether the answer to this question applies only to specific cells or to the entire worksheet.
 - answer_position: The position need to be modified or filled. For Cell-Level Manipulation questions, this field is filled with the cell position; for Sheet-Level Manipulation, it is the maximum range of cells you need to modify. You only need to modify or fill in values within the cell range specified by answer_position.
 
-The workbook is already open in Excel. Make the changes directly in it; do not create other files. Do not ask clarifying questions — complete the task.
+The workbook is already open in Excel. Make the changes directly in it; do not create other files. You are authorized to overwrite existing cells within answer_position when the instruction requires it, but do not change cells outside that scope. Do not ask clarifying questions — complete the task.
 
 ### instruction
 {instruction}
@@ -53,6 +53,7 @@ The workbook is already open in Excel. Make the changes directly in it; do not c
 
 # Daemon results that mean the harness, not the model, failed.
 INFRA_STATUSES = {"no_pane", "busy", "bad_request"}
+XL_MAXIMIZED = -4137
 
 
 def qualified_answer_position(task: dict) -> str:
@@ -143,10 +144,10 @@ def excel_app():
     return app
 
 
-def tool_errors(transcript: Path | None) -> int:
+def tool_error_summary(transcript: Path | None) -> dict:
     if not transcript or not transcript.exists():
-        return 0
-    count = 0
+        return {"count": 0, "categories": {}, "first": None}
+    errors = []
     for line in transcript.read_text(encoding="utf-8").splitlines():
         try:
             entry = json.loads(line)
@@ -154,8 +155,32 @@ def tool_errors(transcript: Path | None) -> int:
             continue
         content = (entry.get("message") or {}).get("content")
         if entry.get("type") == "user" and isinstance(content, list):
-            count += sum(1 for block in content if block.get("type") == "tool_result" and block.get("is_error"))
-    return count
+            for block in content:
+                if block.get("type") != "tool_result" or not block.get("is_error"):
+                    continue
+                value = block.get("content")
+                if isinstance(value, list):
+                    value = " ".join(str(part.get("text", "")) for part in value if isinstance(part, dict))
+                errors.append(str(value or "Unknown tool error"))
+    categories = {}
+    for error in errors:
+        lowered = error.lower()
+        if "input validation error" in lowered:
+            category = "argument_validation"
+        elif "would overwrite" in lowered:
+            category = "overwrite_guard"
+        elif "worksheet with id" in lowered and "not found" in lowered:
+            category = "stale_sheet_id"
+        elif "no such tool available" in lowered:
+            category = "tool_name"
+        elif any(term in lowered for term in ("modulenotfounderror", "powershell: command not found", "no such file or directory")):
+            category = "sandbox_environment"
+        elif "timed out" in lowered or "timeout" in lowered:
+            category = "timeout"
+        else:
+            category = "other"
+        categories[category] = categories.get(category, 0) + 1
+    return {"count": len(errors), "categories": categories, "first": errors[0][:500] if errors else None}
 
 
 def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: tuple[str, str], compare) -> dict:
@@ -189,6 +214,9 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
     app.Visible = True
     started = time.perf_counter()
     workbook = app.Workbooks.Open(str(workbook_path), UpdateLinks=0)
+    # Many benchmark files were saved minimized; Excel then never loads the task pane.
+    for window in workbook.Windows:
+        window.WindowState = XL_MAXIMIZED
     phase("open", started)
     try:
         started = time.perf_counter()
@@ -230,6 +258,10 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
     started = time.perf_counter()
     try:
         preservation = unauthorized_edits(init_file, workbook_path, answer_position, args.compare_values)
+        # When the reference solution itself edits outside answer_position (e.g. the
+        # instruction also asks to sort a source column), the check can't judge the task.
+        gold = unauthorized_edits(init_file, golden_file, answer_position, args.compare_values, limit=0)
+        preservation["gold_unauthorized_cells"] = gold["unauthorized_cells"]
     except Exception as exc:
         preservation = {"error": f"{type(exc).__name__}: {exc}"}
     phase("preservation", started)
@@ -246,16 +278,20 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
     else:
         infra = "ok"
 
+    error_summary = tool_error_summary(task_dir / "transcript.jsonl")
     record.update(
         {
             "passed": bool(passed),
             "agent_status": agent_status,
             "infra_status": infra,
             "unauthorized_cells": preservation.get("unauthorized_cells"),
+            "gold_unauthorized_cells": preservation.get("gold_unauthorized_cells"),
             "model": agent.get("model"),
             "session_id": agent.get("sessionId"),
             "tool_calls": len(agent.get("tools", [])),
-            "tool_errors": tool_errors(task_dir / "transcript.jsonl"),
+            "tool_errors": error_summary["count"],
+            "tool_error_categories": error_summary["categories"],
+            "first_tool_error": error_summary["first"],
             "agent_duration_s": round((agent.get("monotonicMs") or 0) / 1000, 1),
             "agent_wall_s": round((agent.get("durationMs") or 0) / 1000, 1),
             "max_gap_s": round(max(agent.get("maxWallGapMs") or 0, agent.get("maxMonotonicGapMs") or 0) / 1000, 1),
@@ -264,6 +300,15 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
             "error": agent.get("error"),
         }
     )
+    if infra != "ok":
+        record["failure_class"] = "infrastructure"
+    elif passed:
+        record["failure_class"] = "passed"
+    elif error_summary["count"]:
+        record["failure_class"] = "tool_or_recovery"
+    else:
+        record["failure_class"] = "agent_or_benchmark"
+
     (task_dir / "attempt.json").write_text(
         json.dumps({**record, "preservation": preservation, "agent": agent, "prompt": prompt}, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -284,7 +329,12 @@ def summarize(run: str, results: list[dict]) -> dict:
     durations = [r["agent_duration_s"] for r in ok]
     usage_keys = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")
     tokens = {k: sum((r.get("usage") or {}).get(k) or 0 for r in ok) for k in usage_keys}
-    preserved = [r for r in ok if r.get("unauthorized_cells") is not None]
+    checkable = [r for r in ok if r.get("unauthorized_cells") is not None]
+    preserved = [r for r in checkable if not r.get("gold_unauthorized_cells")]
+    tool_error_categories: dict[str, int] = {}
+    for result in ok:
+        for category, count in (result.get("tool_error_categories") or {}).items():
+            tool_error_categories[category] = tool_error_categories.get(category, 0) + count
     return {
         "run": run,
         "attempted": n,
@@ -299,8 +349,13 @@ def summarize(run: str, results: list[dict]) -> dict:
         },
         "infra_statuses": {s: sum(r["infra_status"] == s for r in results) for s in sorted({r["infra_status"] for r in results})},
         "agent_statuses": {str(s): sum(r["agent_status"] == s for r in results) for s in sorted({str(r["agent_status"]) for r in results})},
+        "failure_classes": {
+            status: sum((r.get("failure_class") or "unknown") == status for r in results)
+            for status in sorted({r.get("failure_class") or "unknown" for r in results})
+        },
         "preservation": {
             "checked": len(preserved),
+            "skipped_gold_edits_outside": len(checkable) - len(preserved),
             "tasks_with_unauthorized_edits": sum(1 for r in preserved if r["unauthorized_cells"]),
             "unauthorized_cells_total": sum(r["unauthorized_cells"] for r in preserved),
             "passed_but_damaged": sum(1 for r in preserved if r["passed"] and r["unauthorized_cells"]),
@@ -312,6 +367,7 @@ def summarize(run: str, results: list[dict]) -> dict:
         },
         "tool_calls_mean": round(statistics.mean(r["tool_calls"] for r in ok), 1) if ok else None,
         "tool_errors_total": sum(r["tool_errors"] for r in ok),
+        "tool_error_categories": tool_error_categories,
         "tokens_infra_ok": tokens,
         "tokens_per_task_mean": {k: round(v / max(len(ok), 1)) for k, v in tokens.items()},
     }
