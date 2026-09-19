@@ -11458,6 +11458,56 @@ async function hasValueDataInRange(context, targetRange) {
   await context.sync();
   return !usedRange.isNullObject;
 }
+async function captureModifyStructureState(args) {
+  return excelRun(async (context) => {
+    const sheet = context.workbook.worksheets.getItemOrNullObject(args.sheetRef);
+    sheet.load("isNullObject,id,name,visibility");
+    await context.sync();
+    if (sheet.isNullObject) {
+      return null;
+    }
+    if (args.kind === "sheet_name") {
+      return {
+        kind: "sheet_name",
+        sheetId: sheet.id,
+        name: sheet.name
+      };
+    }
+    if (args.kind === "sheet_visibility") {
+      const visibility = sheet.visibility;
+      if (!isRecoverySheetVisibility(visibility)) {
+        return null;
+      }
+      return {
+        kind: "sheet_visibility",
+        sheetId: sheet.id,
+        visibility
+      };
+    }
+    if (args.kind === "sheet_absent") {
+      return {
+        kind: "sheet_absent",
+        sheetId: sheet.id,
+        sheetName: sheet.name
+      };
+    }
+    if (args.kind !== "rows_absent" && args.kind !== "columns_absent") {
+      return null;
+    }
+    const position = normalizePositiveInteger(args.position);
+    const count = normalizePositiveInteger(args.count);
+    if (position === null || count === null) {
+      return null;
+    }
+    return {
+      kind: args.kind,
+      sheetId: sheet.id,
+      sheetName: sheet.name,
+      position,
+      count
+    };
+  });
+}
 
 // src/workbook/recovery/structure-apply.ts
 async function loadSheetById(context, sheetId) {
@@ -14237,5 +14287,9 @@ var WorkbookRecoveryLog = class {
 export {
   MAX_RECOVERY_CELLS,
   WorkbookRecoveryLog,
-  captureFormatCellsState
+  captureFormatCellsState,
+  captureModifyStructureState,
+  captureSheetValueDataRange,
+  captureValueDataRange,
+  isRecoverySheetVisibility
 };
