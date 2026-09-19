@@ -514,6 +514,31 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null, { sig
     },
   );
 
+  const excel_fill_formula = tool(
+    "excel_fill_formula",
+    "WRITE. Fill one Excel formula through a target range using relative-reference translation. Give the target range and one formula; do not build a formula matrix. Returns the computed results and formula errors for verification. Set allow_overwrite=true when the user's requested edit includes replacing existing cells in that range.",
+    {
+      sheetId,
+      range: z.string().min(1).describe("Full target range in A1 notation, e.g. 'F2:F5000'."),
+      formula: z.string().min(2).startsWith("=").describe("Formula for the top-left cell, e.g. '=SUM(B2:E2)'."),
+      allow_overwrite: z.boolean().optional(),
+      explanation,
+    },
+    (args) => {
+      try {
+        if (!parseA1RangeSize(args.range)) {
+          throw new Error("range must be a valid A1 cell or rectangular range");
+        }
+        const { formula, ...writeArgs } = args;
+        return wrap("excel_set_cell_range")(
+          prepareCellWrite(writeArgs, [[{ formula }]]),
+        );
+      } catch (error) {
+        return asMcpError(error);
+      }
+    },
+  );
+
   const excel_clear_cell_range = tool(
     "excel_clear_cell_range",
     "WRITE. Clear contents, formatting, or both from a range. 'contents' keeps formatting, 'formats' keeps values, 'all' clears everything.",
@@ -649,6 +674,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null, { sig
     excel_search_data,
     excel_get_all_objects,
     excel_set_cell_range,
+    excel_fill_formula,
     excel_clear_cell_range,
     excel_copy_to,
     excel_modify_sheet_structure,

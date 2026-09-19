@@ -161,6 +161,12 @@ function workbookCommands(call) {
           cells: chunk,
           allow_overwrite: true,
         }, { signal: ctx.signal });
+        if (result?.commitStatus !== "committed") {
+          throw new Error(
+            `Write to ${range} did not confirm commit (status: ${result?.commitStatus ?? "unknown"}). ` +
+              "Re-read this range before retrying.",
+          );
+        }
         committed.push(result?.writtenRange ?? range);
         if (result?.formulaErrors?.length) {
           return failure(
@@ -171,7 +177,7 @@ function workbookCommands(call) {
       }
       return {
         stdout:
-          `Wrote and verified ${rows.length} rows x ${width} columns to sheet ${sheetId} at ${target} ` +
+          `Committed ${rows.length} rows x ${width} columns to sheet ${sheetId} at ${target} ` +
           `in ${committed.length} committed chunk(s)\n`,
         stderr: "",
         exitCode: 0,

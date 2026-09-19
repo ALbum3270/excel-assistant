@@ -175,3 +175,35 @@ test("set-cell recovers unescaped formula JSON and expands a row pattern", async
     },
   });
 });
+
+test("fill-formula sends one formula and a translated fill range", async () => {
+  const calls = [];
+  const server = createOfficeBridgeMcp(
+    {
+      async callTaskpaneTool(name, args) {
+        calls.push({ name, args });
+        return { success: true, commitStatus: "committed" };
+      },
+    },
+    "excel",
+    "test-pane",
+  );
+
+  await server.instance._registeredTools.excel_fill_formula.handler({
+    sheetId: 1,
+    range: "F2:F5000",
+    formula: "=SUM(B2:E2)",
+    allow_overwrite: true,
+  });
+
+  assert.deepEqual(calls[0], {
+    name: "excel_set_cell_range",
+    args: {
+      sheetId: 1,
+      range: "F2",
+      copyToRange: "F2:F5000",
+      cells: [[{ formula: "=SUM(B2:E2)" }]],
+      allow_overwrite: true,
+    },
+  });
+});

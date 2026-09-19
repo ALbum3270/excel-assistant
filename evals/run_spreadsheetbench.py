@@ -37,9 +37,9 @@ TOKEN_FILE = Path.home() / ".claude" / "office-addins" / "bridge-token"
 PROMPT = """You need to solve the given spreadsheet manipulation question, which contains three types of information:
 - instruction: The question about spreadsheet manipulation.
 - instruction_type: There are two values (Cell-Level Manipulation, Sheet-Level Manipulation) used to indicate whether the answer to this question applies only to specific cells or to the entire worksheet.
-- answer_position: The position need to be modified or filled. For Cell-Level Manipulation questions, this field is filled with the cell position; for Sheet-Level Manipulation, it is the maximum range of cells you need to modify. You only need to modify or fill in values within the cell range specified by answer_position.
+- answer_position: The designated answer cells. For Cell-Level Manipulation questions, this field is a cell position; for Sheet-Level Manipulation, it is the maximum answer range. The instruction may explicitly require an additional edit elsewhere (such as sorting a source column); make that edit if necessary to complete the instruction.
 
-The workbook is already open in Excel. Make the changes directly in it; do not create other files. You are authorized to overwrite existing cells within answer_position when the instruction requires it, but do not change cells outside that scope. Do not ask clarifying questions — complete the task.
+The workbook is already open in Excel. Make the changes directly in it; do not create other files. You are authorized to overwrite existing cells in answer_position and in any additional range explicitly named by the instruction when the requested operation requires it. Do not change unrelated cells. Do not ask clarifying questions — complete the task.
 
 ### instruction
 {instruction}

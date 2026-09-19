@@ -20,6 +20,7 @@ Read freely:
 
 Write only when the user asks to modify, add or delete:
 - `excel_set_cell_range` — values, formulas, notes and styles; returns `formulaResults`.
+- `excel_fill_formula` — fill one formula through an entire target range with relative references adjusted by Excel. Prefer this over constructing a matrix of formulas.
 - `excel_copy_to` — copy a range with formula translation (fill a pattern down or across).
 - `excel_clear_cell_range`, `excel_modify_sheet_structure` (insert/delete/hide/freeze rows or columns), `excel_modify_workbook_structure` (create/delete/rename/duplicate sheets), `excel_resize_range`, `excel_modify_object` (charts, pivot tables), `excel_set_format`, `excel_sort_range`, `excel_autofilter`, `excel_create_table`, `excel_add_table_rows`.
 - `excel_select_range` — move the user's selection to a cell or range ("go to", "select", "highlight").
@@ -57,7 +58,7 @@ If tools named `mcp__thepexcel-excel__*` are available, they drive the same runn
 
 ## Verify before reporting
 
-- Require `commitStatus: "committed"` after every write. If a timeout reports unknown state, re-read the target before retrying.
+- For `excel_set_cell_range`, `excel_fill_formula`, `excel_copy_to`, and `csv-to-sheet`, require `commitStatus: "committed"` (or the shell's committed-chunk report). Other write tools report success without the unified commit field yet; re-read their affected ranges or objects. If a timeout reports unknown state, re-read the target before retrying.
 - Check `formulaResults` and `formulaErrors` after every formula write; fix `#REF!`, `#VALUE!`, `#NAME?`, `#DIV/0!` or circular references before responding.
 - Inserting rows or columns may not expand existing formula ranges (SUM, AVERAGE) — re-read and fix them.
 - Before the final answer, re-read the key outputs you produced. Report only what you actually did and checked; say explicitly if something is incomplete.

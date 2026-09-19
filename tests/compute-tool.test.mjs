@@ -18,7 +18,7 @@ test("csv-to-sheet writes parsed values through the workbook bridge", async () =
   });
 
   assert.equal(result.exitCode, 0);
-  assert.match(result.stdout, /Wrote and verified 3 rows x 2 columns/);
+  assert.match(result.stdout, /Committed 3 rows x 2 columns/);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].name, "excel_set_cell_range");
   assert.equal(calls[0].args.range, "F2:G4");
