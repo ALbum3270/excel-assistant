@@ -144,6 +144,33 @@ def excel_app():
     return app
 
 
+EXCEL_READY_TIMEOUT_S = 600
+
+
+class ExcelUnavailable(RuntimeError):
+    """Excel stopped answering COM calls; later tasks would fail the same way."""
+
+
+def ready_excel(run_dir: Path):
+    # A task can leave Excel recalculating for a long time (e.g. whole-column
+    # array formulas). Wait for it, and close eval workbooks a failed task left
+    # open, instead of failing every remaining task in seconds.
+    deadline = time.monotonic() + EXCEL_READY_TIMEOUT_S
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            app = excel_app()
+            if app.Ready:
+                for workbook in list(app.Workbooks):
+                    if Path(workbook.FullName).resolve().is_relative_to(run_dir.resolve()):
+                        workbook.Close(SaveChanges=False)
+                return app
+        except Exception as exc:
+            last_error = exc
+        time.sleep(5)
+    raise ExcelUnavailable(f"Excel did not respond within {EXCEL_READY_TIMEOUT_S}s: {last_error}")
+
+
 def tool_error_summary(transcript: Path | None) -> dict:
     if not transcript or not transcript.exists():
         return {"count": 0, "categories": {}, "first": None}
@@ -212,7 +239,7 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
     )
     phase("prepare", started)
 
-    app = excel_app()
+    app = ready_excel(run_dir)
     alerts, visible = app.DisplayAlerts, app.Visible
     app.DisplayAlerts = False
     app.Visible = True
@@ -439,6 +466,10 @@ def main() -> None:
         started = time.perf_counter()
         try:
             result = run_task(task, args.dataset, run_dir, args, token, addin, compare_workbooks)
+        except ExcelUnavailable as exc:
+            # Stop without recording results; --retry-infra or a rerun picks these tasks up.
+            print(f"[{index}/{len(selected)}] {task['id']}: run stopped — {exc}", flush=True)
+            break
         except Exception as exc:
             # One broken task (COM error, unreadable workbook) must not end the run.
             result = {

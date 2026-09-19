@@ -54,7 +54,7 @@ function workbookCommands(call) {
     const [sheetArg, second, third] = args;
     const sheetId = Number.parseInt(sheetArg, 10);
     if (!Number.isInteger(sheetId)) {
-      return failure("Usage: sheet-to-csv <sheetId> [range] [file]  (sheetId from excel_get_workbook_metadata)");
+      return failure("Usage: sheet-to-csv <sheetId> [range] [file]  (sheetId from mcp__office__excel_get_workbook_metadata or the [Auto-context] overview)");
     }
     let range = second && /^[A-Z]+\d+(:[A-Z]+\d+)?$/i.test(second) ? second : undefined;
     const outFile = range ? third : second;
@@ -207,7 +207,8 @@ export const COMPUTE_TOOL_DESCRIPTION =
   "`csv-to-sheet <file> <sheetId> [startCell] [--force]` writes a CSV back (refuses to overwrite data unless --force, " +
   "which is allowed when the user's requested edit targets those cells). Typical flow: " +
   "sheet-to-csv 1 A1:D5000 data.csv && python3 script.py && " +
-  "csv-to-sheet out.csv 1 F1. Write scripts with heredocs (cat > script.py <<'EOF' ... EOF). " +
+  "csv-to-sheet out.csv 1 F1. sheet-to-csv and csv-to-sheet are shell commands: run them in the shell, " +
+  "not from Python (subprocess cannot reach them). Write scripts with heredocs (cat > script.py <<'EOF' ... EOF). " +
   "Use sandbox paths such as data.csv; Windows paths, cd into the project, PowerShell, network access, openpyxl, " +
   "pandas and numpy are unavailable. Output is truncated to 30000 characters per stream.";
 

@@ -522,3 +522,33 @@ R6、R7已实施。Context缓存和在途读取现在绑定workspace及请求代
 - VBA 和 Python in Excel 的拒绝逻辑。
 
 node 111/111，评测脚本测试通过。
+
+**三十五、10 题样本与随后的修复**
+
+`sample10-flash-394778d` 跑到第 5 题 1818 时，模型写出整列数组公式（`MATCH(1,(Data!$C:$C=…)*(COUNTIF($B$2:B2,Data!$A:$A)=1),0)`），并向下填了 66 行。Excel 重算超过一小时，此后 6 题全部因 COM 失败而无效。为此做了两处修复：系统提示禁止在数组运算中引用整列，改用实际数据区域；评测脚本在每题开始前等待 Excel 恢复，并关闭上一题残留的工作簿，10 分钟仍无响应则停止整轮评测，不再把剩余题目空跑掉。
+
+`sample10-flash-r2`（同样 10 题）：
+- 通过 4/10，基础设施 10/10 正常；
+- 平均每题 10.5 次工具调用，耗时中位数 76 秒；
+- 能核查的 7 题没有答案区外误改；
+- 1818 没有再卡住 Excel。
+
+失败的 6 题基本都是模型问题：
+- 118-50 理解错题意；
+- 183-8 公式逻辑错误；
+- 1818 没写公式，直接填了手算的值，并错了一行；
+- 170-13、208-20 的数据行数不对，越界检查已拦住；
+- 32093 题意本身有歧义。
+
+18 次工具错误中，最多的是工具名漏写 `mcp__office__` 前缀，共 8 次。
+
+随后修复（未再评测）：
+- 提示词和工具说明统一使用完整工具名。原先整篇都写不带前缀的名字，只靠一句话说明前缀，模型照抄了不带前缀的写法。
+- `excel_bash` 说明中注明沙箱命令只能在 shell 中运行，不能从 Python 的 subprocess 调用。
+- 公式写入被 Excel 以 `InvalidArgument` 拒绝时，附上常见语法错误提示，例如用了 `!=` 而不是 `<>`。Pi 的 `validateFormula` 只检查引号和括号，发现不了这类错误，所以未采用。
+- 其余 10 个写工具成功后统一返回 `commitStatus: "committed"`（Excel.run 已同步即已提交），提示词中不再需要特例说明。
+- manifest 的 ExcelApi 最低版本从 1.4 提到 1.9。本地 Office.js 运行时的版本检查显示，`Range.copyFrom` 和 `Worksheet.shapes` 都需要 1.9。
+- 许可证：office-agents 上游只在 README 和 package.json 声明 MIT，没有 LICENSE 文件，因此在 vendor 目录补上 MIT 文本；NOTICE 补充了 pi-for-excel、just-bash、PapaParse 和 SpreadsheetBench（CC BY-SA 4.0，仅用于评测）。
+- 金融技能按“Office JS 环境”编写，而本项目没有执行原始 Office.js 的工具。提示词说明了如何改用对应工具，并忽略技能中的 openpyxl 和 recalc 步骤。
+
+node 112/112，评测脚本测试通过。

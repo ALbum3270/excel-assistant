@@ -747,8 +747,20 @@ function sendRequest(type, payload = {}) {
 // ---------------------------------------------------------------------------
 // Tool dispatcher
 // ---------------------------------------------------------------------------
-async function describeOfficeToolError(error) {
+// Excel rejects a malformed formula with a generic, localized "invalid
+// argument" message. Its code is stable, so name the likely cause.
+function hasFormulaInput(args) {
+  return JSON.stringify(args?.cells ?? []).includes('"formula"');
+}
+
+async function describeOfficeToolError(error, args) {
   const message = error?.message ?? String(error);
+  if (error?.code === "InvalidArgument" && hasFormulaInput(args)) {
+    return (
+      `${message} (Excel rejected the write as an invalid argument; check the formula uses Excel syntax: ` +
+      '<> not !=, = not ==, AND()/OR() not &&/||, text in double quotes, balanced parentheses.)'
+    );
+  }
   if (!/Worksheet with ID .+ not found/i.test(message)) return message;
   try {
     const metadata = await getWorkbookMetadata();
@@ -803,7 +815,7 @@ async function contextSnapshot({ selectionAddress = null } = {}) {
   ]);
   const sheetIds = (metadata?.sheetsMetadata ?? []).map((sheet) => `${sheet.name}=${sheet.id}`);
   const workbookParts = [];
-  if (sheetIds.length) workbookParts.push(limitContextText(`sheetId for excel_* tools: ${sheetIds.join(", ")}`, 4000));
+  if (sheetIds.length) workbookParts.push(limitContextText(`sheetId for mcp__office__excel_* tools: ${sheetIds.join(", ")}`, 4000));
   if (overview) workbookParts.push(limitContextText(overview, 8000));
   return {
     workbook: workbookParts.join("\n\n") || null,
@@ -811,6 +823,21 @@ async function contextSnapshot({ selectionAddress = null } = {}) {
     changes: limitContextText(changeTracker.flush(), 3000),
   };
 }
+
+const WRITE_TOOLS = new Set([
+  "excel_set_cell_range",
+  "excel_clear_cell_range",
+  "excel_copy_to",
+  "excel_modify_sheet_structure",
+  "excel_modify_workbook_structure",
+  "excel_resize_range",
+  "excel_modify_object",
+  "excel_set_format",
+  "excel_sort_range",
+  "excel_autofilter",
+  "excel_create_table",
+  "excel_add_table_rows",
+]);
 
 async function runOfficeTool(msg) {
   const { id, name, args } = msg;
@@ -929,11 +956,17 @@ async function runOfficeTool(msg) {
     // daemon timeout/session stop must prevent a late result from being
     // mistaken for the current turn's result.
     if (cancelledToolCalls.delete(id)) return;
+    // Excel.run has synced by the time a tool resolves, so every write that
+    // returns is committed. Timeouts and disconnects are reported as "unknown"
+    // by the daemon. One field for all writes keeps the contract uniform.
+    if (WRITE_TOOLS.has(name) && result && typeof result === "object" && !("commitStatus" in result)) {
+      result = { ...result, commitStatus: "committed" };
+    }
     wsSend({ type: "tool_result", id, ok: true, result });
   } catch (err) {
     if (cancelledToolCalls.delete(id)) return;
     console.error(`[tool ${name}] failed:`, err);
-    wsSend({ type: "tool_result", id, ok: false, error: await describeOfficeToolError(err) });
+    wsSend({ type: "tool_result", id, ok: false, error: await describeOfficeToolError(err, args) });
   }
 }
 

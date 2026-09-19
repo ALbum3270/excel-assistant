@@ -20,14 +20,14 @@
   </AppDomains>
 
   <!--
-    Minimum Excel API version. Required for getUsedRangeOrNullObject and
-    the *OrNullObject helpers. The onSelectionChanged event (1.7+) is
-    wired up inside a try/.catch in taskpane.js, so its absence
-    degrades selection-tracking gracefully — no need to require 1.7.
+    Minimum Excel API version: 1.9, for Range.copyFrom (formula fill and
+    copy_to) and Worksheet.shapes (workbook overview). Versions checked
+    against the local Office.js runtime's API gates. Newer features such as
+    the change event's triggerSource (1.14) degrade gracefully when absent.
   -->
   <Requirements>
-    <Sets DefaultMinVersion="1.4">
-      <Set Name="ExcelApi" MinVersion="1.4" />
+    <Sets DefaultMinVersion="1.9">
+      <Set Name="ExcelApi" MinVersion="1.9" />
     </Sets>
   </Requirements>
 

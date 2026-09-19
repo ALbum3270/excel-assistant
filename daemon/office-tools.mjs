@@ -170,7 +170,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null, { sig
 
   const excel_get_selected_range = tool(
     "excel_get_selected_range",
-    "Return the user's current selection in the active Excel workbook. Includes its full address and dimensions plus a bounded top-left values preview. When truncated is true, use excel_get_cell_ranges to read the specific rows or columns needed. Call whenever the user refers to 'this', 'these cells', 'the selection', or asks to edit existing content without specifying location.",
+    "Return the user's current selection in the active Excel workbook. Includes its full address and dimensions plus a bounded top-left values preview. When truncated is true, use mcp__office__excel_get_cell_ranges to read the specific rows or columns needed. Call whenever the user refers to 'this', 'these cells', 'the selection', or asks to edit existing content without specifying location.",
     {
       cellLimit: z
         .number()
@@ -302,7 +302,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null, { sig
     .number()
     .int()
     .describe(
-      "Worksheet ID from excel_get_workbook_metadata (stable per workbook, not the tab position).",
+      "Worksheet ID from mcp__office__excel_get_workbook_metadata (stable per workbook, not the tab position).",
     );
   const explanation = z.string().optional().describe("Brief explanation (a few words).");
   const borderSide = z
@@ -372,7 +372,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null, { sig
 
   const excel_get_workbook_metadata = tool(
     "excel_get_workbook_metadata",
-    "READ. Workbook blueprint: file name, every sheet with its stable sheetId, name, used size and frozen panes, plus the active sheet and current selection. Call this first to get the sheetId values the other excel_* tools require.",
+    "READ. Workbook blueprint: file name, every sheet with its stable sheetId, name, used size and frozen panes, plus the active sheet and current selection. Call this first to get the sheetId values the other mcp__office__excel_* tools require.",
     {},
     wrap("excel_get_workbook_metadata"),
   );

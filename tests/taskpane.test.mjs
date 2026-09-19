@@ -179,7 +179,7 @@ test("auto-context bounds text and shares an unfinished overview read", async ()
     assert.ok(result.workbook.length <= 4010 + 8000);
     assert.ok(result.selection.length <= 12000);
     assert.match(result.selection, /Errors nearby: B3=#DIV\/0!/);
-    assert.match(result.workbook, /sheetId for excel_\* tools: Sheet1=1/);
+    assert.match(result.workbook, /sheetId for mcp__office__excel_\* tools: Sheet1=1/);
   }
 });
 
@@ -229,4 +229,20 @@ test("an old context response cannot overwrite a newly selected workspace", asyn
   assert.equal(state.contextCacheCwd, "C:\\new");
   assert.equal(state.contextCache.length, 1);
   assert.equal(state.contextCache[0].path, "new.txt");
+});
+
+test("an Excel InvalidArgument on a formula write names likely syntax causes", async () => {
+  const start = source.indexOf("function hasFormulaInput(args)");
+  const end = source.indexOf("const changeTracker = new ChangeTracker();", start);
+  assert.ok(start >= 0 && end > start);
+  const sandbox = { getWorkbookMetadata: async () => ({ sheetsMetadata: [] }) };
+  vm.createContext(sandbox);
+  vm.runInContext(source.slice(start, end), sandbox);
+  const invalid = Object.assign(new Error("参数无效或缺少，或格式不正确。"), { code: "InvalidArgument" });
+
+  const formulaWrite = await sandbox.describeOfficeToolError(invalid, { cells: [[{ formula: '=IF(C2!="",C2,B2)' }]] });
+  const valueWrite = await sandbox.describeOfficeToolError(invalid, { cells: [[{ value: 1 }]] });
+
+  assert.match(formulaWrite, /<> not !=/);
+  assert.equal(valueWrite, invalid.message);
 });
