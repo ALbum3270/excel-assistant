@@ -43,9 +43,9 @@
 
 | 优先级 | 差距 | 谁做得更好（源码位置） | 计划 |
 | --- | --- | --- | --- |
-| P0 | 解题规程：先复述目标区域、变换和输出类型；大范围写入先建完整矩阵，并断言尺寸与目标一致；写后抽查首尾单元格；列出反模式（把宏或说明文字写进单元格、用占位符凑数、差一行） | fabric-rlm `fabric_rlm/skills/excel_modify.md`（MIT），带它上榜的核心配方 | 改写为本项目的技能：openpyxl 步骤换成 Excel 工具，去掉只为迎合判分的“只写值”规则 |
+| 已完成 | 解题规程：先复述目标区域、变换和输出类型；大范围写入先建完整矩阵，并断言尺寸与目标一致；写后抽查首尾单元格；列出反模式（把宏或说明文字写进单元格、用占位符凑数、差一行） | fabric-rlm `fabric_rlm/skills/excel_modify.md`（MIT），带它上榜的核心配方 | 已改写进系统提示词（87ae843） |
 | 已完成 | 撤销与恢复点：值、公式、格式、排序、清空、行列尺寸 | Pi `src/workbook/recovery-log.ts` + `recovery/*` | 已移植并在真实 Excel 中验证了恢复和重做（优化分析第三十七、三十九节）。工作表结构、表格、图表、批注和 COM 写入仍没有恢复点 |
-| P1 | 写后发现新出现的错误值就自动回滚 | MS-Excel-AI-plugin `sidecar/src/changeset/manager.ts` | 在恢复点之上加策略 |
+| 不做 | 写后发现新出现的错误值就自动回滚 | MS-Excel-AI-plugin `sidecar/src/changeset/manager.ts` | `#N/A` 等错误常是预期结果，自动回滚会撤掉正确写入；改为在回执中报告 `formulaErrors`，由模型判断，需要时用恢复点撤销 |
 | P1 | 公式解释、依赖追踪 | Pi `explain-formula.ts`、`trace-dependencies.ts` | 评估依赖后移植 |
 | P2 | 修改的预览和审阅界面 | Pi 的工具渲染器、MS-Excel-AI-plugin 的预览 | 在恢复点完成后做 |
 | P2 | 单元格 AI 函数（分类、抽取、拆字段、翻译、`MAP` 批量等） | ExcelLLMAddin `officejs/src/functions/functions.ts`、`core/tasks.ts`；cellm | 需要在 manifest 里加自定义函数；另一类功能，按需求决定 |
