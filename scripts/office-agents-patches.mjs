@@ -4,7 +4,7 @@
 import { patchBoundedReads } from "./office-agents-read-patches.mjs";
 import { readFileSync } from "node:fs";
 
-function replaceOnce(source, name, before, after) {
+export function replaceOnce(source, name, before, after) {
   const first = source.indexOf(before);
   const second = first === -1 ? -1 : source.indexOf(before, first + before.length);
   if (first === -1 || second !== -1) {

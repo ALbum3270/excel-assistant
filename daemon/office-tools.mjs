@@ -44,29 +44,6 @@ function columnLetters(number) {
   return result;
 }
 
-function trimUnbalancedClosingBrackets(formula) {
-  let opens = 0;
-  for (const char of formula) {
-    if (char === "[") opens++;
-    if (char === "]") opens--;
-  }
-  while (opens < 0 && formula.endsWith("]")) {
-    formula = formula.slice(0, -1);
-    opens++;
-  }
-  return formula;
-}
-
-function recoverFormulaCells(text) {
-  const formulas = [];
-  const boundary = /(=[\s\S]*?)"\s*\](?=\s*(?:,|\]))/g;
-  for (const match of text.matchAll(boundary)) {
-    const formula = trimUnbalancedClosingBrackets(match[1].trim());
-    if (formula.startsWith("=")) formulas.push(formula);
-  }
-  return formulas.length > 0 ? formulas : null;
-}
-
 function parseCellsPayload(raw) {
   if (typeof raw !== "string") return raw;
   const text = raw.trim();
@@ -74,9 +51,7 @@ function parseCellsPayload(raw) {
   try {
     return JSON.parse(text);
   } catch (error) {
-    const formulas = recoverFormulaCells(text);
-    if (formulas) return formulas;
-    throw new Error(`cells contains invalid JSON: ${error.message}`);
+    throw new Error(`cells is not valid JSON (${error.message}); send cells as an array, not a string`);
   }
 }
 
@@ -101,47 +76,29 @@ function normalizeCellMatrix(raw, range) {
   if (parsed.length === 0) throw new Error("cells must not be empty");
 
   const nested = parsed.map(Array.isArray);
-  if (nested.some(Boolean) && !nested.every(Boolean)) {
-    throw new Error("cells cannot mix rows with individual cell values");
-  }
+  if (nested.every(Boolean)) return parsed.map((row) => row.map(toCellInput));
+  if (nested.some(Boolean)) throw new Error("cells cannot mix rows with individual cell values");
 
-  let rows;
-  if (nested.every(Boolean)) {
-    rows = parsed;
-  } else {
-    const size = parseA1RangeSize(range);
-    if (size && size.rows > 1 && size.columns === 1) {
-      rows = parsed.map((cell) => [cell]);
-    } else if (size && size.rows > 1 && size.columns > 1 && parsed.length === size.rows * size.columns) {
-      rows = Array.from({ length: size.rows }, (_, index) =>
-        parsed.slice(index * size.columns, (index + 1) * size.columns),
-      );
-    } else {
-      rows = [parsed];
-    }
-  }
+  // A flat list is a single row, or a single column when the target is one column wide.
+  // For a multi-row, multi-column target the intended layout is ambiguous, so ask for rows.
   const size = parseA1RangeSize(range);
-  if (
-    size &&
-    size.rows > 1 &&
-    size.columns > 1 &&
-    rows.length === size.columns &&
-    rows.every((row) => row.length === 1)
-  ) {
-    rows = [rows.map((row) => row[0])];
+  if (size && size.columns === 1 && size.rows > 1) return parsed.map((cell) => [toCellInput(cell)]);
+  if (size && size.columns > 1 && size.rows > 1 && parsed.length > 1) {
+    throw new Error(`cells is a flat list but ${range} spans several rows and columns; send a 2D array of rows`);
   }
-  return rows.map((row) => row.map(toCellInput));
+  return [parsed.map(toCellInput)];
 }
 
 function prepareCellWrite(args, cellMatrix) {
   const size = parseA1RangeSize(args.range);
   const width = cellMatrix[0]?.length ?? 0;
-  // A single formula/value aimed at a larger explicit range means "fill this
-  // pattern through the range". Preserve Excel's relative-reference
-  // translation by writing the first cell and using copyToRange.
+  // A formula pattern aimed at a larger explicit range means "fill it through
+  // the range". Preserve Excel's relative-reference translation by writing the
+  // pattern and using copyToRange. Values are never repeated.
   const height = cellMatrix.length;
   if (
     !args.copyToRange &&
+    cellMatrix.every((row) => row.every((cell) => typeof cell.formula === "string")) &&
     size &&
     (height < size.rows || width < size.columns) &&
     size.rows % height === 0 &&
@@ -152,6 +109,15 @@ function prepareCellWrite(args, cellMatrix) {
         ? size.start
         : `${size.start}:${columnLetters(size.startColumn + width - 1)}${size.startRow + height - 1}`;
     return { ...args, range: patternRange, copyToRange: args.range, cells: cellMatrix };
+  }
+  // The task pane resizes the range to the matrix. For an explicit multi-cell
+  // target, growing past it writes cells the model never named (e.g. a 3x1
+  // column sent for the row J3:L3 lands in J3:J5), so refuse instead.
+  if (size && size.rows * size.columns > 1 && (height > size.rows || width > size.columns)) {
+    throw new Error(
+      `cells is ${height}x${width} but range ${args.range} is ${size.rows}x${size.columns}; ` +
+        "the write would spill outside range. Reshape cells (outer array = rows) or fix range.",
+    );
   }
   return { ...args, cells: cellMatrix };
 }
@@ -487,7 +453,7 @@ export function createOfficeBridgeMcp(bridge, host = null, paneKey = null, { sig
 
   const excel_set_cell_range = tool(
     "excel_set_cell_range",
-    "WRITE. Write values, formulas, and formatting to cells. Accepts 2D matrices, 1D rows/columns, single cells, and JSON-encoded arrays. A single formula/value with a larger target range is filled across that range with relative-reference translation. Computed formula values and errors come back for verification. OVERWRITE PROTECTION: use allow_overwrite=true immediately when the user's requested edit targets existing cells; ask only when the overwrite is outside the requested scope. Use copyToRange to expand larger patterns.",
+    "WRITE. Write values, formulas, and formatting to cells. Accepts 2D matrices, a single cell, or a 1D list (a row, or a column when range is one column wide). A formula pattern smaller than range is filled across it with relative-reference translation; values are written once from the top-left cell. Computed formula values and errors come back for verification. OVERWRITE PROTECTION: use allow_overwrite=true immediately when the user's requested edit targets existing cells; ask only when the overwrite is outside the requested scope. Use copyToRange to expand larger patterns.",
     {
       sheetId,
       range: z.string().describe("Target range in A1 notation (auto-expands to match cells)."),

@@ -23,6 +23,7 @@ import {
   searchData,
   setCellRange,
 } from "./vendor/office-agents-excel-api.js";
+import { buildOverview, ChangeTracker, readSelectionContext } from "./vendor/pi-context.js";
 import { isInOrUnder, docDirFromActiveUrl } from "./paths.js";
 import { marked } from "/npm/marked.esm.js";
 import DOMPurify from "/npm/purify.es.mjs";
@@ -760,6 +761,57 @@ async function describeOfficeToolError(error) {
   }
 }
 
+// Per-turn workbook context for the daemon, read with pi-for-excel's
+// overview, selection and change-tracker readers. Each part is optional:
+// a slow or failing read is dropped rather than delaying the turn.
+const changeTracker = new ChangeTracker();
+let overviewRead = null;
+
+function readOverviewSingleFlight() {
+  if (!overviewRead) {
+    const read = Promise.resolve().then(buildOverview);
+    overviewRead = read;
+    read.then(
+      () => { if (overviewRead === read) overviewRead = null; },
+      () => { if (overviewRead === read) overviewRead = null; },
+    );
+  }
+  return overviewRead;
+}
+
+function limitContextText(value, maxLength, preserveTail = false) {
+  if (!value || value.length <= maxLength) return value;
+  const notice = "\n[Context truncated; read the relevant range with an Excel tool.]\n";
+  if (!preserveTail) return value.slice(0, maxLength - notice.length) + notice;
+  const tailLength = Math.min(2000, Math.floor(maxLength / 4));
+  return value.slice(0, maxLength - tailLength - notice.length) + notice + value.slice(-tailLength);
+}
+
+function settleWithin(promise, ms) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+  });
+  return Promise.race([promise.catch(() => null), timeout]).finally(() => clearTimeout(timer));
+}
+
+async function contextSnapshot({ selectionAddress = null } = {}) {
+  const [metadata, overview, selection] = await Promise.all([
+    settleWithin(getWorkbookMetadata(), 1500),
+    settleWithin(readOverviewSingleFlight(), 2500),
+    selectionAddress ? settleWithin(readSelectionContext(selectionAddress), 1500) : null,
+  ]);
+  const sheetIds = (metadata?.sheetsMetadata ?? []).map((sheet) => `${sheet.name}=${sheet.id}`);
+  const workbookParts = [];
+  if (sheetIds.length) workbookParts.push(limitContextText(`sheetId for excel_* tools: ${sheetIds.join(", ")}`, 4000));
+  if (overview) workbookParts.push(limitContextText(overview, 8000));
+  return {
+    workbook: workbookParts.join("\n\n") || null,
+    selection: limitContextText(selection?.text ?? null, 12000, true),
+    changes: limitContextText(changeTracker.flush(), 3000),
+  };
+}
+
 async function runOfficeTool(msg) {
   const { id, name, args } = msg;
   if (cancelledToolCalls.delete(id)) return;
@@ -771,6 +823,9 @@ async function runOfficeTool(msg) {
         break;
       case "excel_get_workbook_metadata":
         result = await getWorkbookMetadata();
+        break;
+      case "excel_context_snapshot":
+        result = await contextSnapshot(args);
         break;
       case "excel_get_cell_ranges":
         result = await getCellRanges(args.sheetId, args.ranges, {
@@ -1022,6 +1077,7 @@ Office.onReady((info) => {
 
   // Capture once on boot.
   captureSelection();
+  changeTracker.start();
 
   // Initialize presets UI.
   initPresets();

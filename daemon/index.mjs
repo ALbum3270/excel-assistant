@@ -1282,7 +1282,9 @@ async function* userMessageStream(key, session) {
     // it needs doc context.
     const trimmed = typeof text === "string" ? text.trimStart() : text;
     const isSlashCommand = typeof trimmed === "string" && trimmed.startsWith("/");
-    const header = renderContextHeader(context);
+    const header = [renderContextHeader(context), isSlashCommand ? "" : await autoContext(key, session, context)]
+      .filter(Boolean)
+      .join("\n\n");
     const content = isSlashCommand ? trimmed : header ? `${header}\n\n${text}` : text;
     // Per-turn tracking so a slash command that produces no assistant text
     // or tool call (terminal-only built-ins like /help, /context, /clear)
@@ -1298,6 +1300,37 @@ async function* userMessageStream(key, session) {
       parent_tool_use_id: null,
     };
   }
+}
+
+// Workbook overview, the selection with nearby rows, and recent workbook edits
+// since the last turn, read by the pane (pi-for-excel readers). The overview is
+// repeated only when it changed within this session. Never blocks a turn for long.
+const AUTO_CONTEXT_TIMEOUT_MS = 4000;
+
+async function autoContext(key, session, ctx) {
+  if (ctx.host !== "excel") return "";
+  let snapshot;
+  try {
+    const signals = [AbortSignal.timeout(AUTO_CONTEXT_TIMEOUT_MS)];
+    if (session?.abortController) signals.push(session.abortController.signal);
+    snapshot = await bridge.callTaskpaneTool(
+      "excel_context_snapshot",
+      { selectionAddress: ctx.selection?.address ?? null },
+      key,
+      { signal: AbortSignal.any(signals) },
+    );
+  } catch (err) {
+    diag(`[auto-context] skipped: ${err?.message ?? err}`);
+    return "";
+  }
+  const sections = [];
+  if (snapshot?.workbook && snapshot.workbook !== session?.lastWorkbookContext) {
+    sections.push(snapshot.workbook);
+    if (session) session.lastWorkbookContext = snapshot.workbook;
+  }
+  if (snapshot?.selection) sections.push(snapshot.selection);
+  if (snapshot?.changes) sections.push(snapshot.changes);
+  return sections.length ? `[Auto-context]\n${sections.join("\n\n")}` : "";
 }
 
 function renderContextHeader(ctx) {

@@ -146,6 +146,43 @@ test("a failed submit-time capture does not reuse stale selection", async () => 
   assert.equal(message.selection, null);
 });
 
+test("auto-context bounds text and shares an unfinished overview read", async () => {
+  const start = source.indexOf("const changeTracker = new ChangeTracker();");
+  const end = source.indexOf("async function runOfficeTool(msg)", start);
+  assert.ok(start >= 0 && end > start);
+
+  let resolveOverview;
+  const pendingOverview = new Promise((resolve) => { resolveOverview = resolve; });
+  let overviewCalls = 0;
+  const selectionAddresses = [];
+  const sandbox = {
+    ChangeTracker: class { flush() { return "changed A1"; } },
+    buildOverview() { overviewCalls++; return pendingOverview; },
+    getWorkbookMetadata: async () => ({ sheetsMetadata: [{ name: "Sheet1", id: 1 }] }),
+    async readSelectionContext(address) {
+      selectionAddresses.push(address);
+      return { text: "S".repeat(15000) + "\nErrors nearby: B3=#DIV/0!" };
+    },
+    setTimeout,
+    clearTimeout,
+    Promise,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(source.slice(start, end), sandbox);
+  const first = sandbox.contextSnapshot({ selectionAddress: "Sheet1!B2" });
+  const second = sandbox.contextSnapshot({ selectionAddress: "Sheet1!B2" });
+  resolveOverview("W".repeat(20000));
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(overviewCalls, 1);
+  assert.deepEqual(selectionAddresses, ["Sheet1!B2", "Sheet1!B2"]);
+  for (const result of [a, b]) {
+    assert.ok(result.workbook.length <= 4010 + 8000);
+    assert.ok(result.selection.length <= 12000);
+    assert.match(result.selection, /Errors nearby: B3=#DIV\/0!/);
+    assert.match(result.workbook, /sheetId for excel_\* tools: Sheet1=1/);
+  }
+});
+
 test("an old context response cannot overwrite a newly selected workspace", async () => {
   const start = source.indexOf("let contextCache = null;");
   const end = source.indexOf("function renderContext()", start);

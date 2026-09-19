@@ -143,7 +143,7 @@ test("range reads accept a model-supplied bracketed string", async () => {
   });
 });
 
-test("set-cell recovers unescaped formula JSON and expands a row pattern", async () => {
+test("set-cell refuses ambiguous payloads and never repeats plain values", async () => {
   const calls = [];
   const server = createOfficeBridgeMcp(
     {
@@ -157,23 +157,21 @@ test("set-cell recovers unescaped formula JSON and expands a row pattern", async
   );
   const handler = server.instance._registeredTools.excel_set_cell_range.handler;
 
-  await handler({
-    sheetId: 1,
-    range: "C2:D11",
-    cells: '[["=IF(A2="","",A2)"], ["=IF(B2="","",B2)"]]',
-    allow_overwrite: true,
-  });
+  const malformed = await handler({ sheetId: 1, range: "C2:D11", cells: '[["=IF(A2="","",A2)"]]' });
+  const flat = await handler({ sheetId: 1, range: "A1:B2", cells: [1, 2, 3, 4] });
+  // A column sent for a row target (seen in 183-8) must not land in J3:J5.
+  const spill = await handler({ sheetId: 1, range: "J3:L3", cells: [["=D3"], ["=E3"], ["=F3"]] });
+  await handler({ sheetId: 1, range: "A1:D1", cells: [["Total"]] });
 
-  assert.deepEqual(calls[0], {
-    name: "excel_set_cell_range",
-    args: {
-      sheetId: 1,
-      range: "C2:D2",
-      cells: [[{ formula: '=IF(A2="","",A2)' }, { formula: '=IF(B2="","",B2)' }]],
-      copyToRange: "C2:D11",
-      allow_overwrite: true,
-    },
-  });
+  assert.equal(malformed.isError, true);
+  assert.match(malformed.content[0].text, /not valid JSON/);
+  assert.equal(flat.isError, true);
+  assert.match(flat.content[0].text, /2D array of rows/);
+  assert.equal(spill.isError, true);
+  assert.match(spill.content[0].text, /3x1 but range J3:L3 is 1x3/);
+  assert.deepEqual(calls, [
+    { name: "excel_set_cell_range", args: { sheetId: 1, range: "A1:D1", cells: [[{ value: "Total" }]] } },
+  ]);
 });
 
 test("fill-formula sends one formula and a translated fill range", async () => {
