@@ -692,9 +692,25 @@ async function setCellRange(sheetId, rangeAddr, cells, options = {}) {
         }
         if (cell.note) {
           cellRange.load("address");
+          const comments = sheet.comments;
+          comments.load("items");
           await context.sync();
-          const cellAddr = cellRange.address.split("!")[1] || cellRange.address;
-          sheet.notes.add(cellAddr, cell.note);
+          const located = comments.items.map((comment) => {
+            const location = comment.getLocation();
+            location.load("address");
+            return { comment, location };
+          });
+          if (located.length > 0) await context.sync();
+          const target = (cellRange.address.split("!").pop() ?? "").toUpperCase();
+          let replaced = false;
+          for (const entry of located) {
+            const at = (entry.location.address.split("!").pop() ?? "").toUpperCase();
+            if (at !== target) continue;
+            entry.comment.delete();
+            replaced = true;
+          }
+          if (replaced) await context.sync();
+          sheet.comments.add(cellRange, cell.note);
         }
       }
     }

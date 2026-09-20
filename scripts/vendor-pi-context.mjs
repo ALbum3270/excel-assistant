@@ -146,6 +146,7 @@ await build({
       'export { captureFormatCellsState } from "./src/workbook/recovery-states.ts";',
       'export { captureModifyStructureState, captureSheetValueDataRange, captureValueDataRange, isRecoverySheetVisibility } from "./src/workbook/recovery/structure-state.ts";',
       'export { captureChartPresentState } from "./src/workbook/recovery/chart-state.ts";',
+      'export { captureCommentThreadState } from "./src/workbook/recovery/comment-state.ts";',
     ].join("\n"),
     resolveDir: sourceRoot,
     loader: "ts",

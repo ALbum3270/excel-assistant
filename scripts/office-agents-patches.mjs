@@ -496,5 +496,41 @@ function excelColorToHex(
   scannedCells: number;
   totalFoundIsExact: boolean;`,
   );
+  // Excel on Windows loads excel-win32-16.01.js, which has CommentCollection
+  // but no NoteCollection, so sheet.notes.add() throws there. Threaded
+  // comments are the equivalent the host does expose, and pi-for-excel's
+  // recovery snapshots cover them.
+  source = replaceOnce(
+    source,
+    "cell notes as threaded comments",
+    `        if (cell.note) {
+          cellRange.load("address");
+          await context.sync();
+          const cellAddr = cellRange.address.split("!")[1] || cellRange.address;
+          sheet.notes.add(cellAddr, cell.note);
+        }`,
+    `        if (cell.note) {
+          cellRange.load("address");
+          const comments = sheet.comments;
+          comments.load("items");
+          await context.sync();
+          const located = comments.items.map((comment) => {
+            const location = comment.getLocation();
+            location.load("address");
+            return { comment, location };
+          });
+          if (located.length > 0) await context.sync();
+          const target = (cellRange.address.split("!").pop() ?? "").toUpperCase();
+          let replaced = false;
+          for (const entry of located) {
+            const at = (entry.location.address.split("!").pop() ?? "").toUpperCase();
+            if (at !== target) continue;
+            entry.comment.delete();
+            replaced = true;
+          }
+          if (replaced) await context.sync();
+          sheet.comments.add(cellRange, cell.note);
+        }`,
+  );
   return patchBoundedReads(source, replaceOnce);
 }

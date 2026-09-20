@@ -11,7 +11,7 @@ It is assembled from open-source projects rather than written from scratch. Each
 - **Read and edit the workbook** through Office.js tools: values, formulas, formatting, sorting, filters, tables, charts, rows, columns and sheets. Reads and searches page through large sheets instead of loading them whole.
 - **See the workbook before it acts.** Every message carries the workbook overview (sheets, headers, tables, named ranges), your selection with the rows around it, and the cells you changed since the last turn.
 - **Explain formulas and trace dependencies.** It can show what feeds a cell and what breaks if you change it.
-- **Undo many of its edits.** Restore points cover values, formulas, formatting, sorting, clearing, rows and columns, sheets, tables, worksheet filters, hidden rows and columns, frozen panes, and chart creation or selected chart properties. Restoring a change can itself be redone.
+- **Undo many of its edits.** Restore points cover values, formulas, formatting, sorting, clearing, rows and columns, sheets, tables, worksheet filters, hidden rows and columns, frozen panes, cell comments, and chart creation or selected chart properties. Restoring a change can itself be redone.
 - **Ask before it writes (optional).** Turn this on and every change waits for Approve, Approve rest of turn or Reject in the chat.
 - **Crunch data too large for the chat** in a sandboxed shell with Python (standard library), awk, jq and sqlite3. Data moves between the sheet and the shell without passing through the model.
 - **Use Excel features Office.js cannot reach** through Windows COM, such as Power Query, PivotTable layouts, the Data Model and DAX, conditional formatting and data validation.
@@ -152,7 +152,7 @@ python -X utf8 evals/run_spreadsheetbench.py --dataset <path/to/spreadsheetbench
 ## Limitations
 
 - Built and tested on Windows only; the COM tools are Windows-only.
-- Restore remains incomplete for chart deletion and data-source changes, PivotTables, comments, duplicated sheets, and writes through the COM tools. New table, filter, hidden-row/column and freeze-pane recovery paths still need live Excel acceptance.
+- Restore remains incomplete for chart deletion and data-source changes, PivotTables, duplicated sheets, and writes through the COM tools. New table, filter, hidden-row/column and freeze-pane recovery paths still need live Excel acceptance.
 - After rows, columns or a sheet are deleted and restored, formulas on other sheets that pointed at them stay `#REF!`.
 
 ## License

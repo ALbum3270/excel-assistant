@@ -4,6 +4,7 @@ import {
   MAX_RECOVERY_CELLS,
   WorkbookRecoveryLog,
   captureChartPresentState,
+  captureCommentThreadState,
   captureFormatCellsState,
   captureModifyStructureState,
   captureSheetValueDataRange,
@@ -331,6 +332,35 @@ async function captureFormatSnapshot(target, selection = CELL_FORMAT_PROPERTIES)
   return { kind: "format", address, state: captured.state, cellCount: captured.state.cellCount };
 }
 
+// A cell note is written as a threaded comment (Excel on Windows has no Notes
+// API), so pi-for-excel's comment_thread snapshots restore it: capture the
+// thread that is at each target cell before the write replaces it.
+const MAX_COMMENT_CAPTURES = 20;
+
+function notedCells(cells) {
+  const noted = [];
+  if (!Array.isArray(cells)) return noted;
+  for (let row = 0; row < cells.length; row += 1) {
+    const line = cells[row];
+    if (!Array.isArray(line)) continue;
+    for (let column = 0; column < line.length; column += 1) {
+      if (line[column]?.note) noted.push({ row, column });
+    }
+  }
+  return noted;
+}
+
+async function captureCommentSnapshot(target, offset) {
+  const address = await Excel.run(async (context) => {
+    const { worksheet, a1 } = await resolveWorksheet(context, target);
+    const cell = worksheet.getRange(a1).getCell(offset.row, offset.column);
+    cell.load("address");
+    await context.sync();
+    return cell.address;
+  });
+  return { kind: "comment", address, state: await captureCommentThreadState(address), cellCount: 1 };
+}
+
 function matrixShape(cells) {
   if (!Array.isArray(cells) || !Array.isArray(cells[0])) return {};
   return { rows: cells.length, columns: cells[0].length };
@@ -386,8 +416,15 @@ function recoveryPlan(name, args) {
           },
         });
       }
-      if (args.cells?.some((row) => row.some((cell) => cell?.note))) {
-        plans.push({ unsupported: "Cell notes are not included in automatic recovery yet." });
+      const noted = notedCells(args.cells);
+      if (noted.length > MAX_COMMENT_CAPTURES) {
+        plans.push({
+          unsupported: `Only ${MAX_COMMENT_CAPTURES} cell comments can be checkpointed in one write; this one sets ${noted.length}.`,
+        });
+      } else {
+        for (const offset of noted) {
+          plans.push({ capture: "comment", target: bySheetId(args.range), offset });
+        }
       }
       return plans;
     }
@@ -1102,7 +1139,9 @@ export async function prepareMutationRecovery(name, args, toolCallId) {
       captures.push(
         item.capture === "format"
           ? await captureFormatSnapshot(item.target, item.selection)
-          : await captureRangeSnapshot(item.target),
+          : item.capture === "comment"
+            ? await captureCommentSnapshot(item.target, item.offset)
+            : await captureRangeSnapshot(item.target),
       );
     } catch (error) {
       failures.push(error?.message ?? String(error));
@@ -1113,7 +1152,15 @@ export async function prepareMutationRecovery(name, args, toolCallId) {
     const snapshots = [];
     for (const capture of captures) {
       try {
-        const snapshot = capture.kind === "format"
+        const snapshot = capture.kind === "comment"
+          ? await recoveryLog.appendCommentThread({
+              toolName: "comments",
+              toolCallId,
+              address: capture.address,
+              changedCount: 1,
+              commentThreadState: capture.state,
+            })
+          : capture.kind === "format"
           ? await recoveryLog.appendFormatCells({
               toolName: "format_cells",
               toolCallId,

@@ -13639,6 +13639,13 @@ async function loadCommentThreadInRange(context, sheet, range) {
     comment: match.comment
   };
 }
+async function captureCommentThreadState(address) {
+  return excelRun(async (context) => {
+    const { sheet, range } = getRange(context, address);
+    const loaded = await loadCommentThreadInRange(context, sheet, range);
+    return cloneRecoveryCommentThreadState(loaded.state);
+  });
+}
 async function applyCommentThreadState(address, targetState) {
   return excelRun(async (context) => {
     const { sheet, range } = getRange(context, address);
@@ -14310,6 +14317,7 @@ export {
   MAX_RECOVERY_CELLS,
   WorkbookRecoveryLog,
   captureChartPresentState,
+  captureCommentThreadState,
   captureFormatCellsState,
   captureModifyStructureState,
   captureSheetValueDataRange,
