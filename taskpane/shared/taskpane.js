@@ -206,9 +206,13 @@ document.getElementById("provider-save")?.addEventListener("click", async () => 
     });
     if (!result.ok) throw new Error(result.error || "Could not save model connection");
     if (status) {
-      status.textContent = result.restarting
-        ? "Saved. Reconnecting to the restarted agent…"
-        : "Saved. Restart the daemon to apply this connection.";
+      const shadowed = result.shadowed?.length
+        ? ` Note: ${result.shadowed.join(", ")} ${result.shadowed.length === 1 ? "is" : "are"} also set in your Windows environment, which wins over this file — clear it there for these settings to take effect.`
+        : "";
+      status.textContent =
+        (result.restarting
+          ? "Saved. Reconnecting to the restarted agent…"
+          : "Saved. Restart the daemon to apply this connection.") + shadowed;
       status.classList.remove("error");
       status.hidden = false;
     }

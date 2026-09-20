@@ -925,11 +925,12 @@ bridge = createBridge({
     },
     set_provider: async (msg, reply) => {
       try {
-        await saveProviderSettings(msg.settings ?? {});
+        const { shadowed } = await saveProviderSettings(msg.settings ?? {});
         reply({
           type: "set_provider_result",
           ok: true,
           restarting: Boolean(process.send),
+          shadowed,
           request_id: msg.request_id,
         });
         if (process.send) setTimeout(() => process.send?.({ type: "restart_daemon" }), 300);
@@ -1933,6 +1934,25 @@ async function saveProviderSettings(settings) {
   }
   while (output.at(-1) === "") output.pop();
   await writeFile(ENV_FILE, `${output.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
+  // process.loadEnvFile() never overrides a variable the OS already set, so a
+  // machine-level ANTHROPIC_* would silently win over what we just wrote.
+  return { shadowed: shadowedEnvKeys(lines, changes) };
+}
+
+function shadowedEnvKeys(lines, changes) {
+  const fromFile = new Map();
+  for (const line of lines) {
+    const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
+    if (!match) continue;
+    const raw = match[2].trim();
+    const quote = raw[0];
+    const quoted = raw.length > 1 && (quote === '"' || quote === "'") && raw.at(-1) === quote;
+    fromFile.set(match[1], quoted ? raw.slice(1, -1) : raw);
+  }
+  return [...changes.keys()].filter((key) => {
+    const live = process.env[key];
+    return live !== undefined && live !== "" && live !== fromFile.get(key);
+  });
 }
 
 // ---------------------------------------------------------------------------
