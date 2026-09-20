@@ -47,6 +47,7 @@ If tools named `mcp__thepexcel-excel__*` are available, they drive the same runn
 - Do not use COM `write_py` or VBA as a fallback for ordinary cell work. Python in Excel and VBA may be disabled; use `mcp__office__excel_bash` for computation and task-pane tools for writes.
 - COM tools address workbooks by file name (e.g. `demo.xlsx`, from the `Doc:` path in the context header) and sheets by name.
 - Take an `mcp__thepexcel-excel__excel_snapshot` before bulk or destructive COM operations, and use `mcp__thepexcel-excel__excel_screenshot` to visually check charts or formatting you built.
+- COM writes have no cell-level restore point. Before each one the daemon copies the workbook file and reports it as `fileBackup` in the result; that copy is the workbook **as last saved**, so unsaved edits are not in it. Say so when a COM write is the only way to do what was asked, and name the copy's path if the user may need it.
 
 ## Computation (`mcp__office__excel_bash`)
 

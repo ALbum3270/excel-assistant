@@ -8,6 +8,7 @@ import {
 import { z } from "zod";
 import { needsApproval } from "./approval.mjs";
 import { canonicalWorkbookId } from "./workbook-execution.mjs";
+import { backupWorkbookFile } from "./com-backup.mjs";
 
 const UPSTREAM_TIMEOUT_MS = 10 * 60_000;
 const UNSUPPORTED_WORKBOOK_ACTIONS = new Set(["open", "create", "save_as", "close"]);
@@ -96,13 +97,30 @@ function targetArguments(name, args, workbookName, supportsWorkbook) {
 }
 
 function resultWithRevision(result, revision) {
+  const { comBackup, ...rest } = result ?? {};
   return {
-    ...result,
+    ...rest,
     content: [
       ...(result?.content ?? []),
       {
         type: "text",
-        text: JSON.stringify({ workbookRevision: revision, coordinated: true }),
+        text: JSON.stringify({
+          workbookRevision: revision,
+          coordinated: true,
+          ...(comBackup
+            ? {
+                fileBackup:
+                  comBackup.status === "skipped"
+                    ? { taken: false, reason: comBackup.reason }
+                    : {
+                        taken: true,
+                        file: comBackup.file,
+                        savedState: comBackup.savedAt,
+                        note: "A copy of the workbook file as it was last saved; edits not yet saved are not in it.",
+                      },
+              }
+            : {}),
+        }),
       },
     ],
   };
@@ -202,7 +220,23 @@ export async function createThepExcelGateway(config, execution) {
                       );
                     }
                   }
+                  // COM writes cannot be undone from a range snapshot, so keep
+                  // a copy of the file first. It is the last saved state.
+                  let backup = null;
+                  if (write) {
+                    try {
+                      backup = await backupWorkbookFile(workbookId);
+                    } catch (error) {
+                      throw Object.assign(
+                        new Error(
+                          `The workbook could not be backed up before this COM write, so it was not run: ${error?.message ?? String(error)}`,
+                        ),
+                        { code: "COM_BACKUP_FAILED", commitStatus: "not_committed" },
+                      );
+                    }
+                  }
                   const result = await callUpstream(definition.name, args);
+                  if (backup) result.comBackup = backup;
                   if (write && isUpstreamTimeout(result)) {
                     throw Object.assign(
                       new Error("The COM operation timed out and may still be running in Excel."),

@@ -152,7 +152,7 @@ python -X utf8 evals/run_spreadsheetbench.py --dataset <path/to/spreadsheetbench
 ## Limitations
 
 - Built and tested on Windows only; the COM tools are Windows-only.
-- Restore remains incomplete for chart deletion and data-source changes, PivotTables, duplicated sheets, and writes through the COM tools. New table, filter, hidden-row/column and freeze-pane recovery paths still need live Excel acceptance.
+- Restore remains incomplete for chart deletion and data-source changes, PivotTables and duplicated sheets. COM writes have no cell-level restore point; instead the workbook file is copied to `~/.claude/office-addins/com-backups/` before each one, which captures the **last saved** state (ten kept per workbook, `EXCEL_COM_BACKUP=off` turns it off). New table, filter, hidden-row/column and freeze-pane recovery paths still need live Excel acceptance.
 - After rows, columns or a sheet are deleted and restored, formulas on other sheets that pointed at them stay `#REF!`.
 
 ## License

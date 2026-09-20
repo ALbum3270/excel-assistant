@@ -155,7 +155,7 @@ python -X utf8 evals/run_spreadsheetbench.py --dataset <spreadsheetbench_verifie
 ## 已知限制
 
 - 只在 Windows 上开发和测试过，COM 工具也只支持 Windows。
-- 图表删除和数据源变更、透视表、复制工作表及 COM 工具写入仍没有完整恢复点。表格、筛选、隐藏行列和冻结窗格的新恢复路径还需要在真实 Excel 中验收。
+- 图表删除和数据源变更、透视表、复制工作表仍没有完整恢复点。COM 写入没有单元格级恢复点，改为在每次写入前把工作簿文件复制到 `~/.claude/office-addins/com-backups/`，保存的是**上次保存**的状态（每个工作簿保留 10 份，`EXCEL_COM_BACKUP=off` 可关闭）。表格、筛选、隐藏行列和冻结窗格的新恢复路径还需要在真实 Excel 中验收。
 - 删除行、列或工作表后再恢复，其他工作表里引用它们的公式仍是 `#REF!`。
 
 ## 许可证
