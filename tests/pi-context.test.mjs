@@ -272,3 +272,15 @@ test("change tracker keeps user edits and skips this add-in's own writes", async
     globalThis.Excel = originalExcel;
   }
 });
+
+test("a stale write says what changed the workbook", async () => {
+  const execution = createWorkbookExecution();
+  const path = "C:\Books\Stale.xlsx";
+  await execution.run(path, { write: true, toolName: "excel_workbook_history" }, async () => ({
+    success: true,
+  }));
+  await assert.rejects(
+    execution.run(path, { write: true, expectedRevision: 0, toolName: "excel_set_cell_range" }, async () => "never"),
+    (error) => /restore from the panel's backups/.test(error.message),
+  );
+});

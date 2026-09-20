@@ -3,6 +3,18 @@ import { win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createWorkbookCoordinator } from "./vendor/pi-coordinator.mjs";
 
+// A stale expectation usually means something else changed the workbook. The
+// most common something is the panel's own restore button, which the agent
+// never sees, so name it rather than leaving the model to guess.
+function describeLastWrite(state) {
+  if (state.lastWrite === "excel_workbook_history") {
+    return "The change was a restore from the panel's backups, so the cells you read earlier may be back to their previous values.";
+  }
+  return state.lastWrite
+    ? `The change came from ${state.lastWrite}.`
+    : "The change did not come from this session.";
+}
+
 // A tool result that reports its own refusal (the overwrite guard) or says it
 // never committed left the workbook untouched.
 function didCommit(result) {
@@ -106,6 +118,7 @@ export function createWorkbookExecution() {
           if (write && expectedRevision !== undefined && expectedRevision !== state.revision) {
             throw failure(
               `Workbook changed since revision ${expectedRevision}; current revision is ${state.revision}. ` +
+                `${describeLastWrite(state)} ` +
                 "Read the target range again before writing — retrying this write unchanged fails the same way.",
               "STALE_WORKBOOK_REVISION",
               "not_committed",
@@ -127,7 +140,10 @@ export function createWorkbookExecution() {
               opId,
               write,
             });
-            if (write && didCommit(result)) state.revision = pending;
+            if (write && didCommit(result)) {
+            state.revision = pending;
+            state.lastWrite = toolName;
+          }
             this.settled(workbookId, opId);
             return { result, revision: state.revision, uncertain: Boolean(state.blocked) };
           } catch (error) {
