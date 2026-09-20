@@ -113,6 +113,9 @@ test("readTranscript round-trips a real .jsonl under ~/.claude/projects + trunca
       clipped.events.map((e) => e.kind),
       ["user", "tool"],
     );
+
+    assert.equal(await mod.deleteTranscript(sid), true);
+    assert.deepEqual(await mod.readTranscript(sid), { events: [], truncated: false });
   } finally {
     if (prevHome === undefined) delete process.env.HOME;
     else process.env.HOME = prevHome;

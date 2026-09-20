@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 
 async function withFakeHome(fn) {
   const fakeHome = await mkdtemp(join(tmpdir(), "cc-office-sess-test-"));
@@ -73,14 +74,46 @@ test("two workbooks in one folder remain independent after a module restart", as
 test("a workbook keeps its conversation when its workspace changes", async () => {
   await withFakeHome(async ({ saveSessionId, getSessionId }, fakeHome) => {
     await saveSessionId("excel", "doc-a", "/tmp/folderA", "first");
-    await saveSessionId("excel", "doc-a", "/tmp/folderB", "continued");
-    assert.equal(await getSessionId("excel", "doc-a"), "continued");
+    await saveSessionId("excel", "doc-a", "/tmp/folderB", "first");
+    assert.equal(await getSessionId("excel", "doc-a"), "first");
     const state = await readStateFile(fakeHome);
     const records = Object.values(state.conversations.excel);
     assert.equal(records.length, 1);
-    assert.equal(records[0].cwd, "/tmp/folderB");
+    assert.equal(records[0].sessions[0].cwd, "/tmp/folderB");
     assert.deepEqual(Object.keys(state.folders).sort(), ["/tmp/folderA", "/tmp/folderB"]);
   });
+});
+
+test("new chat preserves prior sessions for listing, activation, and deletion", async () => {
+  await withFakeHome(
+    async ({
+      saveSessionId,
+      clearSessionId,
+      getSessionId,
+      listSessions,
+      activateSession,
+      deleteSession,
+    }) => {
+      await saveSessionId("excel", "doc-a", "/tmp/folder", "first", { title: "First task" });
+      await clearSessionId("excel", "doc-a");
+      assert.equal(await getSessionId("excel", "doc-a"), null);
+      assert.deepEqual(
+        (await listSessions("excel", "doc-a")).sessions.map((entry) => entry.title),
+        ["First task"],
+      );
+
+      await saveSessionId("excel", "doc-a", "/tmp/folder", "second", { title: "Second task" });
+      assert.equal((await listSessions("excel", "doc-a")).sessions.length, 2);
+      assert.equal(await activateSession("excel", "doc-a", "first"), true);
+      assert.equal(await getSessionId("excel", "doc-a"), "first");
+      assert.equal(await deleteSession("excel", "doc-a", "first"), true);
+      assert.equal(await getSessionId("excel", "doc-a"), null);
+      assert.deepEqual(
+        (await listSessions("excel", "doc-a")).sessions.map((entry) => entry.session_id),
+        ["second"],
+      );
+    },
+  );
 });
 
 test("normalizeHost: a bad host is a no-op / null", async () => {
@@ -228,12 +261,41 @@ test("v2 folder-scoped ids are not assigned to an arbitrary workbook", async () 
     assert.equal(await getSessionId("excel", "book-b"), null);
     await saveSessionId("excel", "book-a", "/tmp/shared", "new-book-a-id");
     const state = await readStateFile(fakeHome);
-    assert.equal(state.version, 3);
+    assert.equal(state.version, 4);
     assert.deepEqual(
-      Object.values(state.conversations.excel).map((record) => record.session_id),
+      Object.values(state.conversations.excel).map((record) => record.active_session_id),
       ["new-book-a-id"],
     );
     assert.equal("sessions" in state.folders["/tmp/shared"], false);
+  });
+});
+
+test("v3 workbook sessions migrate into history without losing the active id", async () => {
+  await withFakeHome(async ({ getSessionId, listSessions }, fakeHome) => {
+    const dir = join(fakeHome, ".claude", "office-addins");
+    await mkdir(dir, { recursive: true });
+    const documentHash = createHash("sha256").update("doc-a").digest("hex");
+    await writeFile(
+      join(dir, "sessions.json"),
+      JSON.stringify({
+        version: 3,
+        folders: {},
+        conversations: {
+          excel: {
+            [documentHash]: {
+              session_id: "legacy-session",
+              cwd: "/tmp/legacy",
+              last_used: "2026-05-01T00:00:00.000Z",
+            },
+          },
+        },
+      }),
+    );
+
+    assert.equal(await getSessionId("excel", "doc-a"), "legacy-session");
+    const history = await listSessions("excel", "doc-a");
+    assert.equal(history.sessions[0].session_id, "legacy-session");
+    assert.equal(history.sessions[0].cwd, "/tmp/legacy");
   });
 });
 

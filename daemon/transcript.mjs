@@ -25,7 +25,7 @@
 // depends on it for live messages, so this is the same coupling, not new.
 // Every per-line parse is defensive (bad lines skipped).
 
-import { readdir, stat } from "node:fs/promises";
+import { readdir, stat, unlink } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
@@ -152,6 +152,14 @@ export async function readTranscript(sessionId, { maxEvents = 200 } = {}) {
   }
 
   return { events: ring, truncated: total > ring.length };
+}
+
+export async function deleteTranscript(sessionId) {
+  if (!sessionId) return false;
+  const file = await locateSessionFile(sessionId);
+  if (!file) return false;
+  await unlink(file);
+  return true;
 }
 
 // Exposed for testing / reuse.

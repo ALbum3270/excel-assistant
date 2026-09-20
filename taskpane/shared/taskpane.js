@@ -219,6 +219,126 @@ document.getElementById("new-chat")?.addEventListener("click", async () => {
   }
 });
 
+const $historyModal = document.getElementById("history-modal");
+const $historyList = document.getElementById("history-list");
+const $historyClose = document.getElementById("history-modal-close");
+
+function closeHistory() {
+  if ($historyModal) $historyModal.hidden = true;
+}
+
+function historyTimestamp(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
+}
+
+function historyMessage(text, error = false) {
+  if (!$historyList) return;
+  $historyList.innerHTML = "";
+  const message = document.createElement("div");
+  message.className = error ? "history-error" : "history-empty";
+  message.textContent = text;
+  $historyList.appendChild(message);
+}
+
+function renderConversationHistory(history) {
+  if (!$historyList) return;
+  $historyList.innerHTML = "";
+  if (!history.sessions?.length) {
+    historyMessage("No saved conversations for this workbook.");
+    return;
+  }
+
+  for (const session of history.sessions) {
+    const active = session.session_id === history.active_session_id;
+    const item = document.createElement("div");
+    item.className = `history-item${active ? " active" : ""}`;
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "history-title-row";
+    const title = document.createElement("div");
+    title.className = "history-title";
+    title.textContent = session.title || "Conversation";
+    title.title = title.textContent;
+    titleRow.appendChild(title);
+    if (active) {
+      const badge = document.createElement("span");
+      badge.className = "history-active";
+      badge.textContent = "Active";
+      titleRow.appendChild(badge);
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "history-meta";
+    meta.textContent = historyTimestamp(session.last_used);
+
+    const actions = document.createElement("div");
+    actions.className = "history-actions";
+    const resume = document.createElement("button");
+    resume.type = "button";
+    resume.textContent = active ? "Current" : "Continue";
+    resume.disabled = active;
+    resume.addEventListener("click", async () => {
+      resume.disabled = true;
+      try {
+        const result = await sendRequest("activate_session", { session_id: session.session_id });
+        if (!result.ok) throw new Error(result.error || "Could not open conversation");
+        setAgentStatus("idle", "Ready");
+        closeHistory();
+      } catch (error) {
+        resume.disabled = false;
+        historyMessage(error.message, true);
+      }
+    });
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Delete";
+    let confirmDelete = false;
+    remove.addEventListener("click", async () => {
+      if (!confirmDelete) {
+        confirmDelete = true;
+        remove.textContent = "Delete?";
+        remove.classList.add("history-delete-confirm");
+        return;
+      }
+      for (const button of actions.querySelectorAll("button")) button.disabled = true;
+      try {
+        const result = await sendRequest("delete_session", { session_id: session.session_id });
+        if (!result.ok) throw new Error(result.error || "Could not delete conversation");
+        await refreshConversationHistory();
+      } catch (error) {
+        historyMessage(error.message, true);
+      }
+    });
+
+    actions.append(resume, remove);
+    item.append(titleRow, meta, actions);
+    $historyList.appendChild(item);
+  }
+}
+
+async function refreshConversationHistory() {
+  historyMessage("Loading...");
+  try {
+    const history = await sendRequest("list_sessions");
+    if (!history.ok) throw new Error(history.error || "Could not load conversation history");
+    renderConversationHistory(history);
+  } catch (error) {
+    historyMessage(error.message, true);
+  }
+}
+
+document.getElementById("chat-history")?.addEventListener("click", () => {
+  if (!$historyModal) return;
+  $historyModal.hidden = false;
+  refreshConversationHistory();
+});
+$historyClose?.addEventListener("click", closeHistory);
+$historyModal?.addEventListener("click", (event) => {
+  if (event.target === $historyModal) closeHistory();
+});
+
 // Auth-failure banner. Shown across the top of the panel when the daemon
 // emits event: "auth_error". Persists until the user dismisses it; recovery
 // is to sign in to Claude Code (or set ANTHROPIC_API_KEY) and relaunch the
@@ -418,15 +538,41 @@ function appendError(text) {
 // Approve-before-apply card: what the assistant is about to change, with
 // approve / approve the rest of this turn / reject.
 const APPROVAL_FIELDS_BY_TOOL = {
-  excel_set_cell_range: ["sheetId", "range", "cells", "copyToRange", "resizeWidth", "resizeHeight", "allow_overwrite"],
+  excel_set_cell_range: [
+    "sheetId",
+    "range",
+    "cells",
+    "copyToRange",
+    "resizeWidth",
+    "resizeHeight",
+    "allow_overwrite",
+  ],
   excel_fill_formula: ["sheetId", "range", "formula", "allow_overwrite"],
   excel_copy_to: ["sheetId", "sourceRange", "destinationRange", "allow_overwrite"],
   excel_clear_cell_range: ["sheetId", "range", "clearType"],
-  excel_modify_sheet_structure: ["sheetId", "operation", "dimension", "reference", "count", "position"],
+  excel_modify_sheet_structure: [
+    "sheetId",
+    "operation",
+    "dimension",
+    "reference",
+    "count",
+    "position",
+  ],
   excel_modify_workbook_structure: ["operation", "sheetId", "sheetName", "newName", "tabColor"],
   excel_resize_range: ["sheetId", "range", "width", "height"],
   excel_modify_object: ["sheetId", "operation", "objectType", "id", "properties"],
-  excel_set_format: ["sheet", "address", "number_format", "bold", "italic", "font_size", "font_name", "font_color", "fill_color", "border"],
+  excel_set_format: [
+    "sheet",
+    "address",
+    "number_format",
+    "bold",
+    "italic",
+    "font_size",
+    "font_name",
+    "font_color",
+    "fill_color",
+    "border",
+  ],
   excel_sort_range: ["sheet", "address", "key", "ascending", "has_headers"],
   excel_autofilter: ["sheet", "address", "clear"],
   excel_create_table: ["sheet", "address", "name", "has_headers"],
@@ -438,7 +584,9 @@ const APPROVAL_FIELDS_BY_TOOL = {
 function approvalValue(value) {
   if (Array.isArray(value)) {
     const rows = value.length;
-    const columns = Array.isArray(value[0]) ? Math.max(0, ...value.slice(0, 20).map((row) => row.length)) : null;
+    const columns = Array.isArray(value[0])
+      ? Math.max(0, ...value.slice(0, 20).map((row) => row.length))
+      : null;
     const sample = JSON.stringify(value.slice(0, 3));
     const shape = columns === null ? `${rows} items` : `${rows}×${columns}`;
     return `${shape}; sample: ${sample.length > 500 ? sample.slice(0, 497) + "..." : sample}`;
@@ -453,7 +601,10 @@ function approvalValue(value) {
 
 function describeApproval(tool, input = {}) {
   const preferred = APPROVAL_FIELDS_BY_TOOL[tool] ?? ["action"];
-  const fields = [...preferred, ...Object.keys(input).filter((field) => !preferred.includes(field))];
+  const fields = [
+    ...preferred,
+    ...Object.keys(input).filter((field) => !preferred.includes(field)),
+  ];
   const lines = fields
     .filter((field) => input[field] !== undefined && input[field] !== "")
     .map((field) => `${field}: ${approvalValue(input[field])}`);
@@ -471,7 +622,8 @@ function resolveApprovalCard(requestId, decision, error = null) {
     cancelled: "Approval cancelled",
     disabled: "Approval turned off; change allowed",
   };
-  el.querySelector(".approval-actions").textContent = error || labels[decision] || "Approval closed";
+  el.querySelector(".approval-actions").textContent =
+    error || labels[decision] || "Approval closed";
 }
 
 function appendApprovalRequest(msg) {
@@ -499,7 +651,8 @@ function appendApprovalRequest(msg) {
       resolveApprovalCard(msg.request_id, response.decision, response.ok ? null : response.error);
     } catch (error) {
       for (const button of el.querySelectorAll("button")) button.disabled = false;
-      el.querySelector(".tool-args").textContent = `${describeApproval(msg.tool, msg.input)}\n\n${error.message}`;
+      el.querySelector(".tool-args").textContent =
+        `${describeApproval(msg.tool, msg.input)}\n\n${error.message}`;
     }
   });
   $messages.appendChild(el);
@@ -892,7 +1045,7 @@ async function describeOfficeToolError(error, args) {
   if (error?.code === "InvalidArgument" && hasFormulaInput(args)) {
     return (
       `${message} (Excel rejected the write as an invalid argument; check the formula uses Excel syntax: ` +
-      '<> not !=, = not ==, AND()/OR() not &&/||, text in double quotes, balanced parentheses.)'
+      "<> not !=, = not ==, AND()/OR() not &&/||, text in double quotes, balanced parentheses.)"
     );
   }
   if (!/Worksheet with ID .+ not found/i.test(message)) return message;
@@ -918,8 +1071,12 @@ function readOverviewSingleFlight() {
     const read = Promise.resolve().then(buildOverview);
     overviewRead = read;
     read.then(
-      () => { if (overviewRead === read) overviewRead = null; },
-      () => { if (overviewRead === read) overviewRead = null; },
+      () => {
+        if (overviewRead === read) overviewRead = null;
+      },
+      () => {
+        if (overviewRead === read) overviewRead = null;
+      },
     );
   }
   return overviewRead;
@@ -949,7 +1106,10 @@ async function contextSnapshot({ selectionAddress = null } = {}) {
   ]);
   const sheetIds = (metadata?.sheetsMetadata ?? []).map((sheet) => `${sheet.name}=${sheet.id}`);
   const workbookParts = [];
-  if (sheetIds.length) workbookParts.push(limitContextText(`sheetId for mcp__office__excel_* tools: ${sheetIds.join(", ")}`, 4000));
+  if (sheetIds.length)
+    workbookParts.push(
+      limitContextText(`sheetId for mcp__office__excel_* tools: ${sheetIds.join(", ")}`, 4000),
+    );
   if (overview) workbookParts.push(limitContextText(overview, 8000));
   return {
     workbook: workbookParts.join("\n\n") || null,
@@ -994,11 +1154,21 @@ function mutationTargets(name, args, result) {
     case "excel_modify_sheet_structure":
       return [`${args.dimension ?? "dimension"}:${args.reference ?? "pane"}:${args.count ?? 1}`];
     case "excel_modify_workbook_structure":
-      return [result?.sheetName ?? args.newName ?? args.sheetName ?? `sheetId:${args.sheetId ?? "new"}`];
+      return [
+        result?.sheetName ?? args.newName ?? args.sheetName ?? `sheetId:${args.sheetId ?? "new"}`,
+      ];
     case "excel_modify_object":
-      return [result?.id ?? args.id ?? args.properties?.range ?? args.properties?.anchor ?? args.objectType].filter(Boolean);
+      return [
+        result?.id ??
+          args.id ??
+          args.properties?.range ??
+          args.properties?.anchor ??
+          args.objectType,
+      ].filter(Boolean);
     case "excel_autofilter":
-      return [args.clear ? "worksheet autofilter" : (result?.address ?? args.address)].filter(Boolean);
+      return [args.clear ? "worksheet autofilter" : (result?.address ?? args.address)].filter(
+        Boolean,
+      );
     case "excel_add_table_rows":
       return [args.table].filter(Boolean);
     case "excel_workbook_history":
@@ -1031,9 +1201,7 @@ async function runOfficeTool(msg) {
   if (cancelledToolCalls.delete(id)) return;
   let commitRecovery = null;
   try {
-    commitRecovery = WRITE_TOOLS.has(name)
-      ? await prepareMutationRecovery(name, args, id)
-      : null;
+    commitRecovery = WRITE_TOOLS.has(name) ? await prepareMutationRecovery(name, args, id) : null;
     let result;
     switch (name) {
       case "excel_get_selected_range":
@@ -1168,9 +1336,7 @@ async function runOfficeTool(msg) {
     result = withMutationReceipt(name, args, result, id);
     wsSend({ type: "tool_result", id, ok: true, result });
   } catch (err) {
-    const recovery = commitRecovery && isMutationCall(name, args)
-      ? await commitRecovery()
-      : null;
+    const recovery = commitRecovery && isMutationCall(name, args) ? await commitRecovery() : null;
     if (cancelledToolCalls.delete(id)) return;
     console.error(`[tool ${name}] failed:`, err);
     wsSend({
@@ -1183,8 +1349,8 @@ async function runOfficeTool(msg) {
         ...(err?.commitStatus
           ? { commitStatus: err.commitStatus }
           : isMutationCall(name, args)
-             ? { commitStatus: "unknown" }
-             : {}),
+            ? { commitStatus: "unknown" }
+            : {}),
         ...(recovery ? { recovery } : {}),
       },
     });
@@ -1945,13 +2111,15 @@ $addFolderSave.addEventListener("click", async () => {
     return;
   }
   if (!targetCwd || currentWorkspaceCwd !== targetCwd) {
-    $addFolderError.textContent = "The workspace changed. Close this dialog and add the file again.";
+    $addFolderError.textContent =
+      "The workspace changed. Close this dialog and add the file again.";
     $addFolderError.hidden = false;
     return;
   }
   if (!contextCache || contextCacheCwd !== currentWorkspaceCwd) await loadContext();
   if (currentWorkspaceCwd !== targetCwd || contextCacheCwd !== targetCwd) {
-    $addFolderError.textContent = "The workspace changed. Close this dialog and add the file again.";
+    $addFolderError.textContent =
+      "The workspace changed. Close this dialog and add the file again.";
     $addFolderError.hidden = false;
     return;
   }

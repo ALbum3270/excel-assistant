@@ -624,6 +624,7 @@ body {
   animation: cc-pulse 1.1s ease-in-out infinite;
 }
 .btn-stop,
+.btn-history,
 .btn-new-chat {
   flex-shrink: 0;
   background: var(--bubble-asst);
@@ -642,6 +643,9 @@ body {
   color: var(--status-err);
 }
 .btn-new-chat:hover {
+  background: var(--bubble-user);
+}
+.btn-history:hover {
   background: var(--bubble-user);
 }
 .btn-stop[hidden] {
@@ -951,6 +955,85 @@ body {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 14px;
+}
+
+.history-modal {
+  max-height: min(560px, 88vh);
+}
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  min-height: 72px;
+}
+.history-empty,
+.history-error {
+  color: var(--fg-muted);
+  font-size: 12px;
+  padding: 18px 4px;
+  text-align: center;
+}
+.history-error {
+  color: var(--status-err);
+}
+.history-item {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 9px 10px;
+  background: var(--bubble-asst);
+}
+.history-item.active {
+  border-color: var(--send-bg);
+}
+.history-title-row,
+.history-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.history-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+.history-active {
+  color: var(--send-bg);
+  font-size: 10px;
+  font-weight: 600;
+}
+.history-meta {
+  color: var(--fg-muted);
+  font-size: 10px;
+  margin: 4px 0 8px;
+}
+.history-actions {
+  justify-content: flex-end;
+}
+.history-actions button {
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.history-actions button:hover {
+  background: var(--bubble-user);
+}
+.history-actions .history-delete-confirm {
+  color: var(--status-err);
+  border-color: var(--status-err);
+}
+.history-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .btn-primary,
 .btn-secondary {

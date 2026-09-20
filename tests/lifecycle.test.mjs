@@ -79,6 +79,10 @@ function harness(t, overrides = {}) {
     getSessionId: async () => null,
     saveSessionId: async () => {},
     clearSessionId: async () => {},
+    listSessions: async () => ({ active_session_id: null, sessions: [] }),
+    activateSession: async () => false,
+    deleteSession: async () => false,
+    deleteTranscript: async () => false,
     resolveWorkspaceRoot: async () => resolve("document-folder"),
     stat: async () => ({ isDirectory: () => true }),
     ensureWorkspaceMarker: async () => false,
@@ -123,7 +127,8 @@ function harness(t, overrides = {}) {
       agent +
       `
     globalThis.api = { sessionFor, startSessionForFolder, cancelPaneSession,
-      startNewConversation, ensureLoopForMessage, scheduleSessionStart,
+      startNewConversation, activateConversation, removeConversation,
+      ensureLoopForMessage, scheduleSessionStart,
       cwdForKey, onPaneConnect, awaitWorkspaceResolution, sendTranscriptReplayTo };
   `,
     sandbox,
@@ -440,6 +445,74 @@ test("New chat clears only the requesting workbook's saved session", async (t) =
   });
   await h.api.startNewConversation("excel\0book-a", "excel");
   assert.deepEqual(cleared, [["excel", "book-a"]]);
+});
+
+test("conversation history can list and activate a prior workbook session", async (t) => {
+  const activated = [];
+  const history = {
+    active_session_id: "current",
+    sessions: [
+      { session_id: "current", title: "Current" },
+      { session_id: "prior", title: "Prior" },
+    ],
+  };
+  const h = harness(t, {
+    listSessions: async () => history,
+    activateSession: async (...args) => {
+      activated.push(args);
+      return true;
+    },
+    getSessionId: async () => "prior",
+    readTranscript: async () => ({
+      events: [{ kind: "user", text: "old request" }],
+      truncated: false,
+    }),
+  });
+  const listed = await h.handle("list_sessions");
+  assert.equal(listed.active_session_id, "current");
+  assert.equal(listed.sessions.length, 2);
+
+  const result = await h.handle("activate_session", { session_id: "prior" });
+  assert.equal(result.ok, true);
+  assert.deepEqual(activated, [["excel", "test-book", "prior"]]);
+  assert.equal(
+    h.events.some((event) => event.type === "transcript_replay" && event.session_id === "prior"),
+    true,
+  );
+});
+
+test("deleting the active conversation removes its transcript and clears the replay", async (t) => {
+  const deleted = [];
+  const h = harness(t, {
+    listSessions: async () => ({
+      active_session_id: "remove-me",
+      sessions: [{ session_id: "remove-me", title: "Remove me" }],
+    }),
+    deleteTranscript: async (sessionId) => {
+      deleted.push(["transcript", sessionId]);
+      return true;
+    },
+    deleteSession: async (...args) => {
+      deleted.push(["index", ...args]);
+      return true;
+    },
+  });
+  const result = await h.handle("delete_session", { session_id: "remove-me" });
+  assert.equal(result.ok, true);
+  assert.equal(result.transcript_deleted, true);
+  assert.deepEqual(deleted, [
+    ["transcript", "remove-me"],
+    ["index", "excel", "test-book", "remove-me"],
+  ]);
+  assert.equal(
+    h.events.some(
+      (event) =>
+        event.type === "transcript_replay" &&
+        event.session_id === null &&
+        event.events.length === 0,
+    ),
+    true,
+  );
 });
 
 test("actual WebSocket hello plus immediate message waits for the document folder", async (t) => {

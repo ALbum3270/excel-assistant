@@ -9,8 +9,16 @@ import { createBridge } from "./bridge.mjs";
 import { createOfficeBridgeMcp } from "./office-tools.mjs";
 import { resolveWorkspaceRoot, suggestWorkspaceRoot, ensureWorkspaceMarker } from "./workspace.mjs";
 import { randomUUID } from "node:crypto";
-import { getSessionId, saveSessionId, touchFolder, clearSessionId } from "./sessions.mjs";
-import { readTranscript, locateSessionFile } from "./transcript.mjs";
+import {
+  getSessionId,
+  saveSessionId,
+  touchFolder,
+  clearSessionId,
+  listSessions,
+  activateSession,
+  deleteSession,
+} from "./sessions.mjs";
+import { readTranscript, locateSessionFile, deleteTranscript } from "./transcript.mjs";
 import { diag } from "./diag.mjs";
 import { getContextEntries, setContextEntries } from "./context.mjs";
 import { ApprovalManager, needsApproval } from "./approval.mjs";
@@ -549,9 +557,9 @@ function onPaneClose(key) {
 // conversation. Deferred via setImmediate so it lands after the message
 // is queued and after any in-flight finally; the new loop then drains
 // this pane's queue. No other pane's loop is ever touched.
-// Drop this pane's conversation; the next user message lazily starts a fresh
-// session (ensureLoopForMessage finds no saved id). Cancellation also retires
-// queued starts and makes the aborted loop's catch/finally harmless.
+// Deactivate this pane's current conversation while keeping it in history;
+// the next user message lazily starts a fresh session. Cancellation also
+// retires queued starts and makes the aborted loop's catch/finally harmless.
 function startNewConversation(key, host) {
   cancelPaneSession(key);
   const generation = sessionGenerationByKey.get(key);
@@ -568,6 +576,48 @@ function startNewConversation(key, host) {
       );
     }
     console.log(`[daemon] New conversation for ${cwd} (${host})`);
+  });
+}
+
+async function activateConversation(key, host, sessionId) {
+  const history = await listSessions(host, documentKeyForPane(key));
+  if (!history.sessions.some((entry) => entry.session_id === sessionId)) {
+    throw new Error("Conversation no longer exists");
+  }
+  cancelPaneSession(key);
+  const generation = sessionGenerationByKey.get(key);
+  const token = replayTokenByKey.get(key);
+  bridge.sendAssistantEvent({ event: "turn_complete", interrupted: true }, key);
+  return updateWorkspace(key, async () => {
+    const activated = await activateSession(host, documentKeyForPane(key), sessionId);
+    if (!activated) throw new Error("Conversation no longer exists");
+    if (sessionGenerationByKey.get(key) !== generation) return;
+    await sendTranscriptReplayTo(key, host, cwdForKey(key), token);
+  });
+}
+
+async function removeConversation(key, host, sessionId) {
+  return updateWorkspace(key, async () => {
+    const history = await listSessions(host, documentKeyForPane(key));
+    if (!history.sessions.some((entry) => entry.session_id === sessionId)) {
+      throw new Error("Conversation no longer exists");
+    }
+    const live = sessionFor(key);
+    const wasActive = history.active_session_id === sessionId;
+    const wasLive = live?.sessionId === sessionId;
+    let token = null;
+    if (wasActive || wasLive) {
+      cancelPaneSession(key);
+      token = replayTokenByKey.get(key);
+      bridge.sendAssistantEvent({ event: "turn_complete", interrupted: true }, key);
+    }
+    const transcriptDeleted = await deleteTranscript(sessionId);
+    const deleted = await deleteSession(host, documentKeyForPane(key), sessionId);
+    if (!deleted) throw new Error("Conversation no longer exists");
+    if (wasActive) {
+      await sendTranscriptReplayTo(key, host, cwdForKey(key), token);
+    }
+    return { transcript_deleted: transcriptDeleted };
   });
 }
 
@@ -738,6 +788,55 @@ bridge = createBridge({
         });
       }
     },
+    list_sessions: async (msg, reply, key, host) => {
+      try {
+        const history = await listSessions(host, documentKeyForPane(key));
+        reply({
+          type: "list_sessions_result",
+          ok: true,
+          ...history,
+          request_id: msg.request_id,
+        });
+      } catch (e) {
+        reply({
+          type: "list_sessions_result",
+          ok: false,
+          error: e.message,
+          request_id: msg.request_id,
+        });
+      }
+    },
+    activate_session: async (msg, reply, key, host) => {
+      try {
+        await activateConversation(key, host, msg.session_id);
+        reply({ type: "activate_session_result", ok: true, request_id: msg.request_id });
+      } catch (e) {
+        reply({
+          type: "activate_session_result",
+          ok: false,
+          error: e.message,
+          request_id: msg.request_id,
+        });
+      }
+    },
+    delete_session: async (msg, reply, key, host) => {
+      try {
+        const result = await removeConversation(key, host, msg.session_id);
+        reply({
+          type: "delete_session_result",
+          ok: true,
+          ...result,
+          request_id: msg.request_id,
+        });
+      } catch (e) {
+        reply({
+          type: "delete_session_result",
+          ok: false,
+          error: e.message,
+          request_id: msg.request_id,
+        });
+      }
+    },
     get_context: async (msg, reply, key) => {
       try {
         await awaitWorkspaceResolution(key);
@@ -755,7 +854,12 @@ bridge = createBridge({
     },
     set_approval: async (msg, reply, key) => {
       approvalManager.setEnabled(key, Boolean(msg.enabled));
-      reply({ type: "set_approval_result", ok: true, enabled: Boolean(msg.enabled), request_id: msg.request_id });
+      reply({
+        type: "set_approval_result",
+        ok: true,
+        enabled: Boolean(msg.enabled),
+        request_id: msg.request_id,
+      });
     },
     approval_response: async (msg, reply, key) => {
       const accepted = approvalManager.respond(key, msg.approval_request_id, msg.decision);
@@ -1254,19 +1358,22 @@ async function permissionFor(key, session, host, toolName, input) {
     if (decision === "reject") {
       return {
         behavior: "deny",
-        message: "The user rejected this workbook change. Do not retry it; ask what they would like instead.",
+        message:
+          "The user rejected this workbook change. Do not retry it; ask what they would like instead.",
       };
     }
     if (decision === "timeout") {
       return {
         behavior: "deny",
-        message: "Approval for this workbook change timed out. The user did not reject it; ask them to try again when the task pane is connected.",
+        message:
+          "Approval for this workbook change timed out. The user did not reject it; ask them to try again when the task pane is connected.",
       };
     }
     if (decision === "cancelled") {
       return {
         behavior: "deny",
-        message: "Approval for this workbook change was cancelled because the turn or pane session ended.",
+        message:
+          "Approval for this workbook change was cancelled because the turn or pane session ended.",
       };
     }
   }
@@ -1327,6 +1434,15 @@ async function* userMessageStream(key, session) {
     }
     if (session && !isCurrentSession(session)) return;
     const { text, context } = msg;
+    if (session?.isNew && !session.title) {
+      const compact = typeof text === "string" ? text.replace(/\s+/g, " ").trim() : "";
+      session.title = compact.length > 72 ? `${compact.slice(0, 69)}...` : compact || null;
+    }
+    if (session?.sessionId) {
+      saveSessionId(session.host, documentKeyForPane(session.key), session.cwd, session.sessionId, {
+        title: session.title,
+      }).catch((err) => console.warn("[daemon] Could not update session history:", err.message));
+    }
     // The Agent SDK only treats a turn as a slash command (built-in or a
     // custom .claude/commands/*.md) when the message *starts with* "/".
     // Our per-turn context header (Host:/Doc:/Selection:) would otherwise
@@ -1338,9 +1454,7 @@ async function* userMessageStream(key, session) {
     const trimmed = typeof text === "string" ? text.trimStart() : text;
     const isSlashCommand = typeof trimmed === "string" && trimmed.startsWith("/");
     const automaticContext = isSlashCommand ? "" : await autoContext(key, session, context);
-    const header = [renderContextHeader(context), automaticContext]
-      .filter(Boolean)
-      .join("\n\n");
+    const header = [renderContextHeader(context), automaticContext].filter(Boolean).join("\n\n");
     const content = isSlashCommand ? trimmed : header ? `${header}\n\n${text}` : text;
     // Per-turn tracking so a slash command that produces no assistant text
     // or tool call (terminal-only built-ins like /help, /context, /clear)
@@ -1464,6 +1578,8 @@ async function startSessionForFolder(
     key,
     cwd,
     sessionId: resumeSessionId,
+    isNew: !resumeSessionId,
+    title: null,
     abortController,
     settled: false,
     host,
@@ -1710,6 +1826,7 @@ function handleAgentMessage(msg, session) {
             documentKeyForPane(session.key),
             session.cwd,
             msg.session_id,
+            { title: session.title },
           ).catch((err) => console.warn("[daemon] Could not save session id:", err.message));
         }
       } else {

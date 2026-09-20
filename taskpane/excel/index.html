@@ -57,6 +57,14 @@
 
       <div class="agent-status-row">
         <span class="agent-status idle" id="agent-status">Ready</span>
+        <button
+          type="button"
+          class="btn-history"
+          id="chat-history"
+          title="View conversation history"
+        >
+          History
+        </button>
         <button type="button" class="btn-new-chat" id="new-chat" title="Start a new conversation">
           New chat
         </button>
@@ -68,11 +76,7 @@
       <form id="composer" class="composer">
         <textarea id="input" placeholder="Ask about this workbook…" rows="3" autofocus></textarea>
         <div class="composer-actions">
-          <select
-            id="composer-model"
-            class="composer-model"
-            title="Model tier"
-          >
+          <select id="composer-model" class="composer-model" title="Model tier">
             <option value="haiku">Haiku · cheapest</option>
             <option value="sonnet">Sonnet · balanced</option>
             <option value="opus">Opus · most capable</option>
@@ -100,8 +104,8 @@
         <div class="setup-section">
           <h3>Workspace</h3>
           <p class="setup-help">
-            The folder the agent works in — follows the open workbook automatically. The agent can already
-            read <em>anything inside it</em> on demand; this just sets which
+            The folder the agent works in — follows the open workbook automatically. The agent can
+            already read <em>anything inside it</em> on demand; this just sets which
             <code>CLAUDE.md</code> and chat history apply. Override with
             <strong>Change workspace</strong>; it holds until you open a workbook elsewhere.
           </p>
@@ -146,12 +150,29 @@
             <input type="checkbox" id="setting-approve-writes" />
             <div class="setting-text">
               <div>Ask before changing the workbook</div>
-              <small>Each edit waits for Approve or Reject in the chat. Evaluations ignore this.</small>
+              <small
+                >Each edit waits for Approve or Reject in the chat. Evaluations ignore this.</small
+              >
             </div>
           </label>
         </div>
       </div>
     </section>
+
+    <div class="modal-backdrop" id="history-modal" hidden>
+      <div
+        class="modal history-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="history-modal-title"
+      >
+        <div class="modal-header">
+          <h3 id="history-modal-title">Conversation history</h3>
+          <button class="icon-btn" id="history-modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="history-list" id="history-list"></div>
+      </div>
+    </div>
 
     <!-- Add-folder modal (only used by Context files) -->
     <div class="modal-backdrop" id="add-folder-modal" hidden>
