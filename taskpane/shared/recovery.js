@@ -3,6 +3,7 @@
 import {
   MAX_RECOVERY_CELLS,
   WorkbookRecoveryLog,
+  captureChartPresentState,
   captureFormatCellsState,
   captureModifyStructureState,
   captureSheetValueDataRange,
@@ -379,9 +380,115 @@ function recoveryPlan(name, args) {
           ...(args.height !== undefined ? { rowHeight: true } : {}),
         },
       }];
+    // Tables and filters have no pi-for-excel counterpart to restore from, so
+    // say what the user has to do by hand instead of a generic "no checkpoint".
+    case "excel_autofilter":
+      return [{
+        unsupported: args.clear
+          ? "Clearing a filter changes no cell, so there is nothing to restore; re-apply it with excel_autofilter."
+          : "A filter changes which rows are shown, not their values; remove it with excel_autofilter clear:true.",
+      }];
+    case "excel_create_table":
+      return [{
+        unsupported: "Turning a range into a table is not checkpointed; the values are unchanged, and the table has to be converted back to a range by hand.",
+      }];
+    case "excel_add_table_rows":
+      return [{
+        unsupported: "Rows appended to a table are not checkpointed; delete the appended table rows to undo them.",
+      }];
     default:
       return [];
   }
+}
+
+// Charts use pi-for-excel's chart_state snapshots: an update stores the chart's
+// previous properties, and a create stores a chart_absent state whose restore
+// deletes the chart again by its captured id. A delete cannot be checkpointed —
+// the present state can only be read while the chart still exists.
+function chartAddress(sheetName, chartName) {
+  const escaped = String(sheetName).replace(/'/gu, "''");
+  const quoted = /[\s'!]/u.test(sheetName) ? `'${escaped}'` : sheetName;
+  return `${quoted}!${chartName}`;
+}
+
+async function resolveChartIdentity(sheetId, id) {
+  return Excel.run(async (context) => {
+    const { worksheet } = await resolveWorksheet(context, { sheetId });
+    worksheet.load("name");
+    const charts = worksheet.charts;
+    charts.load("items/id,items/name");
+    await context.sync();
+    const chart =
+      charts.items.find((item) => item.id === id) ?? charts.items.find((item) => item.name === id);
+    if (!chart) throw new Error(`Chart "${id}" was not found on ${worksheet.name}.`);
+    return { sheetName: worksheet.name, name: chart.name, chartId: chart.id };
+  });
+}
+
+async function prepareChartRecovery(args, toolCallId) {
+  const limitations = [];
+  let before = null;
+  let failure = null;
+  if (args.objectType !== "chart") {
+    failure = "PivotTables are not included in automatic recovery yet; delete the PivotTable to undo it.";
+  } else if (args.operation === "delete") {
+    failure = "A deleted chart cannot be restored automatically; re-create it with excel_modify_object.";
+  } else if (args.operation === "update") {
+    try {
+      const identity = await resolveChartIdentity(args.sheetId, args.id);
+      before = {
+        address: chartAddress(identity.sheetName, identity.name),
+        state: await captureChartPresentState(identity.name, identity.sheetName),
+      };
+      if (args.properties?.source) {
+        limitations.push("The chart's previous data source is not part of the checkpoint; only its type, title, legend, name and position are restored.");
+      }
+    } catch (error) {
+      failure = `Chart backup capture failed: ${error?.message ?? String(error)}`;
+    }
+  }
+
+  return async function commitChartRecovery(result) {
+    try {
+      if (failure) return { status: "not_available", reason: failure };
+      let checkpoint = before;
+      if (args.operation === "create") {
+        const created = result?.id;
+        if (!created) {
+          return { status: "not_available", reason: "The created chart's ID was unavailable." };
+        }
+        const identity = await resolveChartIdentity(args.sheetId, created);
+        checkpoint = {
+          address: chartAddress(identity.sheetName, identity.name),
+          state: {
+            kind: "chart_absent",
+            sheetName: identity.sheetName,
+            name: identity.name,
+            ...(identity.chartId ? { chartId: identity.chartId } : {}),
+          },
+        };
+      }
+      if (!checkpoint) {
+        return { status: "not_available", reason: "The chart state could not be captured." };
+      }
+      const snapshot = await recoveryLog.appendChart({
+        toolName: "charts",
+        toolCallId,
+        address: checkpoint.address,
+        chartState: checkpoint.state,
+      });
+      return snapshot
+        ? {
+            status: "checkpoint_created",
+            snapshotIds: [snapshot.id],
+            targets: [snapshot.address],
+            ...(limitations.length ? { partial: true, unavailableReasons: limitations } : {}),
+          }
+        : { status: "not_available", reason: "The recovery log did not accept the checkpoint." };
+    } catch (error) {
+      return { status: "not_available", reason: error?.message ?? String(error) };
+    }
+  };
 }
 
 // Structure edits map onto pi-for-excel's structure states, the same ones its
@@ -585,6 +692,9 @@ async function recordMutationDiff(toolCallId, captures) {
 export async function prepareMutationRecovery(name, args, toolCallId) {
   if (name === "excel_modify_sheet_structure" || name === "excel_modify_workbook_structure") {
     return prepareStructureRecovery(name, args ?? {}, toolCallId);
+  }
+  if (name === "excel_modify_object") {
+    return prepareChartRecovery(args ?? {}, toolCallId);
   }
   const plan = recoveryPlan(name, args ?? {});
   const captures = [];

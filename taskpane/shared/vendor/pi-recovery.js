@@ -13741,6 +13741,21 @@ async function findChartsByName(context, name, sheetName) {
   }
   return matches;
 }
+async function findChartByName(context, name, sheetName) {
+  const matches = await findChartsByName(context, name, sheetName);
+  if (matches.length === 0) {
+    const location = sheetName ? ` on sheet "${sheetName}"` : "";
+    throw new Error(`Chart "${name}" was not found${location}.`);
+  }
+  if (matches.length > 1) {
+    throw new Error(`Multiple charts named "${name}" were found. Provide sheet to disambiguate.`);
+  }
+  const match = matches[0];
+  if (!match) {
+    throw new Error(`Chart "${name}" was not found.`);
+  }
+  return match;
+}
 async function findChartById(context, chartId) {
   const sheets = context.workbook.worksheets;
   sheets.load("items/name");
@@ -13828,6 +13843,13 @@ function applyChartPresentState(chart, state) {
   }
   applyPositionState(chart, state.position);
   chart.name = state.name;
+}
+async function captureChartPresentState(name, sheetName) {
+  return excelRun(async (context) => {
+    const target = await findChartByName(context, name, sheetName);
+    const state = await captureChartStateFromTarget(context, target);
+    return cloneRecoveryChartState(state);
+  });
 }
 async function applyChartState(address, targetState) {
   return excelRun(async (context) => {
@@ -14287,6 +14309,7 @@ var WorkbookRecoveryLog = class {
 export {
   MAX_RECOVERY_CELLS,
   WorkbookRecoveryLog,
+  captureChartPresentState,
   captureFormatCellsState,
   captureModifyStructureState,
   captureSheetValueDataRange,

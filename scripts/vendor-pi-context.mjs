@@ -145,6 +145,7 @@ await build({
       'export { WorkbookRecoveryLog, MAX_RECOVERY_CELLS } from "./src/workbook/recovery-log.ts";',
       'export { captureFormatCellsState } from "./src/workbook/recovery-states.ts";',
       'export { captureModifyStructureState, captureSheetValueDataRange, captureValueDataRange, isRecoverySheetVisibility } from "./src/workbook/recovery/structure-state.ts";',
+      'export { captureChartPresentState } from "./src/workbook/recovery/chart-state.ts";',
     ].join("\n"),
     resolveDir: sourceRoot,
     loader: "ts",
