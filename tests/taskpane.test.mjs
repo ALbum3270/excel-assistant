@@ -255,7 +255,7 @@ test("every mutation receives a uniform receipt with its verification level", ()
   vm.createContext(sandbox);
   vm.runInContext(
     `${source.slice(start, end)}\n` +
-      `globalThis.makeReceipt = withMutationReceipt;`,
+      `globalThis.makeReceipt = withMutationReceipt; globalThis.summarizeMutation = mutationSummary;`,
     sandbox,
   );
   const formula = sandbox.makeReceipt(
@@ -267,6 +267,12 @@ test("every mutation receives a uniform receipt with its verification level", ()
   assert.equal(formula.verification.status, "read_back");
   assert.deepEqual(Array.from(formula.affectedTargets), ["B2:B5"]);
   assert.equal(formula.verification.semanticCheckRequired, true);
+  assert.equal(
+    sandbox.summarizeMutation("excel_set_cell_range", {
+      cells: [[{ value: 1 }, { formula: "=A1*2" }]],
+    }),
+    "1\u00d72 cells \u00b7 1 formulas \u00b7 1 values",
+  );
 
   const sort = sandbox.makeReceipt(
     "excel_sort_range",
@@ -324,6 +330,8 @@ test("a failed mutation persists its captured recovery checkpoint", async () => 
     },
     isMutationCall: () => true,
     describeOfficeToolError: async (error) => error.message,
+    updateToolCardSuccess() {},
+    updateToolCardFailure() {},
     wsSend: (message) => sent.push(message),
     console: { error() {} },
   };

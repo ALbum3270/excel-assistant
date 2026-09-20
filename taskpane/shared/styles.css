@@ -528,14 +528,88 @@ body {
   align-self: flex-start;
   font-size: 12px;
   border: 1px solid var(--bubble-tool-b);
+  min-width: min(280px, 90%);
+}
+.msg.tool .tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .msg.tool .tool-name {
+  flex: 1;
+  min-width: 0;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg.tool .tool-state {
+  flex-shrink: 0;
+  border-radius: 10px;
+  padding: 1px 6px;
+  font-size: 10px;
+  color: var(--fg-muted);
+  background: var(--bg);
+}
+.msg.tool .tool-state.success {
+  color: var(--status-ok);
+}
+.msg.tool .tool-state.error,
+.msg.tool .tool-state.unknown {
+  color: var(--status-err);
+}
+.msg.tool .tool-state.restored {
+  color: var(--send-bg);
 }
 .msg.tool .tool-args {
   color: var(--fg-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
+  margin-top: 3px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.msg.tool .tool-result {
+  border-top: 1px solid var(--bubble-tool-b);
+  margin-top: 7px;
+  padding-top: 6px;
+}
+.msg.tool .tool-result[hidden] {
+  display: none;
+}
+.msg.tool .tool-result-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 3px;
+}
+.msg.tool .tool-result-row > span {
+  flex: 0 0 68px;
+  color: var(--fg-muted);
+}
+.msg.tool .tool-result-row > strong {
+  min-width: 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.msg.tool .tool-result-error {
+  color: var(--status-err);
+  margin-top: 3px;
+}
+.msg.tool .tool-undo {
+  margin-top: 7px;
+  border: 1px solid var(--send-bg);
+  border-radius: 5px;
+  padding: 3px 8px;
+  background: var(--bg);
+  color: var(--send-bg);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.msg.tool .tool-undo:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 /* Replayed-transcript markers. The divider only renders when there is

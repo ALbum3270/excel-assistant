@@ -660,22 +660,174 @@ function appendApprovalRequest(msg) {
   assistantTurnElem = null;
 }
 
-function appendToolUse(name, args) {
+const toolCards = new Map();
+
+function appendToolUse(name, args, id = null) {
   const el = document.createElement("div");
   el.className = "msg tool";
-  el.innerHTML = `<div class="tool-name"></div><div class="tool-args"></div>`;
-  el.querySelector(".tool-name").textContent = `🔧 ${name}`;
+  el.innerHTML = `
+    <div class="tool-head">
+      <div class="tool-name"></div>
+      <span class="tool-state running">Running</span>
+    </div>
+    <div class="tool-args"></div>
+    <div class="tool-result" hidden></div>`;
+  const officeName = /^mcp__office__(.+)$/.exec(name || "")?.[1];
+  const localName = officeName || name;
+  el.querySelector(".tool-name").textContent =
+    id || officeName ? `Excel · ${recoveryOperationLabel(localName)}` : `Tool · ${name}`;
+  el.querySelector(".tool-name").title = name;
   const argText = typeof args === "string" ? args : JSON.stringify(args, null, 2);
   el.querySelector(".tool-args").textContent =
     argText.length > 200 ? argText.slice(0, 197) + "..." : argText;
+  if (id) {
+    el.dataset.toolCallId = id;
+    toolCards.set(id, el);
+  } else {
+    el.querySelector(".tool-state").remove();
+  }
   $messages.appendChild(el);
   maybeScrollToBottom();
   assistantTurnElem = null;
+  return el;
 }
 
 // A complete assistant bubble (replay path — full text, not streamed
 // deltas). Resets assistantTurnElem so a subsequent live delta starts a
 // fresh bubble rather than appending onto a replayed one.
+function toolResultRow(label, value) {
+  const row = document.createElement("div");
+  row.className = "tool-result-row";
+  const key = document.createElement("span");
+  key.textContent = label;
+  const content = document.createElement("strong");
+  content.textContent = value;
+  row.append(key, content);
+  return row;
+}
+
+function setToolCardState(id, state, label) {
+  const card = toolCards.get(id);
+  if (!card) return null;
+  const status = card.querySelector(".tool-state");
+  status.className = `tool-state ${state}`;
+  status.textContent = label;
+  return card;
+}
+
+function appendToolCardError(card, message) {
+  const result = card?.querySelector(".tool-result");
+  if (!result) return;
+  result.hidden = false;
+  result.classList.add("error");
+  const detail = document.createElement("div");
+  detail.className = "tool-result-error";
+  detail.textContent = message;
+  result.appendChild(detail);
+}
+
+function appendToolRestoreButton(card, result, id, snapshotId) {
+  const restore = document.createElement("button");
+  restore.type = "button";
+  restore.className = "tool-undo";
+  restore.textContent = "Restore backup";
+  restore.addEventListener("click", async () => {
+    if (turnInFlight || submitPending) {
+      appendToolCardError(
+        card,
+        "Wait for the assistant to finish or stop the turn before restoring.",
+      );
+      return;
+    }
+    restore.disabled = true;
+    restore.textContent = "Restoring...";
+    try {
+      const restored = await workbookHistory({ action: "restore", snapshot_id: snapshotId });
+      setToolCardState(id, "restored", "Restored");
+      restore.textContent = "Restored";
+      const targets = restored.addresses?.join(", ") || "the workbook";
+      result.append(toolResultRow("Restore", `${targets}; reverse backup saved`));
+      if (document.body.dataset.activeTab === "backups") loadRecoveryHistory();
+    } catch (error) {
+      restore.disabled = false;
+      restore.textContent = "Restore backup";
+      appendToolCardError(card, error?.message || String(error));
+    }
+  });
+  result.appendChild(restore);
+}
+
+function updateToolCardSuccess(id, name, args, receipt) {
+  const card = setToolCardState(id, "success", "Completed");
+  if (!card || !isMutationCall(name, args)) return;
+  const result = card.querySelector(".tool-result");
+  result.hidden = false;
+  result.classList.remove("error");
+  result.innerHTML = "";
+
+  const commitLabels = {
+    committed: "Committed",
+    not_committed: "Not committed",
+    unknown: "Unknown",
+  };
+  const verificationLabels = {
+    read_back: "Read back from Excel",
+    commit_acknowledged: "Accepted by Excel",
+  };
+  result.append(
+    toolResultRow(
+      "Status",
+      commitLabels[receipt?.commitStatus] || receipt?.commitStatus || "Completed",
+    ),
+  );
+  const summary = mutationSummary(name, args);
+  if (summary) result.append(toolResultRow("Change", summary));
+  if (receipt?.affectedTargets?.length) {
+    result.append(toolResultRow("Range", receipt.affectedTargets.join(", ")));
+  }
+  if (receipt?.verification?.status) {
+    result.append(
+      toolResultRow(
+        "Verification",
+        verificationLabels[receipt.verification.status] || receipt.verification.status,
+      ),
+    );
+  }
+  if (receipt?.formulaErrorCount || receipt?.formulaErrors?.length) {
+    result.append(
+      toolResultRow(
+        "Formula errors",
+        String(receipt.formulaErrorCount || receipt.formulaErrors.length),
+      ),
+    );
+  }
+
+  const snapshotId = receipt?.recovery?.snapshotIds?.[0];
+  if (snapshotId) {
+    result.append(toolResultRow("Backup", "Saved before this change"));
+    appendToolRestoreButton(card, result, id, snapshotId);
+  } else if (receipt?.recovery?.status === "not_available") {
+    result.append(toolResultRow("Backup", "Not available for this change"));
+  }
+  maybeScrollToBottom();
+}
+
+function updateToolCardFailure(id, error) {
+  const commitUnknown = error?.commitStatus === "unknown";
+  const card = setToolCardState(
+    id,
+    commitUnknown ? "unknown" : "error",
+    commitUnknown ? "Check workbook" : "Failed",
+  );
+  if (!card) return;
+  appendToolCardError(card, error?.message || String(error));
+  if (error?.recovery?.snapshotIds?.length) {
+    const result = card.querySelector(".tool-result");
+    result.append(toolResultRow("Backup", "Saved before the attempted change"));
+    appendToolRestoreButton(card, result, id, error.recovery.snapshotIds[0]);
+  }
+}
+
 function appendAssistantMessage(text) {
   const el = document.createElement("div");
   el.className = "msg assistant";
@@ -692,6 +844,7 @@ function appendAssistantMessage(text) {
 // visually distinct from the live session that follows.
 function renderTranscriptReplay(events, truncated) {
   $messages.innerHTML = "";
+  toolCards.clear();
   assistantTurnElem = null;
 
   if (truncated) {
@@ -930,7 +1083,11 @@ async function handleServerMessage(msg) {
 
     case "assistant_event":
       if (msg.event === "tool_use_announce") {
-        appendToolUse(msg.tool, msg.input);
+        // Office tools get a richer card from the matching tool_call below,
+        // where the bridge id lets us attach the actual result and receipt.
+        if (!String(msg.tool || "").startsWith("mcp__office__")) {
+          appendToolUse(msg.tool, msg.input);
+        }
         setAgentStatus("working", statusForTool(msg.tool));
       } else if (msg.event === "turn_complete") {
         if (!msg.interrupted && msg.subtype && msg.subtype !== "success") {
@@ -976,11 +1133,16 @@ async function handleServerMessage(msg) {
       break;
 
     case "tool_call":
+      appendToolUse(msg.name, msg.args, msg.id);
       runOfficeTool(msg);
       break;
 
     case "tool_cancel":
       cancelledToolCalls.add(msg.id);
+      updateToolCardFailure(msg.id, {
+        message: "The tool call was cancelled; check the workbook before retrying.",
+        commitStatus: "unknown",
+      });
       setTimeout(() => cancelledToolCalls.delete(msg.id), 65_000);
       break;
 
@@ -1135,6 +1297,53 @@ const WRITE_TOOLS = new Set([
 
 function isMutationCall(name, args) {
   return WRITE_TOOLS.has(name) || (name === "excel_workbook_history" && args?.action === "restore");
+}
+
+function mutationSummary(name, args = {}) {
+  switch (name) {
+    case "excel_set_cell_range": {
+      const rows = Array.isArray(args.cells) ? args.cells.length : 0;
+      const columns = rows ? Math.max(...args.cells.map((row) => row.length)) : 0;
+      let formulas = 0;
+      let values = 0;
+      for (const row of args.cells || []) {
+        for (const cell of row) {
+          if (cell?.formula !== undefined) formulas++;
+          else if (cell?.value !== undefined) values++;
+        }
+      }
+      const parts = [rows && columns ? `${rows}×${columns} cells` : "cells"];
+      if (formulas) parts.push(`${formulas} formulas`);
+      if (values) parts.push(`${values} values`);
+      return parts.join(" · ");
+    }
+    case "excel_clear_cell_range":
+      return `Clear ${args.clearType || "contents"}`;
+    case "excel_copy_to":
+      return `${args.sourceRange || "source"} → ${args.destinationRange || "destination"}`;
+    case "excel_set_format":
+      return "Apply formatting";
+    case "excel_sort_range":
+      return "Reorder rows";
+    case "excel_resize_range":
+      return "Change row height or column width";
+    case "excel_modify_sheet_structure":
+      return `${args.operation || "Change"} ${args.count || 1} ${args.dimension || "items"}`;
+    case "excel_modify_workbook_structure":
+      return `${args.operation || "Change"} worksheet`;
+    case "excel_modify_object":
+      return `${args.operation || "Change"} ${args.objectType || "object"}`;
+    case "excel_autofilter":
+      return args.clear ? "Clear filter" : "Apply filter";
+    case "excel_create_table":
+      return "Create table";
+    case "excel_add_table_rows":
+      return `Add ${args.rows?.length || 0} table rows`;
+    case "excel_workbook_history":
+      return "Restore previous workbook state";
+    default:
+      return null;
+  }
 }
 
 function mutationTargets(name, args, result) {
@@ -1334,25 +1543,28 @@ async function runOfficeTool(msg) {
     // shape to every mutation and distinguish mechanical read-back from the
     // semantic check the agent still has to perform.
     result = withMutationReceipt(name, args, result, id);
+    updateToolCardSuccess(id, name, args, result);
     wsSend({ type: "tool_result", id, ok: true, result });
   } catch (err) {
     const recovery = commitRecovery && isMutationCall(name, args) ? await commitRecovery() : null;
     if (cancelledToolCalls.delete(id)) return;
     console.error(`[tool ${name}] failed:`, err);
+    const error = {
+      message: await describeOfficeToolError(err, args),
+      ...(err?.code ? { code: err.code } : {}),
+      ...(err?.commitStatus
+        ? { commitStatus: err.commitStatus }
+        : isMutationCall(name, args)
+          ? { commitStatus: "unknown" }
+          : {}),
+      ...(recovery ? { recovery } : {}),
+    };
+    updateToolCardFailure(id, error);
     wsSend({
       type: "tool_result",
       id,
       ok: false,
-      error: {
-        message: await describeOfficeToolError(err, args),
-        ...(err?.code ? { code: err.code } : {}),
-        ...(err?.commitStatus
-          ? { commitStatus: err.commitStatus }
-          : isMutationCall(name, args)
-            ? { commitStatus: "unknown" }
-            : {}),
-        ...(recovery ? { recovery } : {}),
-      },
+      error,
     });
   }
 }
