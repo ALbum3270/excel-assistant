@@ -28,6 +28,7 @@ import {
   ChangeTracker,
   createExplainFormulaTool,
   createTraceDependenciesTool,
+  createWorkbookCoordinator,
   readSelectionContext,
 } from "./vendor/pi-context.js";
 import { prepareMutationRecovery, workbookHistory } from "./recovery.js";
@@ -749,11 +750,17 @@ function appendToolRestoreButton(card, result, id, snapshotId) {
     restore.disabled = true;
     restore.textContent = "Restoring...";
     try {
-      const restored = await workbookHistory({ action: "restore", snapshot_id: snapshotId });
+      const coordinated = await runWorkbookWrite(
+        `restore:${snapshotId}`,
+        "excel_workbook_history",
+        () => workbookHistory({ action: "restore", snapshot_id: snapshotId }),
+      );
+      const restored = coordinated.result;
       setToolCardState(id, "restored", "Restored");
       restore.textContent = "Restored";
       const targets = restored.addresses?.join(", ") || "the workbook";
       result.append(toolResultRow("Restore", `${targets}; reverse backup saved`));
+      result.append(toolResultRow("Revision", String(coordinated.revision)));
       if (document.body.dataset.activeTab === "backups") loadRecoveryHistory();
     } catch (error) {
       restore.disabled = false;
@@ -799,6 +806,9 @@ function updateToolCardSuccess(id, name, args, receipt) {
         verificationLabels[receipt.verification.status] || receipt.verification.status,
       ),
     );
+  }
+  if (Number.isInteger(receipt?.workbookRevision)) {
+    result.append(toolResultRow("Revision", String(receipt.workbookRevision)));
   }
   if (receipt?.formulaErrorCount || receipt?.formulaErrors?.length) {
     result.append(
@@ -1320,6 +1330,21 @@ function isMutationCall(name, args) {
   return WRITE_TOOLS.has(name) || (name === "excel_workbook_history" && args?.action === "restore");
 }
 
+const workbookCoordinator = createWorkbookCoordinator();
+const CANCELLED_TOOL_RESULT = Symbol("cancelled-tool-result");
+
+function runWorkbookWrite(opId, toolName, execute) {
+  return workbookCoordinator.runWrite(
+    {
+      workbookId: activeDocUrl || "workbook:unknown",
+      sessionId: "taskpane",
+      opId,
+      toolName,
+    },
+    execute,
+  );
+}
+
 function mutationSummary(name, args = {}) {
   switch (name) {
     case "excel_set_cell_range": {
@@ -1430,143 +1455,160 @@ async function runOfficeTool(msg) {
   const { id, name, args } = msg;
   if (cancelledToolCalls.delete(id)) return;
   let commitRecovery = null;
+  const cancelledBeforeExecution = new Error("Tool call cancelled before execution");
   try {
-    commitRecovery = WRITE_TOOLS.has(name) ? await prepareMutationRecovery(name, args, id) : null;
+    const execute = async () => {
+      if (cancelledToolCalls.delete(id)) throw cancelledBeforeExecution;
+      commitRecovery = WRITE_TOOLS.has(name) ? await prepareMutationRecovery(name, args, id) : null;
+      if (cancelledToolCalls.delete(id)) throw cancelledBeforeExecution;
+      let result;
+      switch (name) {
+        case "excel_get_selected_range":
+          result = await toolExcelGetSelectedRange(args);
+          break;
+        case "excel_get_workbook_metadata":
+          result = await getWorkbookMetadata();
+          break;
+        case "excel_context_snapshot":
+          result = await contextSnapshot(args);
+          break;
+        case "excel_get_cell_ranges":
+          result = await getCellRanges(args.sheetId, args.ranges, {
+            includeStyles: args.includeStyles,
+            cellLimit: args.cellLimit,
+          });
+          break;
+        case "excel_get_range_as_csv":
+          result = await getRangeAsCsv(args.sheetId, args.range, {
+            includeHeaders: args.includeHeaders,
+            maxRows: args.maxRows,
+          });
+          break;
+        case "excel_search_data":
+          result = await searchData(args.searchTerm, {
+            sheetId: args.sheetId,
+            range: args.range,
+            offset: args.offset,
+            cursor: args.cursor,
+            ...args.options,
+          });
+          break;
+        case "excel_get_all_objects":
+          result = await getAllObjects({ sheetId: args.sheetId, id: args.id });
+          break;
+        case "excel_explain_formula":
+          result = await runPiTool(explainFormulaTool, id, args);
+          break;
+        case "excel_trace_dependencies":
+          result = await runPiTool(traceDependenciesTool, id, args);
+          break;
+        case "excel_set_cell_range":
+          result = await setCellRange(args.sheetId, args.range, args.cells, {
+            copyToRange: args.copyToRange,
+            resizeWidth: args.resizeWidth,
+            resizeHeight: args.resizeHeight,
+            allowOverwrite: args.allow_overwrite,
+          });
+          break;
+        case "excel_clear_cell_range":
+          result = await clearCellRange(args.sheetId, args.range, args.clearType);
+          break;
+        case "excel_copy_to":
+          result = await copyTo(
+            args.sheetId,
+            args.sourceRange,
+            args.destinationRange,
+            args.allow_overwrite,
+          );
+          break;
+        case "excel_modify_sheet_structure":
+          result = await modifySheetStructure(args.sheetId, {
+            operation: args.operation,
+            dimension: args.dimension,
+            reference: args.reference,
+            count: args.count,
+            position: args.position,
+          });
+          break;
+        case "excel_modify_workbook_structure":
+          result = await modifyWorkbookStructure({
+            operation: args.operation,
+            sheetId: args.sheetId,
+            sheetName: args.sheetName,
+            newName: args.newName,
+            tabColor: args.tabColor,
+          });
+          break;
+        case "excel_resize_range":
+          result = await resizeRange(args.sheetId, {
+            range: args.range,
+            width: args.width,
+            height: args.height,
+          });
+          break;
+        case "excel_modify_object":
+          result = await modifyObject({
+            operation: args.operation,
+            sheetId: args.sheetId,
+            objectType: args.objectType,
+            id: args.id,
+            properties: args.properties,
+          });
+          break;
+        case "excel_select_range":
+          result = await toolExcelSelectRange(args);
+          break;
+        case "excel_set_format":
+          result = await toolExcelSetFormat(args);
+          break;
+        case "excel_sort_range":
+          result = await toolExcelSortRange(args);
+          break;
+        case "excel_autofilter":
+          result = await toolExcelAutoFilter(args);
+          break;
+        case "excel_create_table":
+          result = await toolExcelCreateTable(args);
+          break;
+        case "excel_add_table_rows":
+          result = await toolExcelAddTableRows(args);
+          break;
+        case "excel_workbook_history":
+          result = await workbookHistory(args);
+          break;
+        default:
+          throw new Error(`Unknown tool: ${name}`);
+      }
+      // Office.js cannot interrupt a context.sync already in progress, but a
+      // daemon timeout/session stop must prevent a late result from being
+      // mistaken for the current turn's result.
+      if (cancelledToolCalls.delete(id)) {
+        if (commitRecovery) await commitRecovery(result);
+        return CANCELLED_TOOL_RESULT;
+      }
+      if (commitRecovery) {
+        result = { ...result, recovery: await commitRecovery(result) };
+      }
+      if (cancelledToolCalls.delete(id)) return CANCELLED_TOOL_RESULT;
+      // Excel.run has synced by the time a tool resolves. Attach one receipt
+      // shape to every mutation and distinguish mechanical read-back from the
+      // semantic check the agent still has to perform.
+      return withMutationReceipt(name, args, result, id);
+    };
+
     let result;
-    switch (name) {
-      case "excel_get_selected_range":
-        result = await toolExcelGetSelectedRange(args);
-        break;
-      case "excel_get_workbook_metadata":
-        result = await getWorkbookMetadata();
-        break;
-      case "excel_context_snapshot":
-        result = await contextSnapshot(args);
-        break;
-      case "excel_get_cell_ranges":
-        result = await getCellRanges(args.sheetId, args.ranges, {
-          includeStyles: args.includeStyles,
-          cellLimit: args.cellLimit,
-        });
-        break;
-      case "excel_get_range_as_csv":
-        result = await getRangeAsCsv(args.sheetId, args.range, {
-          includeHeaders: args.includeHeaders,
-          maxRows: args.maxRows,
-        });
-        break;
-      case "excel_search_data":
-        result = await searchData(args.searchTerm, {
-          sheetId: args.sheetId,
-          range: args.range,
-          offset: args.offset,
-          cursor: args.cursor,
-          ...args.options,
-        });
-        break;
-      case "excel_get_all_objects":
-        result = await getAllObjects({ sheetId: args.sheetId, id: args.id });
-        break;
-      case "excel_explain_formula":
-        result = await runPiTool(explainFormulaTool, id, args);
-        break;
-      case "excel_trace_dependencies":
-        result = await runPiTool(traceDependenciesTool, id, args);
-        break;
-      case "excel_set_cell_range":
-        result = await setCellRange(args.sheetId, args.range, args.cells, {
-          copyToRange: args.copyToRange,
-          resizeWidth: args.resizeWidth,
-          resizeHeight: args.resizeHeight,
-          allowOverwrite: args.allow_overwrite,
-        });
-        break;
-      case "excel_clear_cell_range":
-        result = await clearCellRange(args.sheetId, args.range, args.clearType);
-        break;
-      case "excel_copy_to":
-        result = await copyTo(
-          args.sheetId,
-          args.sourceRange,
-          args.destinationRange,
-          args.allow_overwrite,
-        );
-        break;
-      case "excel_modify_sheet_structure":
-        result = await modifySheetStructure(args.sheetId, {
-          operation: args.operation,
-          dimension: args.dimension,
-          reference: args.reference,
-          count: args.count,
-          position: args.position,
-        });
-        break;
-      case "excel_modify_workbook_structure":
-        result = await modifyWorkbookStructure({
-          operation: args.operation,
-          sheetId: args.sheetId,
-          sheetName: args.sheetName,
-          newName: args.newName,
-          tabColor: args.tabColor,
-        });
-        break;
-      case "excel_resize_range":
-        result = await resizeRange(args.sheetId, {
-          range: args.range,
-          width: args.width,
-          height: args.height,
-        });
-        break;
-      case "excel_modify_object":
-        result = await modifyObject({
-          operation: args.operation,
-          sheetId: args.sheetId,
-          objectType: args.objectType,
-          id: args.id,
-          properties: args.properties,
-        });
-        break;
-      case "excel_select_range":
-        result = await toolExcelSelectRange(args);
-        break;
-      case "excel_set_format":
-        result = await toolExcelSetFormat(args);
-        break;
-      case "excel_sort_range":
-        result = await toolExcelSortRange(args);
-        break;
-      case "excel_autofilter":
-        result = await toolExcelAutoFilter(args);
-        break;
-      case "excel_create_table":
-        result = await toolExcelCreateTable(args);
-        break;
-      case "excel_add_table_rows":
-        result = await toolExcelAddTableRows(args);
-        break;
-      case "excel_workbook_history":
-        result = await workbookHistory(args);
-        break;
-      default:
-        throw new Error(`Unknown tool: ${name}`);
+    if (isMutationCall(name, args)) {
+      const coordinated = await runWorkbookWrite(id, name, execute);
+      if (coordinated.result === CANCELLED_TOOL_RESULT) return;
+      result = { ...coordinated.result, workbookRevision: coordinated.revision };
+    } else {
+      result = await execute();
+      if (result === CANCELLED_TOOL_RESULT) return;
     }
-    // Office.js cannot interrupt a context.sync already in progress, but a
-    // daemon timeout/session stop must prevent a late result from being
-    // mistaken for the current turn's result.
-    if (cancelledToolCalls.delete(id)) {
-      if (commitRecovery) await commitRecovery(result);
-      return;
-    }
-    if (commitRecovery) {
-      result = { ...result, recovery: await commitRecovery(result) };
-    }
-    // Excel.run has synced by the time a tool resolves. Attach one receipt
-    // shape to every mutation and distinguish mechanical read-back from the
-    // semantic check the agent still has to perform.
-    result = withMutationReceipt(name, args, result, id);
     updateToolCardSuccess(id, name, args, result);
     wsSend({ type: "tool_result", id, ok: true, result });
   } catch (err) {
+    if (err === cancelledBeforeExecution) return;
     const recovery = commitRecovery && isMutationCall(name, args) ? await commitRecovery() : null;
     if (cancelledToolCalls.delete(id)) return;
     console.error(`[tool ${name}] failed:`, err);
@@ -2020,7 +2062,14 @@ async function runRecoveryAction(action, snapshotId = null) {
   setRecoveryBusy(true);
   showRecoveryStatus(action === "restore" ? "Restoring backup..." : "Deleting backup...");
   try {
-    const result = await workbookHistory({ action, snapshot_id: snapshotId });
+    const result =
+      action === "restore"
+        ? (
+            await runWorkbookWrite(`restore:${snapshotId}`, "excel_workbook_history", () =>
+              workbookHistory({ action, snapshot_id: snapshotId }),
+            )
+          ).result
+        : await workbookHistory({ action, snapshot_id: snapshotId });
     const listed = await workbookHistory({ action: "list", limit: 120 });
     recoverySnapshots = listed.snapshots || [];
     if (action === "restore") {

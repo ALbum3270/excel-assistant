@@ -64,6 +64,7 @@ await build({
       'export { ChangeTracker } from "./src/context/change-tracker.ts";',
       'export { createExplainFormulaTool } from "./src/tools/explain-formula.ts";',
       'export { createTraceDependenciesTool } from "./src/tools/trace-dependencies.ts";',
+      'export { createWorkbookCoordinator } from "./src/workbook/coordinator.ts";',
     ].join("\n"),
     resolveDir: sourceRoot,
     loader: "ts",

@@ -176,6 +176,7 @@ test("auto-context bounds text and shares an unfinished overview read", async ()
   const selectionAddresses = [];
   const sandbox = {
     ChangeTracker: class { flush() { return "changed A1"; } },
+    createWorkbookCoordinator: () => ({ runWrite: async (_context, execute) => ({ result: await execute(), revision: 1 }) }),
     buildOverview() { overviewCalls++; return pendingOverview; },
     getWorkbookMetadata: async () => ({ sheetsMetadata: [{ name: "Sheet1", id: 1 }] }),
     async readSelectionContext(address) {
@@ -270,7 +271,9 @@ test("every mutation receives a uniform receipt with its verification level", ()
   const start = source.indexOf("const WRITE_TOOLS = new Set(");
   const end = source.indexOf("async function runOfficeTool(msg)", start);
   assert.ok(start >= 0 && end > start);
-  const sandbox = {};
+  const sandbox = {
+    createWorkbookCoordinator: () => ({ runWrite: async (_context, execute) => ({ result: await execute(), revision: 1 }) }),
+  };
   vm.createContext(sandbox);
   vm.runInContext(
     `${source.slice(start, end)}\n` +
@@ -348,6 +351,11 @@ test("a failed mutation persists its captured recovery checkpoint", async () => 
       throw new Error("format sync failed after values were written");
     },
     isMutationCall: () => true,
+    CANCELLED_TOOL_RESULT: Symbol("cancelled-tool-result"),
+    async runWorkbookWrite(_id, _name, execute) {
+      return { result: await execute(), revision: 1 };
+    },
+    withMutationReceipt: (_name, _args, result) => result,
     describeOfficeToolError: async (error) => error.message,
     updateToolCardSuccess() {},
     updateToolCardFailure() {},

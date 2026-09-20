@@ -1,6 +1,39 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildOverview, ChangeTracker, readSelectionContext } from "../taskpane/shared/vendor/pi-context.js";
+import {
+  buildOverview,
+  ChangeTracker,
+  createWorkbookCoordinator,
+  readSelectionContext,
+} from "../taskpane/shared/vendor/pi-context.js";
+
+test("workbook mutations run in order and receive monotonic revisions", async () => {
+  const coordinator = createWorkbookCoordinator();
+  const order = [];
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  const context = (opId) => ({ workbookId: "book", sessionId: "session", opId });
+
+  const first = coordinator.runWrite(context("first"), async () => {
+    order.push("first:start");
+    await firstGate;
+    order.push("first:end");
+    return "one";
+  });
+  const second = coordinator.runWrite(context("second"), async () => {
+    order.push("second");
+    return "two";
+  });
+
+  await Promise.resolve();
+  assert.deepEqual(order, ["first:start"]);
+  releaseFirst();
+  const [one, two] = await Promise.all([first, second]);
+  assert.deepEqual(order, ["first:start", "first:end", "second"]);
+  assert.deepEqual([one.revision, two.revision], [1, 2]);
+});
 
 test("selection context reads the address submitted with the turn", async () => {
   const originalExcel = globalThis.Excel;
