@@ -4,6 +4,10 @@ English | [简体中文](README.zh-CN.md)
 
 An AI agent in the Excel side panel. It reads and edits the workbook you have open, runs locally on your machine, and works with the model of your choice: your Claude Code login, or any Anthropic-compatible API such as Qwen, DeepSeek, Kimi, GLM or MiniMax.
 
+![A write in the Excel task pane: the assistant replaces a text string in G2 with a real formula, and the tool card shows the commit status, the range, how it was verified, the workbook revision, the cell's before and after values, and a Restore button.](docs/images/write-receipt.png)
+
+*Every change reports what it did: commit status, the range (click it to select it in Excel), how it was verified, the workbook revision, the cells that changed with their previous values, and a restore point taken before the write.*
+
 It is assembled from open-source projects rather than written from scratch. Each part comes from the project that already does it best. This repository adds the glue between them, fixes for the upstream bugs found along the way, and an evaluation harness to check the result.
 
 ## What it can do
@@ -114,6 +118,8 @@ By default the agent does not inherit the MCP servers from your global `~/.claud
 - You can queue a follow-up message while the agent is still working.
 - **History** (in the chat header) lists this workbook's past conversations; you can reopen, continue, export or delete them. Imported conversation archives are view-only and cannot be resumed by the agent.
 - **Backups** tab lists the restore points: search them, restore one, or clear them. You can also just ask "undo your last change".
+
+![The Backups tab listing restore points, each with the operation, the range it covered, the number of cells and a Restore button.](docs/images/backups.png)
 - **Setup** tab: choose the workspace folder and context files, configure the model provider, see the last turn and current agent run's token usage and estimated cost, and turn on **Ask before changing the workbook** to approve each edit.
 
 ## Safety and privacy
