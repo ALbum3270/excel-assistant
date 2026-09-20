@@ -337,7 +337,10 @@ function renderTurnUsage(usage, cost, modelUsage) {
 function appendTaskVerification(report) {
   if (!report) return;
   if (report.status === "not_checked") {
-    appendNotice("Result checks: no task conditions were specified for this turn.");
+    // Nothing was declared, so nothing was verified — worth recording, but it
+    // is not a finding about the workbook. Failed and incomplete checks below
+    // stay prominent.
+    appendEvent("Result checks: none were declared for this turn.");
     return;
   }
   const card = document.createElement("details");
@@ -964,9 +967,14 @@ function appendToolUse(name, args, id = null) {
   el.querySelector(".tool-name").textContent =
     id || officeName ? `Excel · ${recoveryOperationLabel(localName)}` : `Tool · ${name}`;
   el.querySelector(".tool-name").title = name;
-  const argText = typeof args === "string" ? args : JSON.stringify(args, null, 2);
+  // Labelled lines, not a JSON dump: the same describer the approval card uses
+  // (pi-for-excel renders tool parameters the same way in humanize-params.ts).
+  const argText =
+    typeof args === "string"
+      ? args
+      : describeApproval(localName, args && typeof args === "object" ? args : {});
   el.querySelector(".tool-args").textContent =
-    argText.length > 200 ? argText.slice(0, 197) + "..." : argText;
+    argText.length > 300 ? argText.slice(0, 297) + "…" : argText;
   el.dataset.toolName = localName;
   // A change to the workbook always shows; reads stay behind the toggle.
   if (isMutationCall(localName, typeof args === "object" && args ? args : {})) {
