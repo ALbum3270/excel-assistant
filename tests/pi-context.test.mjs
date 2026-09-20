@@ -71,6 +71,39 @@ test("daemon coordination serializes reads with writes and rejects a stale write
   );
 });
 
+test("a write the pane refuses does not consume a revision", async () => {
+  const execution = createWorkbookExecution();
+  const path = "C:\Books\Guarded.xlsx";
+  const first = await execution.run(path, { write: true, toolName: "write" }, async () => ({
+    success: true,
+  }));
+  assert.equal(first.revision, 1);
+
+  // The overwrite guard reports its refusal in the result; nothing was written.
+  const refused = await execution.run(path, { write: true, expectedRevision: 1, toolName: "write" }, async () => ({
+    success: false,
+    error: "Would overwrite 5 non-empty cell(s)",
+  }));
+  assert.equal(refused.revision, 1);
+
+  // So the caller's expectation is still current and the next write runs.
+  const second = await execution.run(path, { write: true, expectedRevision: 1, toolName: "write" }, async () => ({
+    success: true,
+  }));
+  assert.equal(second.revision, 2);
+});
+
+test("a write with an unknown outcome consumes its revision", async () => {
+  const execution = createWorkbookExecution();
+  const path = "C:\Books\Uncertain.xlsx";
+  await assert.rejects(
+    execution.run(path, { write: true, toolName: "write" }, async () => {
+      throw Object.assign(new Error("sync never returned"), { commitStatus: "unknown" });
+    }),
+    (error) => error.workbookRevision === 1,
+  );
+});
+
 test("a timed-out write keeps the shared queue until the executor settles", async () => {
   const execution = createWorkbookExecution();
   let releaseWrite;

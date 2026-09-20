@@ -4,36 +4,155 @@ const MAX_CELLS = 200_000;
 const MAX_EXAMPLES = 5;
 const scalar = z.union([z.string().max(32767), z.number().finite(), z.boolean(), z.null()]);
 const target = z.object({
-  sheetId: z.number().int(),
+  // A model that reads the sheet id out of context sometimes sends it as text;
+  // "3" is unambiguous, so accept it rather than bouncing the whole call.
+  sheetId: z.union([z.number().int(), z.string().regex(/^\d+$/).transform(Number)]),
   range: z
     .string()
     .regex(/^\$?[A-Za-z]+\$?[1-9]\d*(?::\$?[A-Za-z]+\$?[1-9]\d*)?$/)
     .describe(
-      "Explicit local A1 range, excluding headers. Include the old output tail when checking for leftover rows.",
+      "Explicit local A1 range, excluding headers. Inclusive of both ends: C2:D8 is 7 rows. A single cell (C2) sizes itself from the expected matrix.",
     ),
 });
-const common = { label: z.string().min(1).max(200), target };
 const tolerance = z
   .number()
   .finite()
   .nonnegative()
   .optional()
   .describe("Absolute numeric tolerance; default 0. Text and numbers remain distinct.");
-const check = z.discriminatedUnion("type", [
-  z.object({ ...common, type: z.literal("row_count"), expected: z.number().int().nonnegative() }),
-  z.object({ ...common, type: z.literal("unique") }),
-  z.object({ ...common, type: z.literal("not_blank") }),
-  z.object({ ...common, type: z.literal("formulas") }),
-  z.object({
-    ...common,
-    type: z.literal("matches"),
-    expected: z.array(z.array(scalar).min(1)).min(1),
-    tolerance,
-  }),
-  z.object({ ...common, type: z.literal("sum"), expected: z.number().finite(), tolerance }),
-  z.object({ ...common, type: z.literal("rows_in_source"), source: target }),
-  z.object({ ...common, type: z.literal("same_rows"), source: target }),
-]);
+const CHECK_TYPES = [
+  "row_count",
+  "unique",
+  "not_blank",
+  "formulas",
+  "matches",
+  "sum",
+  "rows_in_source",
+  "same_rows",
+];
+// The shape is validated in code, not by a discriminated union: a union turns
+// every small mistake into a raw schema dump, and the model then retries the
+// whole call one fix at a time. validateChecks() reports every problem at once,
+// in the terms of this tool.
+const check = z.object({
+  type: z.enum(CHECK_TYPES),
+  label: z.string().min(1).max(200).optional(),
+  target,
+  expected: z.unknown().optional(),
+  source: target.optional(),
+  tolerance,
+});
+
+const isScalar = (value) =>
+  value === null ||
+  typeof value === "number" ||
+  typeof value === "boolean" ||
+  (typeof value === "string" && value.length <= 32767);
+
+function cellName(row, col) {
+  return `${columnName(col)}${row}`;
+}
+
+function fittingRange(shape, rows, columns) {
+  return `${cellName(shape.row, shape.col)}:${cellName(shape.row + rows - 1, shape.col + columns - 1)}`;
+}
+
+/**
+ * Check every declared check and report all problems in one error, each named
+ * by its label and saying exactly what to send instead. Returns the checks with
+ * defaults filled in (label, single-cell targets sized from their matrix).
+ */
+function validateChecks(checks) {
+  const problems = [];
+  const normalized = [];
+  checks.forEach((item, index) => {
+    const label = item.label ?? `${item.type} ${item.target.range}`;
+    const name = `check ${index + 1} ("${label}")`;
+    const fail = (message) => problems.push(`${name}: ${message}`);
+    let entry = { ...item, label };
+
+    if (["row_count", "matches", "sum"].includes(item.type) && item.expected === undefined) {
+      fail(
+        item.type === "matches"
+          ? "matches needs `expected`: a 2D array with one row per target row."
+          : `${item.type} needs \`expected\`: a number.`,
+      );
+    }
+    if (["unique", "not_blank", "formulas"].includes(item.type) && item.expected !== undefined) {
+      fail(`${item.type} takes no \`expected\`; it checks the target range as it is.`);
+    }
+    if (["rows_in_source", "same_rows"].includes(item.type) && !item.source) {
+      fail(`${item.type} needs \`source\`: the range the rows must come from.`);
+    }
+    if (item.type === "row_count" && item.expected !== undefined) {
+      if (!Number.isInteger(item.expected) || item.expected < 0) {
+        fail("row_count `expected` must be a non-negative whole number.");
+      }
+    }
+    if (item.type === "sum" && item.expected !== undefined && !Number.isFinite(item.expected)) {
+      fail("sum `expected` must be a finite number.");
+    }
+
+    let shape;
+    try {
+      shape = rangeShape(item.target.range);
+    } catch (error) {
+      fail(error.message);
+    }
+
+    if (item.type === "matches" && item.expected !== undefined && shape) {
+      const matrix = item.expected;
+      if (!Array.isArray(matrix) || matrix.length === 0 || !Array.isArray(matrix[0])) {
+        fail("matches `expected` must be a 2D array, e.g. [[1,\"a\"],[2,\"b\"]].");
+      } else if (matrix.some((row) => !Array.isArray(row) || row.length !== matrix[0].length)) {
+        fail("matches `expected` must be rectangular: every row needs the same number of values.");
+      } else if (matrix.some((row) => row.some((value) => !isScalar(value)))) {
+        fail("matches `expected` may only contain strings, numbers, booleans or null.");
+      } else {
+        const rows = matrix.length;
+        const columns = matrix[0].length;
+        const singleCell = !item.target.range.includes(":");
+        if (singleCell) {
+          // Same rule as a cell write: a single-cell target anchors the block.
+          entry = {
+            ...entry,
+            target: { ...item.target, range: fittingRange(shape, rows, columns) },
+          };
+        } else if (rows !== shape.rows || columns !== shape.columns) {
+          fail(
+            `target ${item.target.range} covers rows ${shape.row}-${shape.row + shape.rows - 1} and ` +
+              `columns ${columnName(shape.col)}-${columnName(shape.col + shape.columns - 1)} ` +
+              `(${shape.rows} x ${shape.columns}, both ends included), but \`expected\` is ${rows} x ${columns}. ` +
+              `Send ${shape.rows} rows of ${shape.columns}, or set target to ${fittingRange(shape, rows, columns)}.`,
+          );
+        }
+      }
+    }
+
+    if (item.source && shape) {
+      try {
+        const sourceShape = rangeShape(item.source.range);
+        if (sourceShape.columns !== shape.columns) {
+          fail(
+            `source ${item.source.range} has ${sourceShape.columns} column(s) but target ${item.target.range} has ${shape.columns}. Row comparisons need the same width.`,
+          );
+        }
+      } catch (error) {
+        fail(error.message);
+      }
+    }
+
+    normalized.push(entry);
+  });
+
+  if (problems.length) {
+    throw new Error(
+      `Task checks were not accepted (${problems.length} problem${problems.length === 1 ? "" : "s"}); ` +
+        `fix all of them in one call:\n- ${problems.join("\n- ")}`,
+    );
+  }
+  return normalized;
+}
 
 export const TASK_CHECK_SCHEMA = {
   action: z.enum(["define", "run"]),
@@ -49,7 +168,10 @@ export const TASK_CHECK_DESCRIPTION =
   "Declare and run read-only task-result checks against live Excel data. Before changing data, " +
   "call action=define with checks derived from the user's requirements; source ranges are snapshotted then. " +
   "After writing, call action=run to see failures and fix the result before reporting. Checks are per user turn; " +
-  "the daemon also reruns the declared plan at normal turn completion. row_count counts rows with any nonblank value; " +
+  "the daemon also reruns the declared plan at normal turn completion. Ranges include both ends (C2:D8 is 7 rows), and "
+  "a single-cell target (C2) takes its size from the expected matrix. row_count, sum and matches need `expected` "
+  "(a whole number, a number, and a 2D array); unique, not_blank and formulas take none; rows_in_source and same_rows need `source`. "
+  "A rejected call lists every problem at once — fix them all in the next call. row_count counts rows with any nonblank value; " +
   "unique checks whole-row tuples (choose the key columns as target); not_blank checks every value; formulas requires " +
   "a formula in every target cell; matches compares the full target to an independently computed expected matrix; " +
   "sum checks a numeric total and fails on nonnumeric nonblank cells; rows_in_source checks whole-row membership " +
@@ -218,26 +340,13 @@ export function createTaskVerification(call) {
       state.mutations++;
     },
     async define(rawChecks) {
-      const checks = z.array(check).min(1).max(20).parse(rawChecks);
+      const checks = validateChecks(z.array(check).min(1).max(20).parse(rawChecks));
       const ranges = new Map();
       for (const item of checks) {
         const size = rangeShape(item.target.range);
         ranges.set(keyFor(item.target), size.rows * size.columns);
-        if (
-          item.type === "matches" &&
-          (item.expected.length !== size.rows ||
-            item.expected.some((row) => row.length !== size.columns))
-        ) {
-          throw new Error(
-            `Expected matrix for "${item.label}" must match ${size.rows} x ${size.columns}.`,
-          );
-        }
         if (item.source) {
           const sourceSize = rangeShape(item.source.range);
-          if (sourceSize.columns !== size.columns)
-            throw new Error(
-              `Source and target for "${item.label}" must have the same number of columns.`,
-            );
           ranges.set(keyFor(item.source), sourceSize.rows * sourceSize.columns);
         }
       }

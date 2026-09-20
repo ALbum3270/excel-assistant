@@ -3,6 +3,13 @@ import { win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createWorkbookCoordinator } from "./vendor/pi-coordinator.mjs";
 
+// A tool result that reports its own refusal (the overwrite guard) or says it
+// never committed left the workbook untouched.
+function didCommit(result) {
+  if (!result || typeof result !== "object") return true;
+  return result.success !== false && result.commitStatus !== "not_committed";
+}
+
 export function canonicalWorkbookId(value) {
   let id = String(value || "");
   if (id.startsWith("file:")) id = fileURLToPath(id);
@@ -98,25 +105,35 @@ export function createWorkbookExecution() {
             );
           if (write && expectedRevision !== undefined && expectedRevision !== state.revision) {
             throw failure(
-              `Workbook changed since revision ${expectedRevision}; current revision is ${state.revision}. Re-read the data before writing.`,
+              `Workbook changed since revision ${expectedRevision}; current revision is ${state.revision}. ` +
+                "Read the target range again before writing — retrying this write unchanged fails the same way.",
               "STALE_WORKBOOK_REVISION",
               "not_committed",
               { workbookRevision: state.revision },
             );
           }
           started = true;
-          if (write) state.revision++;
+          // The revision means "the workbook changed", and writers compare
+          // their expectation against it. A write that is refused before it
+          // touches a cell — the overwrite guard, a shape check — must not
+          // burn a number, or every later write in the session is stale
+          // against a change that never happened. So run against the next
+          // number and only keep it when the write actually landed.
+          const pending = write ? state.revision + 1 : state.revision;
           try {
             const result = await execute({
               signal: stop.signal,
-              revision: state.revision,
+              revision: pending,
               opId,
               write,
             });
+            if (write && didCommit(result)) state.revision = pending;
             this.settled(workbookId, opId);
             return { result, revision: state.revision, uncertain: Boolean(state.blocked) };
           } catch (error) {
             if (write && error.commitStatus !== "not_committed" && !error.executionSettled) {
+              // The outcome is unknown, so assume it may have landed.
+              state.revision = pending;
               state.blocked = { opId, toolName, reason: error.message };
             } else this.settled(workbookId, opId);
             throw Object.assign(error, { workbookRevision: state.revision });
