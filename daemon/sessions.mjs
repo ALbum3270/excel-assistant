@@ -255,7 +255,10 @@ export async function listSessions(host, documentKey) {
   const sessions = Array.isArray(conversation?.sessions)
     ? conversation.sessions
         .filter((entry) => typeof entry?.session_id === "string" && entry.session_id)
-        .map((entry) => ({ ...entry }))
+        .map(({ archive_events, ...entry }) => ({
+          ...entry,
+          archived: Array.isArray(archive_events),
+        }))
         .sort((a, b) => String(b.last_used ?? "").localeCompare(String(a.last_used ?? "")))
     : [];
   return {
@@ -302,6 +305,35 @@ export async function deleteSession(host, documentKey, sessionId) {
     return true;
   });
   return deleted;
+}
+
+export async function importArchivedSession(host, documentKey, { title, events, truncated = false }) {
+  const h = normalizeHost(host);
+  const key = documentStorageKey(documentKey);
+  if (!h || !key || !Array.isArray(events)) return null;
+  const sessionId = `archive_${randomUUID()}`;
+  await mutateState((state) => {
+    const now = new Date().toISOString();
+    const conversations = ensureHostConversations(state, h);
+    let conversation = conversations[key];
+    if (!conversation || !Array.isArray(conversation.sessions)) {
+      conversation = { active_session_id: null, sessions: [] };
+      conversations[key] = conversation;
+    }
+    conversation.sessions.push({
+      session_id: sessionId,
+      cwd: null,
+      title: typeof title === "string" && title.trim() ? title.trim().slice(0, 120) : "Imported conversation",
+      compatibility_key: null,
+      archive_events: events,
+      archive_truncated: Boolean(truncated),
+      imported_at: now,
+      created_at: now,
+      last_used: now,
+    });
+    return true;
+  });
+  return sessionId;
 }
 
 export async function touchFolder(cwd) {

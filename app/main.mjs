@@ -186,6 +186,10 @@ async function handleDaemonMessage(msg) {
     updateTray();
     return;
   }
+  if (msg.type === "restart_daemon") {
+    restartDaemon();
+    return;
+  }
   if (msg.type !== "pick_path") return;
   const reply = (payload) => {
     try {

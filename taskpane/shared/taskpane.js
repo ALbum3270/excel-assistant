@@ -8,6 +8,7 @@ import {
   toolExcelAutoFilter,
   toolExcelCreateTable,
   toolExcelAddTableRows,
+  toolExcelSetFrozenPanes,
 } from "./tools-excel.js";
 import {
   clearCellRange,
@@ -160,6 +161,19 @@ async function refreshModelLabels() {
     tierModels = Object.fromEntries(Object.entries(r.models).filter(([, id]) => id));
     const provider = document.getElementById("provider-name");
     if (provider) provider.textContent = r.provider || "Anthropic";
+    const providerUrl = document.getElementById("provider-url");
+    if (providerUrl) providerUrl.value = r.base_url || "";
+    for (const tier of ["haiku", "sonnet", "opus"]) {
+      const field = document.getElementById(`provider-model-${tier}`);
+      if (field) field.value = r.models?.[tier] || "";
+    }
+    const credential = document.getElementById("provider-credential");
+    if (credential) {
+      credential.value = "";
+      credential.placeholder = r.credential_configured
+        ? "Saved — leave blank to keep it"
+        : "Enter an API key or auth token";
+    }
     for (const option of document.querySelectorAll("#composer-model option")) {
       const id = tierModels[option.value];
       const tier = option.value.charAt(0).toUpperCase() + option.value.slice(1);
@@ -170,6 +184,44 @@ async function refreshModelLabels() {
     /* older daemon without get_models — keep the static labels */
   }
 }
+
+document.getElementById("provider-save")?.addEventListener("click", async () => {
+  const button = document.getElementById("provider-save");
+  const status = document.getElementById("provider-status");
+  button.disabled = true;
+  if (status) status.hidden = true;
+  try {
+    const result = await sendRequest("set_provider", {
+      settings: {
+        base_url: document.getElementById("provider-url")?.value || "",
+        credential: document.getElementById("provider-credential")?.value || "",
+        clear_credential: Boolean(document.getElementById("provider-clear-credential")?.checked),
+        models: Object.fromEntries(
+          ["haiku", "sonnet", "opus"].map((tier) => [
+            tier,
+            document.getElementById(`provider-model-${tier}`)?.value || "",
+          ]),
+        ),
+      },
+    });
+    if (!result.ok) throw new Error(result.error || "Could not save model connection");
+    if (status) {
+      status.textContent = result.restarting
+        ? "Saved. Reconnecting to the restarted agent…"
+        : "Saved. Restart the daemon to apply this connection.";
+      status.classList.remove("error");
+      status.hidden = false;
+    }
+  } catch (error) {
+    if (status) {
+      status.textContent = error.message;
+      status.classList.add("error");
+      status.hidden = false;
+    }
+  } finally {
+    button.disabled = false;
+  }
+});
 
 function renderConnection() {
   let text = connLabel;
@@ -193,14 +245,87 @@ function renderConnection() {
   $connectionStatus.title = title;
 }
 
-function renderTurnUsage(usage) {
+// Model usage is cumulative within one SDK query stream (including subagents
+// and compaction). The last-turn figure below is main-agent-only.
+const sessionUsage = {
+  turns: 0,
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheCreate: 0,
+  cost: 0,
+  priced: false,
+  contextWindow: 0,
+};
+
+function resetSessionUsage() {
+  Object.assign(sessionUsage, {
+    turns: 0,
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheCreate: 0,
+    cost: 0,
+    priced: false,
+    contextWindow: 0,
+  });
+  const target = document.getElementById("usage-session");
+  if (target) target.textContent = "Current agent run: no completed turn yet.";
+  const last = document.getElementById("usage-last");
+  if (last) last.textContent = "No completed turn in this panel yet.";
+}
+
+function renderTurnUsage(usage, cost, modelUsage) {
   const target = document.getElementById("usage-last");
-  if (!target || !usage) return;
+  if (!usage) return;
   const input = Number(usage.input_tokens || 0);
   const output = Number(usage.output_tokens || 0);
   const cacheRead = Number(usage.cache_read_input_tokens || 0);
   const cacheCreate = Number(usage.cache_creation_input_tokens || 0);
-  target.textContent = `Last turn (main agent, SDK reported): ${input.toLocaleString()} input, ${output.toLocaleString()} output, ${cacheRead.toLocaleString()} cache read, ${cacheCreate.toLocaleString()} cache write tokens.`;
+  if (target) {
+    target.textContent =
+      `Last turn (main agent, SDK reported): ${input.toLocaleString()} input, ${output.toLocaleString()} output, ` +
+      `${cacheRead.toLocaleString()} cache read, ${cacheCreate.toLocaleString()} cache write tokens.`;
+  }
+
+  sessionUsage.turns += 1;
+  const models = Object.values(modelUsage ?? {});
+  if (models.length) {
+    sessionUsage.input = models.reduce((sum, item) => sum + Number(item.inputTokens || 0), 0);
+    sessionUsage.output = models.reduce((sum, item) => sum + Number(item.outputTokens || 0), 0);
+    sessionUsage.cacheRead = models.reduce(
+      (sum, item) => sum + Number(item.cacheReadInputTokens || 0),
+      0,
+    );
+    sessionUsage.cacheCreate = models.reduce(
+      (sum, item) => sum + Number(item.cacheCreationInputTokens || 0),
+      0,
+    );
+    sessionUsage.contextWindow = Math.max(...models.map((item) => Number(item.contextWindow || 0)));
+  } else {
+    sessionUsage.input += input;
+    sessionUsage.output += output;
+    sessionUsage.cacheRead += cacheRead;
+    sessionUsage.cacheCreate += cacheCreate;
+  }
+  // SDK result cost is cumulative for one query() stream. Reading the latest
+  // value is correct; summing each turn would count earlier turns repeatedly.
+  sessionUsage.cost = Number(cost || 0);
+  sessionUsage.priced = sessionUsage.cost > 0;
+
+  const session = document.getElementById("usage-session");
+  if (!session) return;
+  const billable = sessionUsage.input + sessionUsage.cacheRead + sessionUsage.cacheCreate + sessionUsage.output;
+  session.textContent =
+    `Current agent run: ${sessionUsage.turns} turn${sessionUsage.turns === 1 ? "" : "s"}, ` +
+    `${billable.toLocaleString()} tokens total ` +
+    `(${(sessionUsage.input + sessionUsage.cacheRead + sessionUsage.cacheCreate).toLocaleString()} in, ${sessionUsage.output.toLocaleString()} out)` +
+    (sessionUsage.contextWindow
+      ? ` — model context window: ${sessionUsage.contextWindow.toLocaleString()} tokens; turn totals are not current context occupancy.`
+      : "") +
+    (sessionUsage.priced
+      ? ` — SDK-estimated cost $${sessionUsage.cost.toFixed(4)}.`
+      : " — the SDK reported no cost estimate.");
 }
 
 function appendTaskVerification(report) {
@@ -268,6 +393,7 @@ document.getElementById("new-chat")?.addEventListener("click", async () => {
     clearTurnQueue();
     const r = await sendRequest("new_session");
     if (!r.ok) throw new Error(r.error || "Could not start a new chat");
+    resetSessionUsage();
     setAgentStatus("idle", "Ready");
   } catch (e) {
     appendError(e.message);
@@ -277,6 +403,8 @@ document.getElementById("new-chat")?.addEventListener("click", async () => {
 const $historyModal = document.getElementById("history-modal");
 const $historyList = document.getElementById("history-list");
 const $historyClose = document.getElementById("history-modal-close");
+const $historyImport = document.getElementById("history-import");
+const $historyImportFile = document.getElementById("history-import-file");
 
 function closeHistory() {
   if ($historyModal) $historyModal.hidden = true;
@@ -325,7 +453,13 @@ function renderConversationHistory(history) {
 
     const meta = document.createElement("div");
     meta.className = "history-meta";
-    meta.textContent = `${historyTimestamp(session.last_used)}${session.resume_compatible ? "" : " · View only (agent setup changed)"}`;
+    meta.textContent = `${historyTimestamp(session.last_used)}${
+      session.archived
+        ? " · Imported archive"
+        : session.resume_compatible
+          ? ""
+          : " · View only (agent setup changed)"
+    }`;
 
     const actions = document.createElement("div");
     actions.className = "history-actions";
@@ -340,11 +474,39 @@ function renderConversationHistory(history) {
         const result = await sendRequest("activate_session", { session_id: session.session_id });
         if (!result.ok) throw new Error(result.error || "Could not open conversation");
         readOnlyHistory = !!result.read_only;
+        resetSessionUsage();
         setAgentStatus("idle", "Ready");
         closeHistory();
       } catch (error) {
         resume.disabled = false;
         historyMessage(error.message, true);
+      }
+    });
+
+    const exportButton = document.createElement("button");
+    exportButton.type = "button";
+    exportButton.textContent = "Export";
+    exportButton.addEventListener("click", async () => {
+      exportButton.disabled = true;
+      try {
+        const result = await sendRequest("export_session", { session_id: session.session_id });
+        if (!result.ok) throw new Error(result.error || "Could not export conversation");
+        const safeTitle = (session.title || "conversation")
+          .replace(/[\\/:*?"<>|]+/g, "-")
+          .slice(0, 80);
+        const blob = new Blob([JSON.stringify(result.archive, null, 2)], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `${safeTitle || "conversation"}.excel-assistant.json`;
+        anchor.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (error) {
+        historyMessage(error.message, true);
+      } finally {
+        exportButton.disabled = false;
       }
     });
 
@@ -370,7 +532,7 @@ function renderConversationHistory(history) {
       }
     });
 
-    actions.append(resume, remove);
+    actions.append(resume, exportButton, remove);
     item.append(titleRow, meta, actions);
     $historyList.appendChild(item);
   }
@@ -393,6 +555,24 @@ document.getElementById("chat-history")?.addEventListener("click", () => {
   refreshConversationHistory();
 });
 $historyClose?.addEventListener("click", closeHistory);
+$historyImport?.addEventListener("click", () => $historyImportFile?.click());
+$historyImportFile?.addEventListener("change", async () => {
+  const file = $historyImportFile.files?.[0];
+  if (!file) return;
+  $historyImport.disabled = true;
+  try {
+    if (file.size > 2_000_000) throw new Error("Conversation archive exceeds 2 MB");
+    const archive = JSON.parse(await file.text());
+    const result = await sendRequest("import_session", { archive });
+    if (!result.ok) throw new Error(result.error || "Could not import conversation");
+    await refreshConversationHistory();
+  } catch (error) {
+    historyMessage(error.message, true);
+  } finally {
+    $historyImport.disabled = false;
+    $historyImportFile.value = "";
+  }
+});
 $historyModal?.addEventListener("click", (event) => {
   if (event.target === $historyModal) closeHistory();
 });
@@ -1182,7 +1362,9 @@ async function handleServerMessage(msg) {
       renderTranscriptReplay(msg.events || [], !!msg.truncated);
       if (readOnlyHistory) {
         appendNotice(
-          "This conversation can be viewed, but its agent setup changed. Your next message starts a new conversation.",
+          msg.archived
+            ? "This imported conversation is a read-only archive. Your next message starts a new conversation."
+            : "This conversation can be viewed, but its agent setup changed. Your next message starts a new conversation.",
         );
       }
       break;
@@ -1200,9 +1382,9 @@ async function handleServerMessage(msg) {
         }
         setAgentStatus("working", statusForTool(msg.tool));
       } else if (msg.event === "turn_complete") {
-        renderTurnUsage(msg.usage);
+        renderTurnUsage(msg.usage, msg.total_cost_usd, msg.model_usage);
         appendTaskVerification(msg.task_verification);
-        if (!msg.interrupted && msg.subtype && msg.subtype !== "success") {
+        if (!msg.interrupted && (msg.is_error || (msg.subtype && msg.subtype !== "success"))) {
           appendError(msg.error || `The agent ended this request with ${msg.subtype}.`);
           setAgentStatus("idle", "Stopped — see message");
         } else {
@@ -1235,6 +1417,11 @@ async function handleServerMessage(msg) {
       } else if (msg.event === "context_compaction_failed") {
         appendNotice(`Context compaction failed: ${msg.error || "unknown error"}`);
         setAgentStatus("working", "Working...");
+      } else if (msg.event === "context_overflow_recovering") {
+        appendNotice("The context limit was reached. Compacting the conversation and retrying once…");
+        setAgentStatus("working", "Recovering context...");
+      } else if (msg.event === "context_overflow_compacted") {
+        setAgentStatus("working", "Retrying request...");
       } else if (msg.event === "error") {
         // Always-visible bubble (NOT .msg.event, which the diagnostics
         // toggle hides). Status reads "Stopped — see message" so the
@@ -1247,6 +1434,7 @@ async function handleServerMessage(msg) {
         if (wsReady) setConnectionStatus("err", "Sign-in required");
         endTurn({ drainQueue: false });
       } else if (msg.event === "session_init") {
+        resetSessionUsage();
         readOnlyHistory = false;
         appendEvent(`Session ${msg.session_id?.slice(0, 8)}… (${msg.model})`);
         // Authoritative: this is the model the SDK actually started with.
@@ -1491,7 +1679,7 @@ function mutationSummary(name, args = {}) {
     case "excel_create_table":
       return "Create table";
     case "excel_add_table_rows":
-      return `Add ${args.rows?.length || 0} table rows`;
+      return `Add ${args.values?.length || 0} table rows`;
     case "excel_workbook_history":
       return "Restore previous workbook state";
     default:
@@ -1632,13 +1820,15 @@ async function runOfficeTool(msg) {
           );
           break;
         case "excel_modify_sheet_structure":
-          result = await modifySheetStructure(args.sheetId, {
-            operation: args.operation,
-            dimension: args.dimension,
-            reference: args.reference,
-            count: args.count,
-            position: args.position,
-          });
+          result = ["freeze", "unfreeze"].includes(args.operation)
+            ? await toolExcelSetFrozenPanes(args)
+            : await modifySheetStructure(args.sheetId, {
+                operation: args.operation,
+                dimension: args.dimension,
+                reference: args.reference,
+                count: args.count,
+                position: args.position,
+              });
           break;
         case "excel_modify_workbook_structure":
           result = await modifyWorkbookStructure({

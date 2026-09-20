@@ -11,13 +11,13 @@ It is assembled from open-source projects rather than written from scratch. Each
 - **Read and edit the workbook** through Office.js tools: values, formulas, formatting, sorting, filters, tables, charts, rows, columns and sheets. Reads and searches page through large sheets instead of loading them whole.
 - **See the workbook before it acts.** Every message carries the workbook overview (sheets, headers, tables, named ranges), your selection with the rows around it, and the cells you changed since the last turn.
 - **Explain formulas and trace dependencies.** It can show what feeds a cell and what breaks if you change it.
-- **Undo its own edits.** Every change creates a restore point covering values, formulas, formatting, sorting, clearing, inserted or deleted rows and columns, and added, deleted or renamed sheets. Restoring a change can itself be redone.
+- **Undo many of its edits.** Restore points cover values, formulas, formatting, sorting, clearing, rows and columns, sheets, tables, worksheet filters, hidden rows and columns, frozen panes, and chart creation or selected chart properties. Restoring a change can itself be redone.
 - **Ask before it writes (optional).** Turn this on and every change waits for Approve, Approve rest of turn or Reject in the chat.
 - **Crunch data too large for the chat** in a sandboxed shell with Python (standard library), awk, jq and sqlite3. Data moves between the sheet and the shell without passing through the model.
 - **Use Excel features Office.js cannot reach** through Windows COM, such as Power Query, PivotTable layouts, the Data Model and DAX, conditional formatting and data validation.
 - **Build finance models** with Anthropic's financial-analysis skills: DCF, LBO, three-statement, comps and model audits.
 - **Read your local files** (notes, specs, prior work) from folders you point it at.
-- **Keep track of the work**: one conversation history per workbook, a restore-point list, queued follow-ups, and the provider and token usage in view.
+- **Keep track of the work**: one conversation history per workbook with portable read-only exports, a restore-point list, queued follow-ups, and provider, token and estimated cost displays.
 
 ## How it is built
 
@@ -85,7 +85,7 @@ To watch the daemon's log in a terminal, run `npm run dev` instead of `npm start
 
 ## Choose a model
 
-Without configuration the agent uses your Claude Code login. To use another provider, copy `.env.example` to `.env` and fill it in. This file is read only by this project and does not change your global Claude Code. Example for Qwen:
+Without configuration the agent uses your Claude Code login. You can enter an Anthropic-compatible base URL, credential and tier model IDs in the pane's **Setup → Model connection** section. Saving restarts the local daemon. Alternatively, copy `.env.example` to `.env` and fill it in. This file is read only by this project and does not change your global Claude Code. Example for Qwen:
 
 ```bash
 ANTHROPIC_BASE_URL=https://dashscope.aliyuncs.com/apps/anthropic
@@ -110,11 +110,11 @@ By default the agent does not inherit the MCP servers from your global `~/.claud
 ## Using it
 
 - Open a saved workbook, open the pane and describe what you want, for example "Add a total row under the sales table" or "Why is D14 showing #N/A?".
-- Each write shows a card with what changed: the range, whether it was committed, how it was verified, formula errors, and a restore link.
+- Each write shows a card with its range, commit status, verification level, formula errors and restore link. Small cell edits also show before/after values.
 - You can queue a follow-up message while the agent is still working.
-- **History** (in the chat header) lists this workbook's past conversations; you can reopen, continue or delete them.
+- **History** (in the chat header) lists this workbook's past conversations; you can reopen, continue, export or delete them. Imported conversation archives are view-only and cannot be resumed by the agent.
 - **Backups** tab lists the restore points: search them, restore one, or clear them. You can also just ask "undo your last change".
-- **Setup** tab: choose the workspace folder and context files the agent may read, see the current provider and the last turn's token usage, and turn on **Ask before changing the workbook** to approve each edit.
+- **Setup** tab: choose the workspace folder and context files, configure the model provider, see the last turn and current agent run's token usage and estimated cost, and turn on **Ask before changing the workbook** to approve each edit.
 
 ## Safety and privacy
 
@@ -152,7 +152,7 @@ python -X utf8 evals/run_spreadsheetbench.py --dataset <path/to/spreadsheetbench
 ## Limitations
 
 - Built and tested on Windows only; the COM tools are Windows-only.
-- No restore points yet for tables, charts, PivotTables, comments, duplicated sheets, hidden rows and columns, frozen panes, or anything changed through the COM tools.
+- Restore remains incomplete for chart deletion and data-source changes, PivotTables, comments, duplicated sheets, and writes through the COM tools. New table, filter, hidden-row/column and freeze-pane recovery paths still need live Excel acceptance.
 - After rows, columns or a sheet are deleted and restored, formulas on other sheets that pointed at them stay `#REF!`.
 
 ## License

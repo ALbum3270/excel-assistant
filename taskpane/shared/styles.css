@@ -1220,6 +1220,53 @@ body {
   overflow-y: auto;
   min-height: 72px;
 }
+.provider-fields,
+.provider-model-grid {
+  display: grid;
+  gap: 5px;
+}
+.provider-fields > label,
+.provider-model-grid > label {
+  color: var(--fg-muted);
+  font-size: 11px;
+  margin-top: 4px;
+}
+.provider-fields input[type="text"],
+.provider-fields input[type="password"] {
+  box-sizing: border-box;
+  width: 100%;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border-input);
+  border-radius: 5px;
+}
+.provider-clear-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.provider-fields .btn-primary {
+  justify-self: start;
+  margin-top: 4px;
+}
+.provider-status {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+.provider-status.error {
+  color: var(--status-err);
+}
+.history-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-muted);
+  font-size: 10px;
+  margin-bottom: 10px;
+}
 .history-empty,
 .history-error {
   color: var(--fg-muted);

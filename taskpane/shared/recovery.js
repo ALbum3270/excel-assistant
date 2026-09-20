@@ -127,6 +127,54 @@ const recoveryLog = new WorkbookRecoveryLog({
   getDocumentInstance: documentTokenIdentity,
 });
 
+const CUSTOM_RECOVERY_PREFIX = "excel-assistant-custom-recovery-v1:";
+
+async function customWorkbookId() {
+  const workbook = await currentWorkbookContext();
+  return workbook.workbookId ?? (await documentTokenIdentity().ensure());
+}
+
+async function readCustomSnapshots() {
+  const workbookId = await customWorkbookId();
+  if (!workbookId) return [];
+  return (await recoverySettings.get(`${CUSTOM_RECOVERY_PREFIX}${workbookId}`)) ?? [];
+}
+
+async function writeCustomSnapshots(snapshots) {
+  const workbookId = await customWorkbookId();
+  if (!workbookId) return;
+  await recoverySettings.set(`${CUSTOM_RECOVERY_PREFIX}${workbookId}`, snapshots.slice(0, 120));
+}
+
+async function appendCustomSnapshot({ toolName, toolCallId, address, state, restoredFromSnapshotId }) {
+  const workbookId = await customWorkbookId();
+  if (!workbookId) return null;
+  const snapshot = {
+    id: `checkpoint_custom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`,
+    at: Date.now(),
+    toolName,
+    toolCallId,
+    address,
+    changedCount: Number(state.count ?? state.values?.length ?? 1),
+    workbookId,
+    snapshotKind: "custom_state",
+    customState: state,
+    ...(restoredFromSnapshotId ? { restoredFromSnapshotId } : {}),
+  };
+  const snapshots = await readCustomSnapshots();
+  snapshots.unshift(snapshot);
+  await writeCustomSnapshots(snapshots);
+  return snapshot;
+}
+
+async function deleteCustomSnapshot(id) {
+  const snapshots = await readCustomSnapshots();
+  const next = snapshots.filter((item) => item.id !== id);
+  if (next.length === snapshots.length) return false;
+  await writeCustomSnapshots(next);
+  return true;
+}
+
 function splitSheetAddress(address) {
   const raw = String(address ?? "").trim();
   if (!raw) return { sheetName: null, a1: null };
@@ -380,25 +428,358 @@ function recoveryPlan(name, args) {
           ...(args.height !== undefined ? { rowHeight: true } : {}),
         },
       }];
-    // Tables and filters have no pi-for-excel counterpart to restore from, so
-    // say what the user has to do by hand instead of a generic "no checkpoint".
-    case "excel_autofilter":
-      return [{
-        unsupported: args.clear
-          ? "Clearing a filter changes no cell, so there is nothing to restore; re-apply it with excel_autofilter."
-          : "A filter changes which rows are shown, not their values; remove it with excel_autofilter clear:true.",
-      }];
-    case "excel_create_table":
-      return [{
-        unsupported: "Turning a range into a table is not checkpointed; the values are unchanged, and the table has to be converted back to a range by hand.",
-      }];
-    case "excel_add_table_rows":
-      return [{
-        unsupported: "Rows appended to a table are not checkpointed; delete the appended table rows to undo them.",
-      }];
     default:
       return [];
   }
+}
+
+async function captureAutoFilterState(target) {
+  return Excel.run(async (context) => {
+    const { worksheet } = await resolveWorksheet(context, target);
+    worksheet.load("name");
+    const filter = worksheet.autoFilter;
+    filter.load("enabled,criteria");
+    const range = filter.getRangeOrNullObject();
+    range.load("isNullObject,address");
+    await context.sync();
+    return {
+      address: `${worksheet.name}!autofilter`,
+      state: {
+        kind: "autofilter",
+        sheetName: worksheet.name,
+        range: filter.enabled && !range.isNullObject ? range.address : null,
+        criteria: filter.enabled ? JSON.parse(JSON.stringify(filter.criteria ?? [])) : [],
+        count: 1,
+      },
+    };
+  });
+}
+
+async function captureDimensionState(args) {
+  return Excel.run(async (context) => {
+    const { worksheet } = await resolveWorksheet(context, { sheetId: args.sheetId });
+    worksheet.load("name");
+    const span = structureSpan(args);
+    const hidden = [];
+    for (let offset = 0; offset < span.count; offset += 1) {
+      const position = span.position + offset;
+      const address = span.kind === "rows" ? `${position}:${position}` : `${columnLetters(position)}:${columnLetters(position)}`;
+      const range = worksheet.getRange(address);
+      range.load(span.kind === "rows" ? "rowHidden" : "columnHidden");
+      hidden.push(range);
+    }
+    await context.sync();
+    return {
+      address: `${worksheet.name}!${span.address}`,
+      state: {
+        kind: "dimension_visibility",
+        sheetId: args.sheetId,
+        dimension: args.dimension,
+        position: span.position,
+        hidden: hidden.map((range) =>
+          span.kind === "rows" ? Boolean(range.rowHidden) : Boolean(range.columnHidden),
+        ),
+        count: span.count,
+      },
+    };
+  });
+}
+
+async function captureFreezeState(args) {
+  return Excel.run(async (context) => {
+    const { worksheet } = await resolveWorksheet(context, { sheetId: args.sheetId });
+    worksheet.load("name");
+    const location = worksheet.freezePanes.getLocationOrNullObject();
+    location.load("isNullObject,rowCount,columnCount");
+    await context.sync();
+    return {
+      address: `${worksheet.name}!frozen panes`,
+      state: {
+        kind: "freeze_panes",
+        sheetId: args.sheetId,
+        rows: location.isNullObject ? 0 : location.rowCount,
+        columns: location.isNullObject ? 0 : location.columnCount,
+        count: 1,
+      },
+    };
+  });
+}
+
+async function captureTableState(tableName) {
+  return Excel.run(async (context) => {
+    const table = context.workbook.tables.getItem(tableName);
+    const range = table.getRange();
+    table.load("name,showHeaders");
+    range.load("address");
+    await context.sync();
+    return {
+      kind: "table_present",
+      name: table.name,
+      address: range.address,
+      hasHeaders: Boolean(table.showHeaders),
+      count: 1,
+    };
+  });
+}
+
+async function captureTableRowCount(tableName) {
+  return Excel.run(async (context) => {
+    const table = context.workbook.tables.getItem(tableName);
+    table.rows.load("count");
+    await context.sync();
+    return table.rows.count;
+  });
+}
+
+async function prepareCustomRecovery(name, args, toolCallId) {
+  let captured;
+  let tableValues = null;
+  let tableFormat = null;
+  const limitations = [];
+  if (name === "excel_modify_sheet_structure" && ["hide", "unhide"].includes(args.operation)) {
+    captured = await captureDimensionState(args);
+  } else if (
+    name === "excel_modify_sheet_structure" &&
+    ["freeze", "unfreeze"].includes(args.operation)
+  ) {
+    captured = await captureFreezeState(args);
+  } else if (name === "excel_add_table_rows") {
+    const beforeCount = await captureTableRowCount(args.table);
+    captured = {
+      address: args.table,
+      state: {
+        kind: "table_rows_added",
+        table: args.table,
+        index: Number.isInteger(args.index) ? args.index : beforeCount,
+        count: args.values.length,
+        expectedRowCount: beforeCount + args.values.length,
+      },
+    };
+  } else if (name === "excel_create_table") {
+    const target = { address: args.address, sheet: args.sheet };
+    try {
+      tableValues = await captureRangeSnapshot(target);
+    } catch (error) {
+      limitations.push(`Original cell values were not captured: ${error?.message ?? String(error)}`);
+    }
+    try {
+      tableFormat = await captureFormatSnapshot(target);
+    } catch (error) {
+      limitations.push(`Original cell formatting was not captured: ${error?.message ?? String(error)}`);
+    }
+  } else if (name === "excel_autofilter") {
+    captured = await captureAutoFilterState({ address: args.address, sheet: args.sheet });
+  }
+
+  return async function commitCustomRecovery(result) {
+    let checkpoint = captured;
+    if (name === "excel_create_table") {
+      const tableName = result?.table;
+      if (!tableName) return { status: "not_available", reason: "The created table name was unavailable." };
+      checkpoint = {
+        address: result?.range ?? args.address,
+        state: { kind: "table_absent", table: tableName, count: 1 },
+      };
+    }
+    if (!checkpoint) return { status: "not_available", reason: "The previous workbook state was unavailable." };
+    const snapshot = await appendCustomSnapshot({
+      toolName: name,
+      toolCallId,
+      address: checkpoint.address,
+      state: checkpoint.state,
+    });
+    if (!snapshot) return { status: "not_available", reason: "The recovery log did not accept the checkpoint." };
+    const snapshots = [snapshot];
+    if (tableValues) {
+      try {
+        snapshots.push(await recoveryLog.append({
+          toolName: "write_cells",
+          toolCallId,
+          address: tableValues.address,
+          changedCount: tableValues.cellCount,
+          beforeValues: tableValues.beforeValues,
+          beforeFormulas: tableValues.beforeFormulas,
+        }));
+      } catch (error) {
+        limitations.push(`Original cell values could not be saved: ${error?.message ?? String(error)}`);
+      }
+    }
+    if (tableFormat) {
+      try {
+        snapshots.push(await recoveryLog.appendFormatCells({
+          toolName: "format_cells",
+          toolCallId,
+          address: tableFormat.address,
+          changedCount: tableFormat.cellCount,
+          formatRangeState: tableFormat.state,
+        }));
+      } catch (error) {
+        limitations.push(`Original cell formatting could not be saved: ${error?.message ?? String(error)}`);
+      }
+    }
+    const saved = snapshots.filter(Boolean);
+    return {
+      status: "checkpoint_created",
+      snapshotIds: saved.map((item) => item.id),
+      targets: saved.map((item) => item.address),
+      ...(limitations.length ? { partial: true, unavailableReasons: limitations } : {}),
+    };
+  };
+}
+
+async function restoreCustomState(state) {
+  switch (state.kind) {
+    case "dimension_visibility":
+      return Excel.run(async (context) => {
+        const { worksheet } = await resolveWorksheet(context, { sheetId: state.sheetId });
+        const inverse = [];
+        const ranges = [];
+        for (let offset = 0; offset < state.hidden.length; offset += 1) {
+          const position = state.position + offset;
+          const address = state.dimension === "rows"
+            ? `${position}:${position}`
+            : `${columnLetters(position)}:${columnLetters(position)}`;
+          const range = worksheet.getRange(address);
+          range.load(state.dimension === "rows" ? "rowHidden" : "columnHidden");
+          ranges.push(range);
+        }
+        await context.sync();
+        for (let offset = 0; offset < ranges.length; offset += 1) {
+          const range = ranges[offset];
+          inverse.push(
+            state.dimension === "rows" ? Boolean(range.rowHidden) : Boolean(range.columnHidden),
+          );
+          if (state.dimension === "rows") range.rowHidden = state.hidden[offset];
+          else range.columnHidden = state.hidden[offset];
+        }
+        await context.sync();
+        return { ...state, hidden: inverse };
+      });
+    case "freeze_panes":
+      return Excel.run(async (context) => {
+        const { worksheet } = await resolveWorksheet(context, { sheetId: state.sheetId });
+        const location = worksheet.freezePanes.getLocationOrNullObject();
+        location.load("isNullObject,rowCount,columnCount");
+        await context.sync();
+        const inverse = {
+          ...state,
+          rows: location.isNullObject ? 0 : location.rowCount,
+          columns: location.isNullObject ? 0 : location.columnCount,
+        };
+        if (state.rows && state.columns) {
+          worksheet.freezePanes.freezeAt(
+            worksheet.getRange(`A1:${columnLetters(state.columns)}${state.rows}`),
+          );
+        } else if (state.rows) {
+          worksheet.freezePanes.freezeRows(state.rows);
+        } else if (state.columns) {
+          worksheet.freezePanes.freezeColumns(state.columns);
+        } else {
+          worksheet.freezePanes.unfreeze();
+        }
+        await context.sync();
+        return inverse;
+      });
+    case "autofilter": {
+      const inverse = await captureAutoFilterState({ sheet: state.sheetName });
+      await Excel.run(async (context) => {
+        const worksheet = context.workbook.worksheets.getItem(state.sheetName);
+        worksheet.autoFilter.remove();
+        if (state.range) {
+          worksheet.autoFilter.apply(worksheet.getRange(splitSheetAddress(state.range).a1));
+          for (let index = 0; index < state.criteria.length; index += 1) {
+            if (state.criteria[index]?.filterOn) {
+              worksheet.autoFilter.apply(
+                worksheet.getRange(splitSheetAddress(state.range).a1),
+                index,
+                state.criteria[index],
+              );
+            }
+          }
+        }
+        await context.sync();
+      });
+      return inverse.state;
+    }
+    case "table_absent": {
+      const inverse = await captureTableState(state.table);
+      await Excel.run(async (context) => {
+        context.workbook.tables.getItem(state.table).convertToRange();
+        await context.sync();
+      });
+      return inverse;
+    }
+    case "table_present":
+      await Excel.run(async (context) => {
+        const { worksheet, a1 } = await resolveWorksheet(context, { address: state.address });
+        const table = worksheet.tables.add(a1, state.hasHeaders);
+        table.name = state.name;
+        await context.sync();
+      });
+      return { kind: "table_absent", table: state.name, count: 1 };
+    case "table_rows_added":
+      return Excel.run(async (context) => {
+        const table = context.workbook.tables.getItem(state.table);
+        const body = table.getDataBodyRange();
+        body.load("rowCount,columnCount");
+        await context.sync();
+        if (body.rowCount !== state.expectedRowCount || state.index + state.count > body.rowCount) {
+          throw new Error("The table row layout changed, so the appended rows cannot be removed safely.");
+        }
+        const removed = body
+          .getCell(state.index, 0)
+          .getResizedRange(state.count - 1, body.columnCount - 1);
+        removed.load("values,formulas");
+        await context.sync();
+        const values = removed.values;
+        const formulas = removed.formulas;
+        for (let offset = state.count - 1; offset >= 0; offset -= 1) {
+          table.rows.getItemAt(state.index + offset).delete();
+        }
+        await context.sync();
+        return { kind: "table_rows_missing", table: state.table, index: state.index, values, formulas, count: state.count };
+      });
+    case "table_rows_missing":
+      await Excel.run(async (context) => {
+        const table = context.workbook.tables.getItem(state.table);
+        table.rows.add(state.index, state.values);
+        await context.sync();
+        const body = table.getDataBodyRange();
+        body.load("columnCount");
+        await context.sync();
+        const restored = body
+          .getCell(state.index, 0)
+          .getResizedRange(state.count - 1, body.columnCount - 1);
+        restored.formulas = state.formulas;
+        await context.sync();
+      });
+      return {
+        kind: "table_rows_added",
+        table: state.table,
+        index: state.index,
+        count: state.values.length,
+        expectedRowCount: await captureTableRowCount(state.table),
+      };
+    default:
+      throw new Error("This recovery checkpoint type is no longer supported.");
+  }
+}
+
+async function restoreCustomSnapshot(snapshot) {
+  const inverseState = await restoreCustomState(snapshot.customState);
+  const inverse = await appendCustomSnapshot({
+    toolName: "restore_snapshot",
+    toolCallId: `restore_${snapshot.id}`,
+    address: snapshot.address,
+    state: inverseState,
+    restoredFromSnapshotId: snapshot.id,
+  });
+  return {
+    restoredSnapshotId: snapshot.id,
+    inverseSnapshotId: inverse?.id,
+    address: snapshot.address,
+    changedCount: snapshot.changedCount ?? 1,
+  };
 }
 
 // Charts use pi-for-excel's chart_state snapshots: an update stores the chart's
@@ -690,6 +1071,19 @@ async function recordMutationDiff(toolCallId, captures) {
 }
 
 export async function prepareMutationRecovery(name, args, toolCallId) {
+  if (
+    (name === "excel_modify_sheet_structure" &&
+      ["hide", "unhide", "freeze", "unfreeze"].includes(args?.operation)) ||
+    name === "excel_create_table" ||
+    name === "excel_add_table_rows" ||
+    name === "excel_autofilter"
+  ) {
+    try {
+      return await prepareCustomRecovery(name, args ?? {}, toolCallId);
+    } catch (error) {
+      return async () => ({ status: "not_available", reason: error?.message ?? String(error) });
+    }
+  }
   if (name === "excel_modify_sheet_structure" || name === "excel_modify_workbook_structure") {
     return prepareStructureRecovery(name, args ?? {}, toolCallId);
   }
@@ -783,12 +1177,20 @@ function groupSnapshots(snapshots) {
 }
 
 async function resolveSnapshotGroup(snapshotId) {
-  const snapshots = await recoveryLog.listForCurrentWorkbook(120);
+  const snapshots = await allSnapshots();
   const anchor = snapshotId
     ? snapshots.find((snapshot) => snapshot.id === snapshotId)
     : snapshots[0];
   if (!anchor) throw new Error("No recovery checkpoint is available for this workbook.");
   return snapshots.filter((snapshot) => snapshot.toolCallId === anchor.toolCallId);
+}
+
+async function allSnapshots() {
+  const snapshots = [
+    ...(await recoveryLog.listForCurrentWorkbook(120)),
+    ...(await readCustomSnapshots()),
+  ];
+  return snapshots.sort((a, b) => Number(b.at ?? 0) - Number(a.at ?? 0)).slice(0, 120);
 }
 
 export async function workbookHistory({ action = "list", snapshot_id: snapshotId, limit = 20 } = {}) {
@@ -797,7 +1199,7 @@ export async function workbookHistory({ action = "list", snapshot_id: snapshotId
       return {
         success: true,
         action,
-        snapshots: groupSnapshots(await recoveryLog.listForCurrentWorkbook(120))
+        snapshots: groupSnapshots(await allSnapshots())
           .slice(0, limit)
           .map(compactSnapshotGroup),
       };
@@ -807,9 +1209,16 @@ export async function workbookHistory({ action = "list", snapshot_id: snapshotId
       // Re-insert rows/columns/sheets before writing values back into them.
       const ordered = [...group].sort(
         (a, b) =>
-          Number(b.snapshotKind === "modify_structure_state") - Number(a.snapshotKind === "modify_structure_state"),
+          Number(["modify_structure_state", "custom_state"].includes(b.snapshotKind)) -
+          Number(["modify_structure_state", "custom_state"].includes(a.snapshotKind)),
       );
-      for (const snapshot of ordered) restored.push(await recoveryLog.restore(snapshot.id));
+      for (const snapshot of ordered) {
+        restored.push(
+          snapshot.snapshotKind === "custom_state"
+            ? await restoreCustomSnapshot(snapshot)
+            : await recoveryLog.restore(snapshot.id),
+        );
+      }
       return {
         success: true,
         action,
@@ -827,11 +1236,21 @@ export async function workbookHistory({ action = "list", snapshot_id: snapshotId
     case "delete": {
       if (!snapshotId) throw new Error("snapshot_id is required for delete.");
       const group = await resolveSnapshotGroup(snapshotId);
-      const deleted = await Promise.all(group.map((snapshot) => recoveryLog.delete(snapshot.id)));
+      const deleted = await Promise.all(
+        group.map((snapshot) =>
+          snapshot.snapshotKind === "custom_state"
+            ? deleteCustomSnapshot(snapshot.id)
+            : recoveryLog.delete(snapshot.id),
+        ),
+      );
       return { success: deleted.every(Boolean), action, snapshotIds: group.map((snapshot) => snapshot.id) };
     }
-    case "clear":
-      return { success: true, action, removed: await recoveryLog.clearForCurrentWorkbook() };
+    case "clear": {
+      const piRemoved = await recoveryLog.clearForCurrentWorkbook();
+      const customRemoved = (await readCustomSnapshots()).length;
+      await writeCustomSnapshots([]);
+      return { success: true, action, removed: piRemoved + customRemoved };
+    }
     default:
       throw new Error(`Unsupported workbook history action: ${action}`);
   }

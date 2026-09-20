@@ -265,6 +265,35 @@ test("normal turn completion verifies declared conditions and publishes failures
   assert.equal(result.task_verification.checks[0].examples[0].actual, 9);
 });
 
+test("context overflow compacts once and resumes without repeating the original write request", async (t) => {
+  let h;
+  h = harness(t, {
+    query: async function* ({ prompt }) {
+      let turn = 0;
+      for await (const message of prompt) {
+        h.received.push(message.message.content);
+        turn += 1;
+        if (turn === 1) {
+          yield {
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            errors: ["prompt is too long"],
+          };
+        } else {
+          yield { type: "result", subtype: "success", is_error: false };
+        }
+      }
+    },
+  });
+  await h.send("write the requested cells");
+  await until(() => h.events.some((event) => event.event === "turn_complete"));
+  assert.equal(h.received.length, 3);
+  assert.equal(h.received[1], "/compact");
+  assert.match(h.received[2], /do not repeat edits that already committed/i);
+  assert.equal(h.events.filter((event) => event.event === "turn_complete").length, 1);
+});
+
 for (const outcome of ["failure", "success"]) {
   test(`obsolete initialization ${outcome} cannot affect its replacement`, async (t) => {
     const oldPrompt = deferred();

@@ -46,7 +46,7 @@
 | 优先级 | 差距 | 谁做得更好（源码位置） | 计划 |
 | --- | --- | --- | --- |
 | 已完成 | 解题规程：先复述目标区域、变换和输出类型；大范围写入先建完整矩阵，并断言尺寸与目标一致；写后抽查首尾单元格；列出反模式（把宏或说明文字写进单元格、用占位符凑数、差一行） | fabric-rlm `fabric_rlm/skills/excel_modify.md`（MIT），带它上榜的核心配方 | 已改写进系统提示词（87ae843） |
-| 已完成 | 撤销与恢复点：值、公式、格式、排序、清空、行列尺寸、插删行列、增删和改名工作表 | Pi `src/workbook/recovery-log.ts` + `recovery/*` | 已移植，并在真实 Excel 中验证恢复（第三十七、三十九、四十一节）。表格、图表、批注和 COM 写入仍没有恢复点 |
+| 部分完成 | 撤销与恢复点：值、公式、格式、排序、清空、行列尺寸、插删行列、增删和改名工作表 | Pi `src/workbook/recovery-log.ts` + `recovery/*` | 原有路径已在真实 Excel 中验证（第三十七、三十九、四十一节）。新增表格、筛选、隐藏/冻结和部分图表恢复点，尚待真实 Excel 验收；透视表、批注和 COM 写入仍不完整 |
 | 不做 | 写后发现新出现的错误值就自动回滚 | MS-Excel-AI-plugin `sidecar/src/changeset/manager.ts` | `#N/A` 等错误常是预期结果，自动回滚会撤掉正确写入；改为在回执中报告 `formulaErrors`，由模型判断，需要时用恢复点撤销 |
 | 已完成 | 公式解释、依赖追踪 | Pi `explain-formula.ts`、`trace-dependencies.ts` | 已移植并在真实 Excel 中验证；修复了区域引用只追踪左上角的上游问题（优化分析第四十节） |
 | 已完成 | 写入前预览和审批（可选，默认关闭） | MS-Excel-AI-plugin 的变更集、ExcelLLMAddin 的先批准再执行 | 通过 SDK `canUseTool` 逐次审批，模型每步拿到真实结果（优化分析第四十二节）；侧边栏已有恢复点列表与恢复操作，仍可通过 `excel_workbook_history` 查看 |

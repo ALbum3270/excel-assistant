@@ -160,7 +160,34 @@
         <div class="setup-section">
           <h3>Model connection</h3>
           <p class="setup-help">Provider: <strong id="provider-name">Loading…</strong></p>
+          <div class="provider-fields">
+            <label for="provider-url">Anthropic-compatible base URL</label>
+            <input type="text" id="provider-url" placeholder="Leave blank for Anthropic" />
+            <label for="provider-credential">API key or auth token</label>
+            <input
+              type="password"
+              id="provider-credential"
+              placeholder="Leave blank to keep the saved credential"
+              autocomplete="new-password"
+            />
+            <label class="provider-clear-row">
+              <input type="checkbox" id="provider-clear-credential" /> Remove saved credential
+            </label>
+            <div class="provider-model-grid">
+              <label for="provider-model-haiku">Haiku tier</label>
+              <input type="text" id="provider-model-haiku" placeholder="haiku" />
+              <label for="provider-model-sonnet">Sonnet tier</label>
+              <input type="text" id="provider-model-sonnet" placeholder="sonnet" />
+              <label for="provider-model-opus">Opus tier</label>
+              <input type="text" id="provider-model-opus" placeholder="opus" />
+            </div>
+            <button type="button" class="btn-primary btn-small" id="provider-save">
+              Save connection
+            </button>
+            <div class="provider-status" id="provider-status" hidden></div>
+          </div>
           <p class="setup-help" id="usage-last">No completed turn in this panel yet.</p>
+          <p class="setup-help" id="usage-session">Current agent run: no completed turn yet.</p>
         </div>
 
         <div class="setup-section">
@@ -197,6 +224,11 @@
         <div class="modal-header">
           <h3 id="history-modal-title">Conversation history</h3>
           <button class="icon-btn" id="history-modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="history-toolbar">
+          <button type="button" class="btn-secondary btn-small" id="history-import">Import</button>
+          <input type="file" id="history-import-file" accept="application/json,.json" hidden />
+          <span>Imports are kept as read-only archives.</span>
         </div>
         <div class="history-list" id="history-list"></div>
       </div>

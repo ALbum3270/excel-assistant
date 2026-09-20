@@ -40,6 +40,43 @@ async function _activeSheetName(context) {
   return ws.name;
 }
 
+export async function toolExcelSetFrozenPanes({ sheetId, operation, dimension, count = 1 }) {
+  return Excel.run(async (context) => {
+    const worksheets = context.workbook.worksheets;
+    worksheets.load("items");
+    await context.sync();
+    for (const worksheet of worksheets.items) worksheet.load("id,name");
+    await context.sync();
+    const stableMap = Office?.context?.document?.settings?.get("openexcel-sheet-id-map") ?? {};
+    const worksheet = worksheets.items.find(
+      (item) => item.id === sheetId || Number(stableMap[item.id]) === Number(sheetId),
+    );
+    if (!worksheet) throw new Error(`Worksheet with ID ${sheetId} not found.`);
+    if (operation === "unfreeze") {
+      worksheet.freezePanes.unfreeze();
+    } else {
+      const location = worksheet.freezePanes.getLocationOrNullObject();
+      location.load("isNullObject,rowCount,columnCount");
+      await context.sync();
+      const rows = dimension === "rows" ? count : location.isNullObject ? 0 : location.rowCount;
+      const columns = dimension === "columns" ? count : location.isNullObject ? 0 : location.columnCount;
+      if (rows && columns) {
+        const letters = (value) =>
+          value > 0
+            ? letters(Math.floor((value - 1) / 26)) + String.fromCharCode(65 + ((value - 1) % 26))
+            : "";
+        worksheet.freezePanes.freezeAt(worksheet.getRange(`A1:${letters(columns)}${rows}`));
+      } else if (rows) {
+        worksheet.freezePanes.freezeRows(rows);
+      } else {
+        worksheet.freezePanes.freezeColumns(columns);
+      }
+    }
+    await context.sync();
+    return { success: true, operation, dimension, count, sheet: worksheet.name };
+  });
+}
+
 export async function toolExcelGetSelectedRange({ cellLimit = 2000 } = {}) {
   if (!Number.isInteger(cellLimit) || cellLimit <= 0 || cellLimit > 5000) {
     throw new Error("`cellLimit` must be an integer from 1 to 5000.");

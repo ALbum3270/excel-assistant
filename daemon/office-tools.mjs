@@ -661,7 +661,7 @@ export function createOfficeBridgeMcp(
 
   const excel_modify_sheet_structure = tool(
     "excel_modify_sheet_structure",
-    "WRITE. Insert, delete, hide, unhide, freeze, or unfreeze rows and columns. Use a reference like '5' for row 5 or 'C' for column C.",
+    "WRITE. Insert, delete, hide, or unhide rows and columns. Freeze the first count rows or columns, or unfreeze all panes. Use a reference like '5' for row 5 or 'C' for column C when inserting, deleting, hiding, or unhiding.",
     {
       sheetId,
       operation: z.enum(["insert", "delete", "hide", "unhide", "freeze", "unfreeze"]),

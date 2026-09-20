@@ -1,5 +1,5 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { readFile, writeFile, mkdir, chmod } from "node:fs/promises";
+import { readFile, writeFile, mkdir, chmod, readdir } from "node:fs/promises";
 import { randomBytes, createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,7 @@ import {
   listSessions,
   activateSession,
   deleteSession,
+  importArchivedSession,
 } from "./sessions.mjs";
 import { readTranscript, locateSessionFile, deleteTranscript } from "./transcript.mjs";
 import { diag } from "./diag.mjs";
@@ -420,15 +421,19 @@ async function sendTranscriptReplayTo(
       : null;
     const resumeCompatible =
       !sessionId || live?.sessionId === sessionId || isSessionCompatible(saved);
-    const { events, truncated } = sessionId
-      ? await readTranscript(sessionId, { maxEvents: 200 })
-      : { events: [], truncated: false };
+    const transcript = Array.isArray(saved?.archive_events)
+      ? { events: saved.archive_events, truncated: Boolean(saved.archive_truncated) }
+      : sessionId
+        ? await readTranscript(sessionId, { maxEvents: 200 })
+        : { events: [], truncated: false };
+    const { events, truncated } = transcript;
     if (replayTokenByKey.get(key) !== token || cwdForKey(key) !== cwd) return;
     bridge.sendToTaskpane(
       {
         type: "transcript_replay",
         session_id: sessionId ?? null,
         resume_compatible: resumeCompatible,
+        archived: Array.isArray(saved?.archive_events),
         truncated,
         events,
       },
@@ -652,6 +657,68 @@ async function removeConversation(key, host, sessionId) {
   });
 }
 
+function portableTranscriptEvents(events) {
+  if (!Array.isArray(events) || events.length > 500) {
+    throw new Error("Conversation archive must contain at most 500 events");
+  }
+  return events.map((event) => {
+    if (event?.kind === "user" || event?.kind === "assistant") {
+      if (typeof event.text !== "string") throw new Error("Conversation archive has invalid text");
+      return { kind: event.kind, text: event.text.slice(0, 100_000) };
+    }
+    if (event?.kind === "tool") {
+      const input = event.input && typeof event.input === "object" ? event.input : {};
+      return {
+        kind: "tool",
+        name: typeof event.name === "string" ? event.name.slice(0, 200) : "",
+        input: JSON.stringify(input).length <= 20_000 ? input : { truncated: true },
+      };
+    }
+    throw new Error("Conversation archive contains an unsupported event");
+  });
+}
+
+async function exportConversation(key, host, sessionId) {
+  const record = await getSessionRecord(host, documentKeyForPane(key), sessionId);
+  if (!record) throw new Error("Conversation no longer exists");
+  const transcript = Array.isArray(record.archive_events)
+    ? { events: record.archive_events, truncated: Boolean(record.archive_truncated) }
+    : await readTranscript(sessionId, { maxEvents: 500 });
+  const events = portableTranscriptEvents(transcript.events);
+  const recent = [];
+  let size = 2;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const nextSize = JSON.stringify(events[index]).length + 1;
+    if (size + nextSize > 1_800_000) break;
+    recent.unshift(events[index]);
+    size += nextSize;
+  }
+  return {
+    format: "excel-assistant-conversation",
+    version: 1,
+    exported_at: new Date().toISOString(),
+    title: record.title || "Conversation",
+    truncated: transcript.truncated || recent.length < events.length,
+    events: recent,
+  };
+}
+
+async function importConversation(key, host, archive) {
+  if (!archive || archive.format !== "excel-assistant-conversation" || archive.version !== 1) {
+    throw new Error("This is not an Excel Assistant conversation archive");
+  }
+  const serialized = JSON.stringify(archive);
+  if (serialized.length > 2_000_000) throw new Error("Conversation archive exceeds 2 MB");
+  const events = portableTranscriptEvents(archive.events);
+  const sessionId = await importArchivedSession(host, documentKeyForPane(key), {
+    title: archive.title,
+    events,
+    truncated: archive.truncated,
+  });
+  if (!sessionId) throw new Error("Could not import conversation");
+  return sessionId;
+}
+
 async function ensureLoopForMessage(key, host) {
   if (!key) return;
   invalidateReplay(key);
@@ -849,8 +916,31 @@ bridge = createBridge({
           opus: process.env.ANTHROPIC_DEFAULT_OPUS_MODEL || null,
         },
         provider: providerLabel(),
+        base_url: process.env.ANTHROPIC_BASE_URL || "",
+        credential_configured: Boolean(
+          process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY,
+        ),
         request_id: msg.request_id,
       });
+    },
+    set_provider: async (msg, reply) => {
+      try {
+        await saveProviderSettings(msg.settings ?? {});
+        reply({
+          type: "set_provider_result",
+          ok: true,
+          restarting: Boolean(process.send),
+          request_id: msg.request_id,
+        });
+        if (process.send) setTimeout(() => process.send?.({ type: "restart_daemon" }), 300);
+      } catch (e) {
+        reply({
+          type: "set_provider_result",
+          ok: false,
+          error: e.message,
+          request_id: msg.request_id,
+        });
+      }
     },
     new_session: async (msg, reply, key, host) => {
       try {
@@ -912,6 +1002,37 @@ bridge = createBridge({
       } catch (e) {
         reply({
           type: "delete_session_result",
+          ok: false,
+          error: e.message,
+          request_id: msg.request_id,
+        });
+      }
+    },
+    export_session: async (msg, reply, key, host) => {
+      try {
+        const archive = await exportConversation(key, host, msg.session_id);
+        reply({ type: "export_session_result", ok: true, archive, request_id: msg.request_id });
+      } catch (e) {
+        reply({
+          type: "export_session_result",
+          ok: false,
+          error: e.message,
+          request_id: msg.request_id,
+        });
+      }
+    },
+    import_session: async (msg, reply, key, host) => {
+      try {
+        const sessionId = await importConversation(key, host, msg.archive);
+        reply({
+          type: "import_session_result",
+          ok: true,
+          session_id: sessionId,
+          request_id: msg.request_id,
+        });
+      } catch (e) {
+        reply({
+          type: "import_session_result",
           ok: false,
           error: e.message,
           request_id: msg.request_id,
@@ -1038,7 +1159,11 @@ for (const method of ["sendAssistantEvent", "sendAssistantText"]) {
         observer.sessionId = payload.session_id ?? null;
       } else if (payload.event === "turn_complete" && !payload.interrupted)
         observer.finish({
-          status: payload.subtype === "success" ? "completed" : payload.subtype || "completed",
+          status: payload.subtype === "success" && !payload.is_error
+            ? "completed"
+            : payload.subtype === "success"
+              ? "error"
+              : payload.subtype || "error",
           error: payload.error,
           usage: payload.usage,
           numTurns: payload.num_turns,
@@ -1314,6 +1439,15 @@ const userMcpServers = Object.fromEntries(
 const agentPlugins = agentConfig.plugins;
 
 function compatibilityMcpShape(servers) {
+  const safeEnv = (env) =>
+    Object.fromEntries(
+      Object.entries(env ?? {})
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, value]) => [
+          key,
+          /(token|secret|password|api.?key|credential)/i.test(key) ? "<configured>" : value,
+        ]),
+    );
   return Object.fromEntries(
     Object.entries(servers)
       .sort(([a], [b]) => a.localeCompare(b))
@@ -1324,9 +1458,42 @@ function compatibilityMcpShape(servers) {
           url: config?.url ?? null,
           command: config?.command ?? null,
           args: config?.args ?? null,
+          env: safeEnv(config?.env),
         },
       ]),
   );
+}
+
+async function hashTree(paths) {
+  const hash = createHash("sha256");
+  async function add(path, label) {
+    let entries;
+    try {
+      entries = await readdir(path, { withFileTypes: true });
+    } catch {
+      try {
+        hash.update(label).update("\0").update(await readFile(path));
+      } catch {
+        hash.update(label).update("\0<missing>");
+      }
+      return;
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.isSymbolicLink()) continue;
+      await add(join(path, entry.name), `${label}/${entry.name}`);
+    }
+  }
+  for (const [index, path] of paths.entries()) await add(path, String(index));
+  return hash.digest("hex");
+}
+
+function configuredSkillPaths() {
+  const skillNames = (agentConfig.skills ?? []).map((name) => String(name).split(":").at(-1));
+  return agentPlugins.flatMap((plugin) => [
+    join(plugin.path, ".claude-plugin", "plugin.json"),
+    join(plugin.path, ".mcp.json"),
+    ...skillNames.map((name) => join(plugin.path, "skills", name)),
+  ]);
 }
 
 const SDK_PACKAGE = join(
@@ -1337,22 +1504,34 @@ const SDK_PACKAGE = join(
   "package.json",
 );
 const SDK_VERSION = JSON.parse(await readFile(SDK_PACKAGE, "utf8")).version;
+const promptFingerprint = createHash("sha256")
+  .update(await buildSystemPromptAppend())
+  .digest("hex");
+const configuredSkillsFingerprint = await hashTree(configuredSkillPaths());
 const SESSION_COMPATIBILITY_KEY = createHash("sha256")
   .update(
     JSON.stringify({
       provider: process.env.ANTHROPIC_BASE_URL || "anthropic",
+      models: {
+        haiku: process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL || "haiku",
+        sonnet: process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || "sonnet",
+        opus: process.env.ANTHROPIC_DEFAULT_OPUS_MODEL || "opus",
+      },
       sdk: SDK_VERSION,
+      systemPrompt: promptFingerprint,
       officeTools: createHash("sha256")
         .update(await readFile(join(__dirname, "office-tools.mjs"), "utf8"))
         .update(await readFile(join(__dirname, "task-verification.mjs"), "utf8"))
+        .update(await readFile(join(__dirname, "thepexcel-gateway.mjs"), "utf8"))
         .digest("hex"),
       mcpServers: compatibilityMcpShape(configuredMcpServers),
       plugins: agentPlugins.map((plugin) => plugin.path),
       skills: agentConfig.skills ?? null,
+      configuredSkills: configuredSkillsFingerprint,
       builtinTools: agentConfig.builtinTools,
       disallowedTools: agentConfig.disallowedTools,
       settingSources: agentConfig.settingSources,
-      envKeys: Object.keys(agentConfig.env ?? {}).sort(),
+      env: Object.fromEntries(Object.entries(agentConfig.env ?? {}).sort(([a], [b]) => a.localeCompare(b))),
     }),
   )
   .digest("hex");
@@ -1581,7 +1760,19 @@ async function* userMessageStream(key, session) {
     }
     if (session && !isCurrentSession(session)) return;
     const { text, context } = msg;
-    session?.verification?.reset();
+    const recovering = session?.contextRecovery;
+    const internalRecoveryMessage =
+      (recovering?.phase === "queued" && text === "/compact") ||
+      (recovering?.phase === "compacted" && text === recovering.text);
+    if (recovering?.phase === "queued" && text === "/compact") {
+      recovering.phase = "compacting";
+    } else if (recovering?.phase === "compacted" && text === recovering.text) {
+      recovering.phase = "retrying";
+    } else if (session) {
+      session.lastUserText = text;
+      session.contextRecovery = null;
+    }
+    if (!internalRecoveryMessage) session?.verification?.reset();
     if (session?.isNew && !session.title) {
       const compact = typeof text === "string" ? text.replace(/\s+/g, " ").trim() : "";
       session.title = compact.length > 72 ? `${compact.slice(0, 69)}...` : compact || null;
@@ -1689,6 +1880,59 @@ function providerRecoveryHint() {
   return process.env.ANTHROPIC_BASE_URL
     ? "Check the API key, balance and model names in .env, then restart the daemon."
     : "Wait for your Claude limit to reset, or set ANTHROPIC_API_KEY to use an API key.";
+}
+
+async function saveProviderSettings(settings) {
+  const baseUrl = String(settings.base_url ?? "").trim();
+  if (baseUrl) {
+    const parsed = new URL(baseUrl);
+    if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error("Provider URL must use HTTP or HTTPS");
+  }
+  let lines = [];
+  try {
+    lines = (await readFile(ENV_FILE, "utf8")).split(/\r?\n/);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const changes = new Map([
+    ["ANTHROPIC_BASE_URL", baseUrl || null],
+    ["ANTHROPIC_DEFAULT_HAIKU_MODEL", String(settings.models?.haiku ?? "").trim() || null],
+    ["ANTHROPIC_DEFAULT_SONNET_MODEL", String(settings.models?.sonnet ?? "").trim() || null],
+    ["ANTHROPIC_DEFAULT_OPUS_MODEL", String(settings.models?.opus ?? "").trim() || null],
+  ]);
+  const credential = String(settings.credential ?? "").trim();
+  const providerChanged = baseUrl !== (process.env.ANTHROPIC_BASE_URL || "");
+  if (providerChanged && baseUrl && !credential && !settings.clear_credential) {
+    throw new Error("Enter a credential for the new provider, or select Remove saved credential.");
+  }
+  if (settings.clear_credential) {
+    changes.set("ANTHROPIC_AUTH_TOKEN", null);
+    changes.set("ANTHROPIC_API_KEY", null);
+  } else if (credential) {
+    changes.set(baseUrl ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY", credential);
+    changes.set(baseUrl ? "ANTHROPIC_API_KEY" : "ANTHROPIC_AUTH_TOKEN", null);
+  } else if (providerChanged) {
+    changes.set("ANTHROPIC_AUTH_TOKEN", null);
+    changes.set("ANTHROPIC_API_KEY", null);
+  }
+  const seen = new Set();
+  const output = [];
+  for (const line of lines) {
+    const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line);
+    const key = match?.[1];
+    if (!key || !changes.has(key)) {
+      output.push(line);
+      continue;
+    }
+    seen.add(key);
+    const value = changes.get(key);
+    if (value !== null) output.push(`${key}=${JSON.stringify(value)}`);
+  }
+  for (const [key, value] of changes) {
+    if (!seen.has(key) && value !== null) output.push(`${key}=${JSON.stringify(value)}`);
+  }
+  while (output.at(-1) === "") output.pop();
+  await writeFile(ENV_FILE, `${output.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
 // ---------------------------------------------------------------------------
@@ -1831,6 +2075,11 @@ async function startSessionForFolder(
   let rateLimitHint = null;
   const RATE_LIMIT_RE =
     /(usage limit|rate limit|daily limit|weekly limit|quota|too many requests|429|limit reached|limit will reset|resets? at|upgrade to|out of (?:credits|quota))/i;
+  const CONTEXT_OVERFLOW_RE =
+    /(prompt is too long|context (?:length|window).*(?:exceed|limit|maximum)|maximum context length|too many tokens)/i;
+  const CONTEXT_RETRY =
+    "Continue the previous request after context compaction. Inspect the workbook and prior tool results first; " +
+    "do not repeat edits that already committed. Complete only the remaining work, then verify the result.";
 
   // Fire-and-forget; index.mjs keeps running while the agent loop iterates.
   (async () => {
@@ -1877,6 +2126,31 @@ async function startSessionForFolder(
       })) {
         if (!isCurrentSession(session)) break;
         if (msg.type === "result") {
+          const resultError = [msg.result, ...(msg.errors ?? [])].filter(Boolean).join("\n");
+          if (session.contextRecovery?.phase === "compacting") {
+            if (msg.subtype === "success" && !msg.is_error) {
+              session.contextRecovery.phase = "compacted";
+              session.turnOpen = false;
+              session.sawAnyResult = true;
+              bridge.sendAssistantEvent({ event: "context_overflow_compacted" }, key);
+              bridge.pushUserMessage(session.contextRecovery.text, key);
+              continue;
+            }
+            session.contextRecovery = null;
+          } else if (
+            (msg.subtype !== "success" || msg.is_error) &&
+            CONTEXT_OVERFLOW_RE.test(resultError) &&
+            session.lastUserText &&
+            !session.contextRecovery
+          ) {
+            session.contextRecovery = { phase: "queued", text: CONTEXT_RETRY };
+            session.turnOpen = true;
+            session.sawAnyResult = true;
+            bridge.sendAssistantEvent({ event: "context_overflow_recovering" }, key);
+            bridge.pushUserMessage("/compact", key);
+            continue;
+          }
+          if (session.contextRecovery?.phase === "retrying") session.contextRecovery = null;
           if (msg.subtype === "success" && !msg.is_error) {
             msg.taskVerification = await session.verification.finish();
             if (!isCurrentSession(session)) break;
@@ -2095,14 +2369,17 @@ function handleAgentMessage(msg, session) {
         {
           event: "turn_complete",
           subtype: msg.subtype,
-          ...(msg.subtype !== "success"
+          is_error: Boolean(msg.is_error),
+          ...(msg.subtype !== "success" || msg.is_error
             ? {
                 error:
                   msg.errors?.join("\n") ||
+                  (msg.is_error && msg.result) ||
                   `The agent ended this request with ${msg.subtype || "an error"}.`,
               }
             : {}),
           usage: msg.usage,
+          model_usage: msg.modelUsage,
           num_turns: msg.num_turns,
           total_cost_usd: msg.total_cost_usd,
           task_verification: msg.taskVerification ?? null,
