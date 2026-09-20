@@ -31,7 +31,7 @@ import {
   createWorkbookCoordinator,
   readSelectionContext,
 } from "./vendor/pi-context.js";
-import { prepareMutationRecovery, workbookHistory } from "./recovery.js";
+import { prepareMutationRecovery, takeMutationDiff, workbookHistory } from "./recovery.js";
 import { isInOrUnder, docDirFromActiveUrl } from "./paths.js";
 import { marked } from "/npm/marked.esm.js";
 import DOMPurify from "/npm/purify.es.mjs";
@@ -862,6 +862,26 @@ function updateToolCardSuccess(id, name, args, receipt) {
         String(receipt.formulaErrorCount || receipt.formulaErrors.length),
       ),
     );
+  }
+
+  const diff = takeMutationDiff(id);
+  if (diff) {
+    result.append(toolResultRow("Cells changed", String(diff.changed)));
+    const list = document.createElement("div");
+    list.className = "tool-diff";
+    for (const change of diff.changes) {
+      const line = document.createElement("div");
+      line.className = "tool-diff-line";
+      line.textContent = `${change.cell}: ${change.before} → ${change.after}`;
+      list.append(line);
+    }
+    if (diff.changed > diff.changes.length) {
+      const more = document.createElement("div");
+      more.className = "tool-diff-line";
+      more.textContent = `… ${diff.changed - diff.changes.length} more`;
+      list.append(more);
+    }
+    result.append(list);
   }
 
   const snapshotId = receipt?.recovery?.snapshotIds?.[0];
@@ -1709,6 +1729,7 @@ async function runOfficeTool(msg) {
       return;
     }
     const recovery = commitRecovery && isMutationCall(name, args) ? await commitRecovery() : null;
+    takeMutationDiff(id); // failed call: drop the pane-side diff, no card renders it
     if (cancelledToolCalls.has(id)) {
       settleCancelledTool(id);
       return;

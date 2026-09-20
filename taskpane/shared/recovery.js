@@ -530,6 +530,58 @@ async function prepareStructureRecovery(name, args, toolCallId) {
   };
 }
 
+// Before/after cell diffs for the tool card. The "before" side is the recovery
+// capture that already exists, so a diff only costs one extra read. It stays in
+// the pane: the model gets the receipt, the user gets the detail.
+const MAX_DIFF_CELLS = 500;
+const MAX_DIFF_ENTRIES = 20;
+const mutationDiffs = new Map();
+
+export function takeMutationDiff(toolCallId) {
+  const diff = mutationDiffs.get(toolCallId);
+  mutationDiffs.delete(toolCallId);
+  return diff;
+}
+
+function columnLetters(number) {
+  return number > 0
+    ? columnLetters(Math.floor((number - 1) / 26)) + String.fromCharCode(65 + ((number - 1) % 26))
+    : "";
+}
+
+function diffCellText(value, formula) {
+  if (typeof formula === "string" && formula.startsWith("=")) return formula;
+  if (value === null || value === undefined || value === "") return "(blank)";
+  return String(value).slice(0, 40);
+}
+
+async function recordMutationDiff(toolCallId, captures) {
+  const changes = [];
+  let changed = 0;
+  for (const capture of captures) {
+    if (capture.kind !== "range" || capture.cellCount > MAX_DIFF_CELLS) continue;
+    const after = await captureRangeSnapshot({ address: capture.address }).catch(() => null);
+    if (!after) continue;
+    const { sheetName, a1 } = splitSheetAddress(capture.address);
+    const start = /^\$?([A-Z]+)\$?(\d+)/i.exec(a1 ?? "");
+    if (!start) continue;
+    const firstColumn = [...start[1].toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
+    const firstRow = Number(start[2]);
+    for (let r = 0; r < capture.beforeValues.length; r += 1) {
+      for (let c = 0; c < (capture.beforeValues[r]?.length ?? 0); c += 1) {
+        const before = diffCellText(capture.beforeValues[r][c], capture.beforeFormulas?.[r]?.[c]);
+        const now = diffCellText(after.beforeValues?.[r]?.[c], after.beforeFormulas?.[r]?.[c]);
+        if (before === now) continue;
+        changed += 1;
+        if (changes.length >= MAX_DIFF_ENTRIES) continue;
+        const cell = `${columnLetters(firstColumn + c)}${firstRow + r}`;
+        changes.push({ cell: sheetName ? `${sheetName}!${cell}` : cell, before, after: now });
+      }
+    }
+  }
+  if (changed > 0) mutationDiffs.set(toolCallId, { changed, changes });
+}
+
 export async function prepareMutationRecovery(name, args, toolCallId) {
   if (name === "excel_modify_sheet_structure" || name === "excel_modify_workbook_structure") {
     return prepareStructureRecovery(name, args ?? {}, toolCallId);
@@ -578,6 +630,8 @@ export async function prepareMutationRecovery(name, args, toolCallId) {
         failures.push(error?.message ?? String(error));
       }
     }
+
+    await recordMutationDiff(toolCallId, captures).catch(() => {});
 
     if (snapshots.length === 0) {
       return {

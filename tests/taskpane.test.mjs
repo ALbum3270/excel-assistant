@@ -395,6 +395,7 @@ test("a failed mutation persists its captured recovery checkpoint", async () => 
     describeOfficeToolError: async (error) => error.message,
     updateToolCardSuccess() {},
     updateToolCardFailure() {},
+    takeMutationDiff: () => undefined,
     wsSend: (message) => sent.push(message),
     console: { error() {} },
   };

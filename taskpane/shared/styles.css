@@ -1486,3 +1486,17 @@ body {
 .path-row input[type="text"] {
   flex: 1 1 100%;
 }
+
+.tool-diff {
+  margin-top: 4px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.tool-diff-line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+}
+
