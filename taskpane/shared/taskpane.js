@@ -1111,9 +1111,71 @@ function appendToolRestoreButton(card, result, id, snapshotId) {
   result.appendChild(restore);
 }
 
+// A CSV read shown as a table with Excel's own row numbers and column letters,
+// the way pi-for-excel renders read_range results (src/ui/render-csv-table.ts).
+// The text sent to the model is untouched; this is only what the panel shows.
+const CSV_PREVIEW_ROWS = 12;
+const CSV_PREVIEW_COLUMNS = 8;
+
+function csvPreviewTable(receipt, args) {
+  const rows = String(receipt.csv).split("\n").map((line) => line.split(","));
+  const start = /^\$?([A-Z]+)\$?(\d+)/i.exec(String(args?.range ?? "").split("!").pop() ?? "");
+  const firstRow = start ? Number(start[2]) : 1;
+  const firstColumn = start
+    ? [...start[1].toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0)
+    : 1;
+  const shown = rows.slice(0, CSV_PREVIEW_ROWS);
+  const width = Math.min(Math.max(...shown.map((row) => row.length)), CSV_PREVIEW_COLUMNS);
+
+  const table = document.createElement("table");
+  table.className = "csv-preview";
+  const head = table.insertRow();
+  head.insertCell().className = "csv-corner";
+  for (let column = 0; column < width; column += 1) {
+    const cell = head.insertCell();
+    cell.className = "csv-head";
+    cell.textContent = columnLetter(firstColumn + column);
+  }
+  shown.forEach((row, index) => {
+    const tr = table.insertRow();
+    const number = tr.insertCell();
+    number.className = "csv-head";
+    number.textContent = String(firstRow + index);
+    for (let column = 0; column < width; column += 1) {
+      tr.insertCell().textContent = row[column] ?? "";
+    }
+  });
+  return { table, hiddenRows: rows.length - shown.length, hiddenColumns: Math.max(...rows.map((r) => r.length)) - width };
+}
+
+function columnLetter(number) {
+  return number > 0
+    ? columnLetter(Math.floor((number - 1) / 26)) + String.fromCharCode(65 + ((number - 1) % 26))
+    : "";
+}
+
+function renderReadResult(card, name, args, receipt) {
+  if (name !== "excel_get_range_as_csv" || typeof receipt?.csv !== "string" || !receipt.csv) return;
+  const result = card.querySelector(".tool-result");
+  result.hidden = false;
+  result.classList.remove("error");
+  result.innerHTML = "";
+  const { table, hiddenRows, hiddenColumns } = csvPreviewTable(receipt, args);
+  result.append(table);
+  const notes = [];
+  if (hiddenRows > 0) notes.push(`${hiddenRows} more row(s)`);
+  if (hiddenColumns > 0) notes.push(`${hiddenColumns} more column(s)`);
+  if (receipt.hasMore) notes.push(`continues at ${receipt.nextRange}`);
+  if (notes.length) result.append(toolResultRow("Not shown", notes.join("; ")));
+}
+
 function updateToolCardSuccess(id, name, args, receipt) {
   const card = setToolCardState(id, "success", "Completed");
-  if (!card || !isMutationCall(name, args)) return;
+  if (!card) return;
+  if (!isMutationCall(name, args)) {
+    renderReadResult(card, name, args, receipt);
+    return;
+  }
   const result = card.querySelector(".tool-result");
   result.hidden = false;
   result.classList.remove("error");
@@ -2646,10 +2708,57 @@ function initPresets() {
   }
   renderLibrary();
   renderQuickChips();
+  syncEmptyState();
 }
 
 // ---- Quick chips (pinned presets) -----------------------------------------
 const $quickChips = document.getElementById("quick-chips");
+
+// An empty chat shows what this pane can do, using the presets that already
+// exist rather than a second list of examples. pi-for-excel's empty state does
+// the same thing with hint cards that preview the prompt they would send.
+const EMPTY_STATE_HINTS = 4;
+
+function syncEmptyState() {
+  const hasMessages = $messages.querySelector(".msg, .tool-group");
+  const existing = $messages.querySelector(".empty-state");
+  if (hasMessages) {
+    existing?.remove();
+    return;
+  }
+  if (existing || presets.length === 0) return;
+  const block = document.createElement("div");
+  block.className = "empty-state";
+  const title = document.createElement("div");
+  title.className = "empty-state-title";
+  title.textContent = "Ask about this workbook, or have it make the change.";
+  const hint = document.createElement("div");
+  hint.className = "empty-state-hint";
+  hint.textContent =
+    "It sees the open workbook, your selection and what you changed since the last turn. Every edit gets a restore point.";
+  block.append(title, hint);
+  const pinnedFirst = [...presets].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned));
+  for (const preset of pinnedFirst.slice(0, EMPTY_STATE_HINTS)) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "empty-state-preset";
+    const label = document.createElement("span");
+    label.className = "empty-state-preset-title";
+    label.textContent = preset.title;
+    const preview = document.createElement("span");
+    preview.className = "empty-state-preset-preview";
+    preview.textContent =
+      preset.prompt.length > 110 ? `${preset.prompt.slice(0, 107)}…` : preset.prompt;
+    button.append(label, preview);
+    button.addEventListener("click", () => usePreset(preset));
+    block.append(button);
+  }
+  $messages.append(block);
+}
+
+// The message list is written from many places (streaming, replay, notices),
+// so watch it instead of calling syncEmptyState from each one.
+new MutationObserver(() => syncEmptyState()).observe($messages, { childList: true });
 
 function renderQuickChips() {
   const pinned = presets.filter((p) => p.pinned);

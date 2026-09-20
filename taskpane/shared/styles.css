@@ -1599,3 +1599,71 @@ body {
   opacity: 0.75;
 }
 
+/* Empty chat: what the pane does, plus the user's own presets as starters. */
+.empty-state {
+  padding: 18px 14px;
+  color: var(--fg-muted);
+}
+.empty-state-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 4px;
+}
+.empty-state-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+.empty-state-preset {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--bubble-asst);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  font: inherit;
+  cursor: pointer;
+}
+.empty-state-preset:hover {
+  border-color: var(--border-input);
+}
+.empty-state-preset-title {
+  display: block;
+  font-size: 13px;
+  color: var(--fg);
+}
+.empty-state-preset-preview {
+  display: block;
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+
+/* CSV reads rendered with Excel's own row numbers and column letters. */
+.csv-preview {
+  border-collapse: collapse;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  margin: 4px 0;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.csv-preview td {
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.csv-head,
+.csv-corner {
+  background: var(--bubble-asst);
+  color: var(--fg-muted);
+  text-align: center;
+}
+
