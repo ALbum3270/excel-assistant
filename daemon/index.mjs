@@ -23,6 +23,7 @@ import { readTranscript, locateSessionFile, deleteTranscript } from "./transcrip
 import { diag } from "./diag.mjs";
 import { getContextEntries, setContextEntries } from "./context.mjs";
 import { ApprovalManager, needsApproval } from "./approval.mjs";
+import { createTaskVerification } from "./task-verification.mjs";
 import { stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 
@@ -1009,6 +1010,7 @@ for (const method of ["sendAssistantEvent", "sendAssistantText"]) {
           usage: payload.usage,
           numTurns: payload.num_turns,
           costUsd: payload.total_cost_usd,
+          taskVerification: payload.task_verification,
         });
       else if (payload.event === "error" || payload.event === "auth_error")
         observer.finish({ status: "error", error: payload.error });
@@ -1302,6 +1304,7 @@ const SESSION_COMPATIBILITY_KEY = createHash("sha256")
       sdk: SDK_VERSION,
       officeTools: createHash("sha256")
         .update(await readFile(join(__dirname, "office-tools.mjs"), "utf8"))
+        .update(await readFile(join(__dirname, "task-verification.mjs"), "utf8"))
         .digest("hex"),
       mcpServers: compatibilityMcpShape(userMcpServers),
       plugins: agentPlugins.map((plugin) => plugin.path),
@@ -1460,7 +1463,17 @@ async function permissionFor(key, session, host, toolName, input) {
       };
     }
   }
-  return customPermissionHandler(toolName, input, { host });
+  const result = await customPermissionHandler(toolName, input, { host });
+  // External COM calls bypass the Office bridge. Record the attempt so a turn
+  // cannot silently lose its result-check summary just because it used COM.
+  if (
+    result.behavior === "allow" &&
+    toolName.startsWith("mcp__thepexcel-excel__") &&
+    needsApproval(toolName, input)
+  ) {
+    session?.verification?.markMutation();
+  }
+  return result;
 }
 
 function customPermissionHandler(toolName, input, { host = null } = {}) {
@@ -1517,6 +1530,7 @@ async function* userMessageStream(key, session) {
     }
     if (session && !isCurrentSession(session)) return;
     const { text, context } = msg;
+    session?.verification?.reset();
     if (session?.isNew && !session.title) {
       const compact = typeof text === "string" ? text.replace(/\s+/g, " ").trim() : "";
       session.title = compact.length > 72 ? `${compact.slice(0, 69)}...` : compact || null;
@@ -1668,6 +1682,9 @@ async function startSessionForFolder(
     settled: false,
     host,
     generation,
+    verification: createTaskVerification((name, args) =>
+      bridge.callTaskpaneTool(name, args, key, { signal: abortController.signal }),
+    ),
   };
   sessions.set(key, session);
   workspaceByKey.set(key, cwd);
@@ -1720,6 +1737,7 @@ async function startSessionForFolder(
     }
     officeMcp = createOfficeBridgeMcp(bridge, host, key, {
       signal: abortController.signal,
+      verification: session.verification,
     });
   } catch (err) {
     // Without cleanup the half-built session stays registered as live, so
@@ -1788,6 +1806,10 @@ async function startSessionForFolder(
       })) {
         if (!isCurrentSession(session)) break;
         if (msg.type === "result") {
+          if (msg.subtype === "success" && !msg.is_error) {
+            msg.taskVerification = await session.verification.finish();
+            if (!isCurrentSession(session)) break;
+          }
           session.turnOpen = false;
           session.sawAnyResult = true;
         }
@@ -2012,6 +2034,7 @@ function handleAgentMessage(msg, session) {
           usage: msg.usage,
           num_turns: msg.num_turns,
           total_cost_usd: msg.total_cost_usd,
+          task_verification: msg.taskVerification ?? null,
         },
         session?.key,
       );

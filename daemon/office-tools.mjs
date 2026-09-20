@@ -2,6 +2,12 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { diag } from "./diag.mjs";
 import { COMPUTE_TOOL_DESCRIPTION, createComputeShell } from "./compute-tool.mjs";
+import { needsApproval } from "./approval.mjs";
+import {
+  createTaskVerification,
+  TASK_CHECK_SCHEMA,
+  TASK_CHECK_DESCRIPTION,
+} from "./task-verification.mjs";
 
 // Wrap a bridge tool result for MCP. Handlers return {content: [...]}.
 function asMcpResult(result, { isError = false } = {}) {
@@ -19,7 +25,11 @@ function columnNumber(label) {
 }
 
 function parseA1RangeSize(address) {
-  const local = String(address ?? "").split("!").pop().replaceAll("$", "").trim();
+  const local = String(address ?? "")
+    .split("!")
+    .pop()
+    .replaceAll("$", "")
+    .trim();
   const match = /^([A-Z]+)([1-9]\d*)(?::([A-Z]+)([1-9]\d*))?$/i.exec(local);
   if (!match) return null;
   const startColumn = columnNumber(match[1]);
@@ -51,7 +61,9 @@ function parseCellsPayload(raw) {
   try {
     return JSON.parse(text);
   } catch (error) {
-    throw new Error(`cells is not valid JSON (${error.message}); send cells as an array, not a string`);
+    throw new Error(
+      `cells is not valid JSON (${error.message}); send cells as an array, not a string`,
+    );
   }
 }
 
@@ -84,7 +96,9 @@ function normalizeCellMatrix(raw, range) {
   const size = parseA1RangeSize(range);
   if (size && size.columns === 1 && size.rows > 1) return parsed.map((cell) => [toCellInput(cell)]);
   if (size && size.columns > 1 && size.rows > 1 && parsed.length > 1) {
-    throw new Error(`cells is a flat list but ${range} spans several rows and columns; send a 2D array of rows`);
+    throw new Error(
+      `cells is a flat list but ${range} spans several rows and columns; send a 2D array of rows`,
+    );
   }
   return [parsed.map(toCellInput)];
 }
@@ -167,12 +181,40 @@ export function createOfficeBridgeMcp(
   bridge,
   host = null,
   paneKey = null,
-  { signal } = {},
+  { signal, verification } = {},
 ) {
   // `paneKey` routes every call to the exact workbook pane this session
   // belongs to (so two open workbooks don't cross-talk).
-  const call = (name, args, options = {}) =>
+  const rawCall = (name, args, options = {}) =>
     bridge.callTaskpaneTool(name, args ?? {}, paneKey, { signal: options.signal ?? signal });
+  const taskVerification = verification ?? createTaskVerification(rawCall);
+  const call = (name, args, options = {}) => {
+    if (
+      needsApproval(`mcp__office__${name}`, args) &&
+      (name !== "excel_workbook_history" || args?.action === "restore")
+    )
+      taskVerification.markMutation();
+    return rawCall(name, args, options);
+  };
+
+  const excel_verify_task = tool(
+    "excel_verify_task",
+    TASK_CHECK_DESCRIPTION,
+    TASK_CHECK_SCHEMA,
+    async (args) => {
+      try {
+        const result =
+          args.action === "define"
+            ? await taskVerification.define(args.checks)
+            : await taskVerification.run();
+        return asMcpResult(result, {
+          isError: ["failed", "incomplete", "not_checked"].includes(result.status),
+        });
+      } catch (error) {
+        return asMcpError(error);
+      }
+    },
+  );
 
   const excel_get_selected_range = tool(
     "excel_get_selected_range",
@@ -306,8 +348,17 @@ export function createOfficeBridgeMcp(
     "List or restore automatic recovery checkpoints for this workbook. Use restore only when the user asks to undo or recover a prior assistant edit. Delete removes one checkpoint; clear removes this workbook's checkpoints.",
     {
       action: z.enum(["list", "restore", "delete", "clear"]).default("list"),
-      snapshot_id: z.string().optional().describe("Checkpoint id. Restore uses the latest checkpoint when omitted."),
-      limit: z.number().int().min(1).max(50).optional().describe("Maximum checkpoints returned by list."),
+      snapshot_id: z
+        .string()
+        .optional()
+        .describe("Checkpoint id. Restore uses the latest checkpoint when omitted."),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe("Maximum checkpoints returned by list."),
     },
     wrap("excel_workbook_history"),
   );
@@ -370,19 +421,11 @@ export function createOfficeBridgeMcp(
       });
     });
   const cellPayload = z
-    .union([
-      cellMatrix,
-      z.array(z.union([cellInput, scalarCell])).min(1),
-      cellInput,
-      scalarCell,
-    ])
+    .union([cellMatrix, z.array(z.union([cellInput, scalarCell])).min(1), cellInput, scalarCell])
     .describe(
       "Cell data as a JSON array (not a string): a rectangular 2D array of rows, a 1D row/column, or one cell.",
     );
-  const rangesPayload = z.union([
-    z.array(z.string().min(1)).min(1),
-    z.string().min(1),
-  ]);
+  const rangesPayload = z.union([z.array(z.string().min(1)).min(1), z.string().min(1)]);
   const size = z
     .object({ type: z.enum(["points", "standard"]), value: z.number().positive() })
     .optional();
@@ -539,7 +582,9 @@ export function createOfficeBridgeMcp(
       allow_overwrite: z
         .boolean()
         .optional()
-        .describe("Set true when the user's requested edit includes replacing data in the target range."),
+        .describe(
+          "Set true when the user's requested edit includes replacing data in the target range.",
+        ),
       explanation,
     },
     (args) => {
@@ -558,7 +603,11 @@ export function createOfficeBridgeMcp(
     {
       sheetId,
       range: z.string().min(1).describe("Full target range in A1 notation, e.g. 'F2:F5000'."),
-      formula: z.string().min(2).startsWith("=").describe("Formula for the top-left cell, e.g. '=SUM(B2:E2)'."),
+      formula: z
+        .string()
+        .min(2)
+        .startsWith("=")
+        .describe("Formula for the top-left cell, e.g. '=SUM(B2:E2)'."),
       allow_overwrite: z.boolean().optional(),
       explanation,
     },
@@ -568,9 +617,7 @@ export function createOfficeBridgeMcp(
           throw new Error("range must be a valid A1 cell or rectangular range");
         }
         const { formula, ...writeArgs } = args;
-        return wrap("excel_set_cell_range")(
-          prepareCellWrite(writeArgs, [[{ formula }]]),
-        );
+        return wrap("excel_set_cell_range")(prepareCellWrite(writeArgs, [[{ formula }]]));
       } catch (error) {
         return asMcpError(error);
       }
@@ -728,6 +775,7 @@ export function createOfficeBridgeMcp(
     excel_create_table,
     excel_add_table_rows,
     excel_workbook_history,
+    excel_verify_task,
     excel_bash,
   ];
   const tools = excelTools;

@@ -506,6 +506,13 @@ body {
   font-size: 12px;
   align-self: flex-start;
 }
+.task-checks summary {
+  cursor: pointer;
+  color: var(--fg);
+}
+.task-checks p {
+  margin: 6px 0;
+}
 /* User-facing error bubble (usage-limit hit, auth failure surfaced inline,
    stream-end-without-result). Deliberately NOT in the data-show-diagnostics
    hide rule — if the agent's turn stops because of an error, the user must

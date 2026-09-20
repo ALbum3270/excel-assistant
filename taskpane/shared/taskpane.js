@@ -203,6 +203,42 @@ function renderTurnUsage(usage) {
   target.textContent = `Last turn (main agent, SDK reported): ${input.toLocaleString()} input, ${output.toLocaleString()} output, ${cacheRead.toLocaleString()} cache read, ${cacheCreate.toLocaleString()} cache write tokens.`;
 }
 
+function appendTaskVerification(report) {
+  if (!report) return;
+  if (report.status === "not_checked") {
+    appendNotice("Result checks: no task conditions were specified for this turn.");
+    return;
+  }
+  const card = document.createElement("details");
+  card.className = "msg notice task-checks";
+  card.open = report.status !== "passed";
+  const summary = document.createElement("summary");
+  summary.textContent = `Result checks: ${report.passed}/${report.total} passed${report.status === "incomplete" ? " (incomplete)" : ""}`;
+  card.appendChild(summary);
+  const scope = document.createElement("p");
+  scope.textContent =
+    "Only the listed conditions were checked." +
+    (report.definedBeforeChanges === false
+      ? " Conditions were specified after edits had started."
+      : "");
+  card.appendChild(scope);
+  for (const check of report.checks || []) {
+    const row = document.createElement("p");
+    row.textContent =
+      `${check.status === "passed" ? "✓" : "!"} ${check.label} (${check.target.range})` +
+      (check.reason ? ` — ${check.reason}` : "") +
+      (check.failedCount ? ` — ${check.failedCount} mismatch(es)` : "");
+    card.appendChild(row);
+    for (const example of check.examples || []) {
+      const detail = document.createElement("div");
+      detail.textContent = JSON.stringify(example);
+      card.appendChild(detail);
+    }
+  }
+  $messages.appendChild(card);
+  maybeScrollToBottom();
+}
+
 function setConnectionStatus(state, label) {
   connState = state;
   connLabel = label;
@@ -1128,11 +1164,16 @@ async function handleServerMessage(msg) {
         setAgentStatus("working", statusForTool(msg.tool));
       } else if (msg.event === "turn_complete") {
         renderTurnUsage(msg.usage);
+        appendTaskVerification(msg.task_verification);
         if (!msg.interrupted && msg.subtype && msg.subtype !== "success") {
           appendError(msg.error || `The agent ended this request with ${msg.subtype}.`);
           setAgentStatus("idle", "Stopped — see message");
         } else {
-          setAgentStatus("idle", msg.interrupted ? "Stopped" : "Ready");
+          const checkFailed = ["failed", "incomplete"].includes(msg.task_verification?.status);
+          setAgentStatus(
+            "idle",
+            msg.interrupted ? "Stopped" : checkFailed ? "Result checks need attention" : "Ready",
+          );
         }
         endTurn({
           drainQueue: Boolean(msg.interrupted) || !msg.subtype || msg.subtype === "success",

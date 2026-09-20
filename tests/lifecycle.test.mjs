@@ -7,6 +7,7 @@ import { once } from "node:events";
 import WebSocket from "ws";
 import { createBridge } from "../daemon/bridge.mjs";
 import { ApprovalManager, needsApproval } from "../daemon/approval.mjs";
+import { createTaskVerification } from "../daemon/task-verification.mjs";
 
 // index.mjs boots HTTP servers, reads credentials and starts the SDK when
 // imported. Evaluate its actual lifecycle/handler code without that boot
@@ -74,6 +75,7 @@ function harness(t, overrides = {}) {
     customPermissionHandler() {},
     ApprovalManager,
     needsApproval,
+    createTaskVerification,
     touchFolder: async () => {},
     buildSystemPromptAppend: async () => "test prompt",
     createOfficeBridgeMcp: () => ({}),
@@ -228,6 +230,38 @@ test("recents storage failure does not prevent a turn", async (t) => {
     h.events.some((e) => e.event === "error"),
     false,
   );
+});
+
+test("normal turn completion verifies declared conditions and publishes failures separately from SDK success", async (t) => {
+  let h;
+  h = harness(t, {
+    createTaskVerification: () =>
+      createTaskVerification(async () => ({
+        success: true,
+        hasMore: false,
+        worksheet: { cells: { A1: 9 } },
+      })),
+    query: async function* ({ prompt }) {
+      for await (const message of prompt) {
+        const verification = h.api.sessionFor(h.key).verification;
+        await verification.define([
+          {
+            type: "matches",
+            label: "independent total",
+            target: { sheetId: 1, range: "A1" },
+            expected: [[10]],
+          },
+        ]);
+        yield { type: "result", subtype: "success" };
+      }
+    },
+  });
+  await h.send("calculate total");
+  await until(() => h.events.some((event) => event.event === "turn_complete"));
+  const result = h.events.find((event) => event.event === "turn_complete");
+  assert.equal(result.subtype, "success");
+  assert.equal(result.task_verification.status, "failed");
+  assert.equal(result.task_verification.checks[0].examples[0].actual, 9);
 });
 
 for (const outcome of ["failure", "success"]) {
