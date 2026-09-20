@@ -33,6 +33,7 @@ import {
   readSelectionContext,
 } from "./vendor/pi-context.js";
 import { prepareMutationRecovery, takeMutationDiff, workbookHistory } from "./recovery.js";
+import { initToolGrouping } from "./tool-grouping.js";
 import { isInOrUnder, docDirFromActiveUrl } from "./paths.js";
 import { marked } from "/npm/marked.esm.js";
 import DOMPurify from "/npm/purify.es.mjs";
@@ -79,6 +80,7 @@ const HOST = "excel";
 // UI helpers
 // ---------------------------------------------------------------------------
 const $messages = document.getElementById("messages");
+initToolGrouping($messages);
 // Two status indicators, semantically separate:
 //   $connectionStatus (topbar) — WS bridge / daemon reachability + auth.
 //     Stays put while the user is reading the chat history.
@@ -353,10 +355,15 @@ function appendTaskVerification(report) {
   card.appendChild(scope);
   for (const check of report.checks || []) {
     const row = document.createElement("p");
-    row.textContent =
-      `${check.status === "passed" ? "✓" : "!"} ${check.label} (${check.target.range})` +
-      (check.reason ? ` — ${check.reason}` : "") +
-      (check.failedCount ? ` — ${check.failedCount} mismatch(es)` : "");
+    row.append(document.createTextNode(`${check.status === "passed" ? "✓" : "!"} ${check.label} (`));
+    row.append(cellLink(check.target.range));
+    row.append(
+      document.createTextNode(
+        ")" +
+          (check.reason ? ` — ${check.reason}` : "") +
+          (check.failedCount ? ` — ${check.failedCount} mismatch(es)` : ""),
+      ),
+    );
     card.appendChild(row);
     for (const example of check.examples || []) {
       const detail = document.createElement("div");
@@ -374,9 +381,37 @@ function setConnectionStatus(state, label) {
   renderConnection();
 }
 
+// While the agent works, say how long it has been at it and how to stop it.
+// pi-for-excel's working indicator rotates hints and starts with "escape to
+// interrupt"; the discoverable part is what is worth having, so the elapsed
+// time and the key are shown instead of rotating copy.
+let workingSince = 0;
+let workingTimer = null;
+let workingLabel = "";
+
+function elapsedLabel(startedAt) {
+  const seconds = Math.round((Date.now() - startedAt) / 1000);
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function paintWorkingStatus() {
+  $agentStatus.textContent = `${workingLabel} · ${elapsedLabel(workingSince)} · Esc to stop`;
+}
+
 function setAgentStatus(state, label) {
   $agentStatus.className = `agent-status ${state}`;
-  $agentStatus.textContent = label;
+  if (state === "working") {
+    if (!workingTimer) {
+      workingSince = Date.now();
+      workingTimer = setInterval(paintWorkingStatus, 1000);
+    }
+    workingLabel = label.replace(/\.\.\.$|…$/, "");
+    paintWorkingStatus();
+  } else {
+    clearInterval(workingTimer);
+    workingTimer = null;
+    $agentStatus.textContent = label;
+  }
   // Stop button is meaningful only while the agent is mid-turn.
   $stopAgent.hidden = state !== "working";
 }
@@ -388,6 +423,16 @@ $stopAgent?.addEventListener("click", () => {
   if (!wsReady) return;
   setAgentStatus("working", "Stopping…");
   wsSend({ type: "stop_agent" });
+});
+
+// Escape stops the running turn, the shortcut the status line advertises. It
+// only acts while a turn is in flight, so Escape keeps its usual meaning
+// (closing a dialog, leaving a field) the rest of the time.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || $stopAgent.hidden) return;
+  if (document.querySelector(".modal-backdrop:not([hidden])")) return;
+  event.preventDefault();
+  $stopAgent.click();
 });
 
 // New chat — the daemon drops this pane's conversation and replays an empty
@@ -922,8 +967,10 @@ function appendToolUse(name, args, id = null) {
   const argText = typeof args === "string" ? args : JSON.stringify(args, null, 2);
   el.querySelector(".tool-args").textContent =
     argText.length > 200 ? argText.slice(0, 197) + "..." : argText;
+  el.dataset.toolName = localName;
   if (id) {
     el.dataset.toolCallId = id;
+    el.dataset.toolState = "running";
     toolCards.set(id, el);
   } else {
     el.querySelector(".tool-state").remove();
@@ -937,6 +984,66 @@ function appendToolUse(name, args, id = null) {
 // A complete assistant bubble (replay path — full text, not streamed
 // deltas). Resets assistantTurnElem so a subsequent live delta starts a
 // fresh bubble rather than appending onto a replayed one.
+// Clickable addresses, ported from pi-for-excel's cell-link.ts. It navigates
+// with a native selection (activate the sheet, select the range): the viewport
+// scrolls and Excel draws its own highlight, so nothing is written and no undo
+// state is disturbed. Like pi, only values already known to be addresses are
+// linked — prose is never scanned for something that looks like one.
+const CELL_NAV_DEBOUNCE_MS = 300;
+let lastCellNavigation = 0;
+
+async function navigateToRange(address) {
+  const now = Date.now();
+  if (now - lastCellNavigation < CELL_NAV_DEBOUNCE_MS) return;
+  lastCellNavigation = now;
+  // Disjoint areas cannot be scrolled to at once; go to the first.
+  const first = String(address).split(",")[0].trim();
+  const bang = first.lastIndexOf("!");
+  const sheet = bang > 0 ? first.slice(0, bang).replace(/^'|'$/g, "").replaceAll("''", "'") : null;
+  const local = bang > 0 ? first.slice(bang + 1) : first;
+  await Excel.run(async (context) => {
+    const worksheet = sheet
+      ? context.workbook.worksheets.getItem(sheet)
+      : context.workbook.worksheets.getActiveWorksheet();
+    worksheet.activate();
+    await context.sync();
+    worksheet.getRange(local).select();
+    await context.sync();
+  });
+}
+
+function cellLink(address, label = address) {
+  const link = document.createElement("button");
+  link.type = "button";
+  link.className = "cell-link";
+  link.textContent = label;
+  link.title = `Select ${address} in Excel`;
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    navigateToRange(address).catch((error) => {
+      link.title = error?.message ?? String(error);
+      link.classList.add("cell-link-failed");
+    });
+  });
+  return link;
+}
+
+// A row whose value is one or more addresses: each becomes its own link.
+function toolAddressRow(label, addresses) {
+  const row = document.createElement("div");
+  row.className = "tool-result-row";
+  const key = document.createElement("span");
+  key.textContent = label;
+  const content = document.createElement("strong");
+  addresses.forEach((address, index) => {
+    if (index > 0) content.append(document.createTextNode(", "));
+    content.append(cellLink(address));
+  });
+  row.append(key, content);
+  return row;
+}
+
 function toolResultRow(label, value) {
   const row = document.createElement("div");
   row.className = "tool-result-row";
@@ -951,6 +1058,7 @@ function toolResultRow(label, value) {
 function setToolCardState(id, state, label) {
   const card = toolCards.get(id);
   if (!card) return null;
+  card.dataset.toolState = state;
   const status = card.querySelector(".tool-state");
   status.className = `tool-state ${state}`;
   status.textContent = label;
@@ -987,8 +1095,11 @@ function appendToolRestoreButton(card, result, id, snapshotId) {
       const restored = await daemonWorkbookHistory({ action: "restore", snapshot_id: snapshotId });
       setToolCardState(id, "restored", "Restored");
       restore.textContent = "Restored";
-      const targets = restored.addresses?.join(", ") || "the workbook";
-      result.append(toolResultRow("Restore", `${targets}; reverse backup saved`));
+      if (restored.addresses?.length) {
+        result.append(toolAddressRow("Restored", restored.addresses));
+      } else {
+        result.append(toolResultRow("Restored", "the workbook"));
+      }
       result.append(toolResultRow("Revision", String(restored.workbookRevision)));
       if (document.body.dataset.activeTab === "backups") loadRecoveryHistory();
     } catch (error) {
@@ -1026,7 +1137,7 @@ function updateToolCardSuccess(id, name, args, receipt) {
   const summary = mutationSummary(name, args);
   if (summary) result.append(toolResultRow("Change", summary));
   if (receipt?.affectedTargets?.length) {
-    result.append(toolResultRow("Range", receipt.affectedTargets.join(", ")));
+    result.append(toolAddressRow("Range", receipt.affectedTargets));
   }
   if (receipt?.verification?.status) {
     result.append(
@@ -1056,7 +1167,8 @@ function updateToolCardSuccess(id, name, args, receipt) {
     for (const change of diff.changes) {
       const line = document.createElement("div");
       line.className = "tool-diff-line";
-      line.textContent = `${change.cell}: ${change.before} → ${change.after}`;
+      line.append(cellLink(change.cell));
+      line.append(document.createTextNode(`: ${change.before} → ${change.after}`));
       list.append(line);
     }
     if (diff.changed > diff.changes.length) {
