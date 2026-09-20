@@ -1014,9 +1014,16 @@ async function getWorkbookMetadata() {
     sheets.load("items");
     const activeSheet = sheets.getActiveWorksheet();
     activeSheet.load("id,name");
-    const selectedRange = workbook.getSelectedRange();
-    selectedRange.load("address");
     await context.sync();
+    let selectedAddress = null;
+    try {
+      const selectedRange = workbook.getSelectedRange();
+      selectedRange.load("address");
+      await context.sync();
+      selectedAddress = selectedRange.address;
+    } catch {
+      selectedAddress = null;
+    }
     const sheetData = [];
     for (const sheet of sheets.items) {
       sheet.load("id,name");
@@ -1039,17 +1046,14 @@ async function getWorkbookMetadata() {
       }))
     );
     const activeSheetStableId = stableIdMap.get(activeSheet.id) || await getStableSheetId(activeSheet.id);
-    const rangeAddress = selectedRange.address.includes("!") ? selectedRange.address.split("!")[1] : selectedRange.address;
+    const rangeAddress = selectedAddress ? selectedAddress.includes("!") ? selectedAddress.split("!")[1] : selectedAddress : null;
     console.log("[getWorkbookMetadata] activeSheet.id:", activeSheet.id);
     console.log("[getWorkbookMetadata] activeSheet.name:", activeSheet.name);
     console.log(
       "[getWorkbookMetadata] activeSheet.stableId:",
       activeSheetStableId
     );
-    console.log(
-      "[getWorkbookMetadata] selectedRange.address:",
-      selectedRange.address
-    );
+    console.log("[getWorkbookMetadata] selectedRange.address:", selectedAddress);
     console.log("[getWorkbookMetadata] parsed rangeAddress:", rangeAddress);
     return {
       success: true,

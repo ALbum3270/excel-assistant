@@ -532,5 +532,50 @@ function excelColorToHex(
           sheet.comments.add(cellRange, cell.note);
         }`,
   );
+  // A chart or shape can be the current selection, and workbook.getSelectedRange()
+  // then throws InvalidSelection at sync — which failed the whole metadata read
+  // right after the agent created a chart. Read the selection in its own sync so
+  // a non-range selection only costs the selection field.
+  source = replaceOnce(
+    source,
+    "metadata tolerates a non-range selection",
+    `    const selectedRange = workbook.getSelectedRange();
+    selectedRange.load("address");
+
+    await context.sync();`,
+    `    await context.sync();
+
+    let selectedAddress: string | null = null;
+    try {
+      const selectedRange = workbook.getSelectedRange();
+      selectedRange.load("address");
+      await context.sync();
+      selectedAddress = selectedRange.address;
+    } catch {
+      // A chart, shape or nothing at all is selected; not a range.
+      selectedAddress = null;
+    }`,
+  );
+  source = replaceOnce(
+    source,
+    "metadata selection address may be absent",
+    `    const rangeAddress = selectedRange.address.includes("!")
+      ? selectedRange.address.split("!")[1]
+      : selectedRange.address;`,
+    `    const rangeAddress = selectedAddress
+      ? selectedAddress.includes("!")
+        ? selectedAddress.split("!")[1]
+        : selectedAddress
+      : null;`,
+  );
+  source = replaceOnce(
+    source,
+    "metadata selection logging",
+    `    console.log(
+      "[getWorkbookMetadata] selectedRange.address:",
+      selectedRange.address,
+    );`,
+    `    console.log("[getWorkbookMetadata] selectedRange.address:", selectedAddress);`,
+  );
   return patchBoundedReads(source, replaceOnce);
 }
