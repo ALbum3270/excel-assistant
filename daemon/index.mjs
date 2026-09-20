@@ -24,6 +24,7 @@ import { diag } from "./diag.mjs";
 import { getContextEntries, setContextEntries } from "./context.mjs";
 import { ApprovalManager, needsApproval } from "./approval.mjs";
 import { createTaskVerification } from "./task-verification.mjs";
+import { createThepExcelGateway } from "./thepexcel-gateway.mjs";
 import { stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 
@@ -705,6 +706,38 @@ bridge = createBridge({
   onUserMessage: (key, host) => ensureLoopForMessage(key, host),
   onClose: (key) => onPaneClose(key),
   extraHandlers: {
+    workbook_history: async (msg, reply, key) => {
+      try {
+        const result = await bridge.callTaskpaneTool("excel_workbook_history", msg.args ?? {}, key);
+        reply({ type: "workbook_history_result", ok: true, result, request_id: msg.request_id });
+      } catch (error) {
+        reply({
+          type: "workbook_history_result",
+          ok: false,
+          error: error?.message ?? String(error),
+          code: error?.code,
+          request_id: msg.request_id,
+        });
+      }
+    },
+    acknowledge_workbook: async (msg, reply, key) => {
+      try {
+        const revision = bridge.acknowledgeWorkbook(key);
+        reply({
+          type: "acknowledge_workbook_result",
+          ok: true,
+          workbookRevision: revision,
+          request_id: msg.request_id,
+        });
+      } catch (error) {
+        reply({
+          type: "acknowledge_workbook_result",
+          ok: false,
+          error: error?.message ?? String(error),
+          request_id: msg.request_id,
+        });
+      }
+    },
     pick_path: async (msg, reply) => {
       try {
         const result = await pickPathFromMain({
@@ -1175,7 +1208,10 @@ async function evalInfo() {
     systemPromptSha256: createHash("sha256")
       .update(await buildSystemPromptAppend())
       .digest("hex"),
-    mcpServers: Object.keys(userMcpServers).sort(),
+    mcpServers: [
+      ...Object.keys(userMcpServers),
+      ...(thepExcelGateway ? ["thepexcel-excel"] : []),
+    ].sort(),
     plugins: agentPlugins.map((p) => p.path),
     skills: agentConfig.skills ?? null,
     builtinTools: agentConfig.builtinTools,
@@ -1270,7 +1306,11 @@ const agentConfig = await loadAgentConfig();
 // large MCP tool catalogs behind ToolSearch).
 Object.assign(process.env, agentConfig.env);
 const globalMcpServers = agentConfig.inheritUserMcpServers ? await loadUserMcpServers() : {};
-const userMcpServers = { ...globalMcpServers, ...agentConfig.mcpServers };
+const configuredMcpServers = { ...globalMcpServers, ...agentConfig.mcpServers };
+const thepExcelConfig = configuredMcpServers["thepexcel-excel"];
+const userMcpServers = Object.fromEntries(
+  Object.entries(configuredMcpServers).filter(([name]) => name !== "thepexcel-excel"),
+);
 const agentPlugins = agentConfig.plugins;
 
 function compatibilityMcpShape(servers) {
@@ -1306,7 +1346,7 @@ const SESSION_COMPATIBILITY_KEY = createHash("sha256")
         .update(await readFile(join(__dirname, "office-tools.mjs"), "utf8"))
         .update(await readFile(join(__dirname, "task-verification.mjs"), "utf8"))
         .digest("hex"),
-      mcpServers: compatibilityMcpShape(userMcpServers),
+      mcpServers: compatibilityMcpShape(configuredMcpServers),
       plugins: agentPlugins.map((plugin) => plugin.path),
       skills: agentConfig.skills ?? null,
       builtinTools: agentConfig.builtinTools,
@@ -1381,6 +1421,17 @@ async function preflightHttpMcpServers(servers) {
   );
 }
 await preflightHttpMcpServers(userMcpServers);
+let thepExcelGateway = null;
+if (thepExcelConfig) {
+  try {
+    thepExcelGateway = await createThepExcelGateway(thepExcelConfig, bridge.execution);
+    console.log(
+      `[daemon] ThepExcel gateway ready: ${thepExcelGateway?.toolCount ?? 0} tools share the workbook queue`,
+    );
+  } catch (error) {
+    console.error(`[daemon] ThepExcel gateway unavailable: ${error?.message ?? error}`);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // System prompt: Claude Code default + Office-specific append.
@@ -1672,6 +1723,7 @@ async function startSessionForFolder(
   }
 
   const abortController = new AbortController();
+  const workbookRevision = { value: undefined };
   const session = {
     key,
     cwd,
@@ -1682,9 +1734,15 @@ async function startSessionForFolder(
     settled: false,
     host,
     generation,
-    verification: createTaskVerification((name, args) =>
-      bridge.callTaskpaneTool(name, args, key, { signal: abortController.signal }),
-    ),
+    workbookRevision,
+    verification: createTaskVerification(async (name, args) => {
+      const result = await bridge.callTaskpaneTool(name, args, key, {
+        signal: abortController.signal,
+      });
+      if (Number.isInteger(result?.workbookRevision))
+        workbookRevision.value = result.workbookRevision;
+      return result;
+    }),
   };
   sessions.set(key, session);
   workspaceByKey.set(key, cwd);
@@ -1693,6 +1751,7 @@ async function startSessionForFolder(
   // is created lazily on the first user message (onUserMessage →
   // ensureLoopForMessage), so `host` is normally "word" or "excel".
   let officeMcp;
+  let thepExcelMcp;
 
   // Recents bookkeeping only; a failure here must not block the session.
   try {
@@ -1738,7 +1797,15 @@ async function startSessionForFolder(
     officeMcp = createOfficeBridgeMcp(bridge, host, key, {
       signal: abortController.signal,
       verification: session.verification,
+      revisionState: session.workbookRevision,
     });
+    if (host === "excel" && thepExcelGateway) {
+      thepExcelMcp = thepExcelGateway.createSessionServer({
+        workbookPath: bridge.getContext(key).activeDoc,
+        signal: abortController.signal,
+        revisionState: session.workbookRevision,
+      });
+    }
   } catch (err) {
     // Without cleanup the half-built session stays registered as live, so
     // ensureLoopForMessage would treat it as a consumer and every later
@@ -1779,7 +1846,11 @@ async function startSessionForFolder(
             // Re-read the prompt files on every session start, including resumes.
             snapshot: false,
           },
-          mcpServers: { ...userMcpServers, office: officeMcp },
+          mcpServers: {
+            ...userMcpServers,
+            ...(thepExcelMcp ? { "thepexcel-excel": thepExcelMcp } : {}),
+            office: officeMcp,
+          },
           plugins: agentPlugins,
           ...(agentConfig.skills ? { skills: agentConfig.skills } : {}),
           tools: agentConfig.builtinTools,
@@ -2074,7 +2145,16 @@ if (process.send) {
 }
 
 // Keep process alive even when nothing is happening.
-process.on("SIGINT", () => {
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log("\n[daemon] Shutting down");
-  process.exit(0);
-});
+  try {
+    await thepExcelGateway?.close();
+  } finally {
+    process.exit(0);
+  }
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

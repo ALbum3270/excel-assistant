@@ -181,19 +181,26 @@ export function createOfficeBridgeMcp(
   bridge,
   host = null,
   paneKey = null,
-  { signal, verification } = {},
+  { signal, verification, revisionState = { value: undefined } } = {},
 ) {
   // `paneKey` routes every call to the exact workbook pane this session
   // belongs to (so two open workbooks don't cross-talk).
-  const rawCall = (name, args, options = {}) =>
-    bridge.callTaskpaneTool(name, args ?? {}, paneKey, { signal: options.signal ?? signal });
+  const isWrite = (name, args) =>
+    needsApproval(`mcp__office__${name}`, args) &&
+    (name !== "excel_workbook_history" || args?.action === "restore");
+  const rawCall = async (name, args, options = {}) => {
+    const result = await bridge.callTaskpaneTool(name, args ?? {}, paneKey, {
+      signal: options.signal ?? signal,
+      ...(isWrite(name, args) && Number.isInteger(revisionState.value)
+        ? { expectedRevision: revisionState.value }
+        : {}),
+    });
+    if (Number.isInteger(result?.workbookRevision)) revisionState.value = result.workbookRevision;
+    return result;
+  };
   const taskVerification = verification ?? createTaskVerification(rawCall);
   const call = (name, args, options = {}) => {
-    if (
-      needsApproval(`mcp__office__${name}`, args) &&
-      (name !== "excel_workbook_history" || args?.action === "restore")
-    )
-      taskVerification.markMutation();
+    if (isWrite(name, args)) taskVerification.markMutation();
     return rawCall(name, args, options);
   };
 

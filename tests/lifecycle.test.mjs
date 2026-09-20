@@ -79,6 +79,7 @@ function harness(t, overrides = {}) {
     touchFolder: async () => {},
     buildSystemPromptAppend: async () => "test prompt",
     createOfficeBridgeMcp: () => ({}),
+    thepExcelGateway: null,
     getSessionId: async () => null,
     getSessionRecord: async (host, documentKey, sessionId) => {
       const id = sessionId ?? (await sandbox.getSessionId(host, documentKey));

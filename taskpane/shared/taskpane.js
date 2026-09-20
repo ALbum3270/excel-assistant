@@ -800,17 +800,12 @@ function appendToolRestoreButton(card, result, id, snapshotId) {
     restore.disabled = true;
     restore.textContent = "Restoring...";
     try {
-      const coordinated = await runWorkbookWrite(
-        `restore:${snapshotId}`,
-        "excel_workbook_history",
-        () => workbookHistory({ action: "restore", snapshot_id: snapshotId }),
-      );
-      const restored = coordinated.result;
+      const restored = await daemonWorkbookHistory({ action: "restore", snapshot_id: snapshotId });
       setToolCardState(id, "restored", "Restored");
       restore.textContent = "Restored";
       const targets = restored.addresses?.join(", ") || "the workbook";
       result.append(toolResultRow("Restore", `${targets}; reverse backup saved`));
-      result.append(toolResultRow("Revision", String(coordinated.revision)));
+      result.append(toolResultRow("Revision", String(restored.workbookRevision)));
       if (document.body.dataset.activeTab === "backups") loadRecoveryHistory();
     } catch (error) {
       restore.disabled = false;
@@ -892,6 +887,25 @@ function updateToolCardFailure(id, error) {
     const result = card.querySelector(".tool-result");
     result.append(toolResultRow("Backup", "Saved before the attempted change"));
     appendToolRestoreButton(card, result, id, error.recovery.snapshotIds[0]);
+  }
+  if (commitUnknown || error?.code === "WORKBOOK_UNCERTAIN") {
+    const result = card.querySelector(".tool-result");
+    const acknowledge = document.createElement("button");
+    acknowledge.type = "button";
+    acknowledge.className = "tool-undo";
+    acknowledge.textContent = "I checked the workbook — continue";
+    acknowledge.addEventListener("click", async () => {
+      acknowledge.disabled = true;
+      try {
+        const response = await sendRequest("acknowledge_workbook");
+        if (!response.ok) throw new Error(response.error || "Could not unlock workbook writes");
+        acknowledge.textContent = `Writes unlocked at revision ${response.workbookRevision}`;
+      } catch (unlockError) {
+        acknowledge.disabled = false;
+        appendToolCardError(card, unlockError?.message || String(unlockError));
+      }
+    });
+    result.appendChild(acknowledge);
   }
 }
 
@@ -1110,6 +1124,8 @@ function wsSend(obj) {
 // leaked per-pane state. Falls back to an in-memory id if
 // sessionStorage is unavailable.
 let panePersistId;
+const paneRuntimeId =
+  crypto?.randomUUID?.() ?? "runtime_" + Math.random().toString(36).slice(2, 12);
 try {
   panePersistId = sessionStorage.getItem("cc-pane-id");
   if (!panePersistId) {
@@ -1127,6 +1143,7 @@ function sendHello() {
     host: HOST,
     active_doc: activeDocUrl,
     pane_id: panePersistId,
+    runtime_id: paneRuntimeId,
     selection: attachSelection ? lastSelection : null,
   });
 }
@@ -1263,6 +1280,11 @@ async function handleServerMessage(msg) {
 // ---- Request/response helper (for non-tool round-trips) -------------------
 const pendingRequests = new Map();
 const cancelledToolCalls = new Set();
+
+function settleCancelledTool(id) {
+  cancelledToolCalls.delete(id);
+  wsSend({ type: "tool_settled", id });
+}
 const REQUEST_TIMEOUT_MS = 10_000;
 
 function sendRequest(type, payload = {}) {
@@ -1518,7 +1540,10 @@ function withMutationReceipt(name, args, result, receiptId) {
 
 async function runOfficeTool(msg) {
   const { id, name, args } = msg;
-  if (cancelledToolCalls.delete(id)) return;
+  if (cancelledToolCalls.has(id)) {
+    settleCancelledTool(id);
+    return;
+  }
   let commitRecovery = null;
   const cancelledBeforeExecution = new Error("Tool call cancelled before execution");
   try {
@@ -1664,18 +1689,30 @@ async function runOfficeTool(msg) {
     let result;
     if (isMutationCall(name, args)) {
       const coordinated = await runWorkbookWrite(id, name, execute);
-      if (coordinated.result === CANCELLED_TOOL_RESULT) return;
+      if (coordinated.result === CANCELLED_TOOL_RESULT) {
+        settleCancelledTool(id);
+        return;
+      }
       result = { ...coordinated.result, workbookRevision: coordinated.revision };
     } else {
       result = await execute();
-      if (result === CANCELLED_TOOL_RESULT) return;
+      if (result === CANCELLED_TOOL_RESULT) {
+        settleCancelledTool(id);
+        return;
+      }
     }
     updateToolCardSuccess(id, name, args, result);
     wsSend({ type: "tool_result", id, ok: true, result });
   } catch (err) {
-    if (err === cancelledBeforeExecution) return;
+    if (err === cancelledBeforeExecution) {
+      settleCancelledTool(id);
+      return;
+    }
     const recovery = commitRecovery && isMutationCall(name, args) ? await commitRecovery() : null;
-    if (cancelledToolCalls.delete(id)) return;
+    if (cancelledToolCalls.has(id)) {
+      settleCancelledTool(id);
+      return;
+    }
     console.error(`[tool ${name}] failed:`, err);
     const error = {
       message: await describeOfficeToolError(err, args),
@@ -1986,6 +2023,12 @@ const $backupClear = document.getElementById("backup-clear");
 let recoverySnapshots = [];
 let recoveryBusy = false;
 
+async function daemonWorkbookHistory(args) {
+  const response = await sendRequest("workbook_history", { args });
+  if (!response.ok) throw new Error(response.error || "Workbook history request failed");
+  return response.result;
+}
+
 const RECOVERY_OPERATION_LABELS = {
   excel_set_cell_range: "Edit cells",
   excel_clear_cell_range: "Clear cells",
@@ -2115,7 +2158,7 @@ async function loadRecoveryHistory(message = "") {
   setRecoveryBusy(true);
   showRecoveryStatus(message || "Loading backups...");
   try {
-    const result = await workbookHistory({ action: "list", limit: 120 });
+    const result = await daemonWorkbookHistory({ action: "list", limit: 120 });
     recoverySnapshots = result.snapshots || [];
     showRecoveryStatus(message);
   } catch (error) {
@@ -2131,15 +2174,8 @@ async function runRecoveryAction(action, snapshotId = null) {
   setRecoveryBusy(true);
   showRecoveryStatus(action === "restore" ? "Restoring backup..." : "Deleting backup...");
   try {
-    const result =
-      action === "restore"
-        ? (
-            await runWorkbookWrite(`restore:${snapshotId}`, "excel_workbook_history", () =>
-              workbookHistory({ action, snapshot_id: snapshotId }),
-            )
-          ).result
-        : await workbookHistory({ action, snapshot_id: snapshotId });
-    const listed = await workbookHistory({ action: "list", limit: 120 });
+    const result = await daemonWorkbookHistory({ action, snapshot_id: snapshotId });
+    const listed = await daemonWorkbookHistory({ action: "list", limit: 120 });
     recoverySnapshots = listed.snapshots || [];
     if (action === "restore") {
       const targets = result.addresses?.join(", ") || "the workbook";
@@ -2168,7 +2204,7 @@ $backupClear?.addEventListener("click", async () => {
   setRecoveryBusy(true);
   showRecoveryStatus("Clearing backups...");
   try {
-    const result = await workbookHistory({ action: "clear" });
+    const result = await daemonWorkbookHistory({ action: "clear" });
     recoverySnapshots = [];
     showRecoveryStatus(`Cleared ${result.removed || 0} backups.`);
   } catch (error) {

@@ -1,5 +1,7 @@
 import { WebSocketServer } from "ws";
 import { randomUUID } from "node:crypto";
+import { createWorkbookExecution, canonicalWorkbookId } from "./workbook-execution.mjs";
+import { needsApproval } from "./approval.mjs";
 
 // 60s, not 30s. Some Office.js ops legitimately run long on big docs —
 // office_clear_highlights / a wide office_replace_section over a large
@@ -46,6 +48,7 @@ export function createBridge({
   onHello,
   onUserMessage,
   onClose,
+  execution = createWorkbookExecution(),
 }) {
   if (!token) throw new Error("createBridge requires a token");
   const wss = new WebSocketServer({
@@ -186,18 +189,62 @@ export function createBridge({
     ws.send(JSON.stringify(obj));
   }
 
-  async function callTaskpaneTool(name, args, key = null, { signal } = {}) {
+  function workbookIdFor(key) {
+    return canonicalWorkbookId(panes.get(key)?.context.activeDoc || key);
+  }
+
+  async function callTaskpaneTool(
+    name,
+    args,
+    key = null,
+    { signal, expectedRevision = args?.expected_revision } = {},
+  ) {
+    const workbookId = workbookIdFor(key);
+    const write =
+      needsApproval(`mcp__office__${name}`, args) &&
+      (name !== "excel_workbook_history" || args?.action === "restore");
+    const { expected_revision, ...toolArgs } = args ?? {};
+    const completed = await execution.run(
+      workbookId,
+      { write, signal, expectedRevision, toolName: name, timeoutMs: TOOL_TIMEOUT_MS },
+      (context) => {
+        if (workbookIdFor(key) !== workbookId)
+          throw Object.assign(
+            new Error("The pane changed workbooks before dispatch; read its current context."),
+            { commitStatus: "not_committed" },
+          );
+        return dispatchTaskpaneTool(name, toolArgs, key, { ...context, workbookId });
+      },
+    );
+    return {
+      ...(completed.result && typeof completed.result === "object"
+        ? completed.result
+        : { result: completed.result }),
+      workbookRevision: completed.revision,
+      ...(completed.uncertain ? { workbookUncertain: true } : {}),
+    };
+  }
+
+  async function dispatchTaskpaneTool(
+    name,
+    args,
+    key,
+    { signal, revision, opId, workbookId, write },
+  ) {
     const ws = paneWs(key);
     if (!ws) {
-      throw new Error(`Cannot call tool ${name}: no taskpane for ${key ?? "?"}`);
+      throw Object.assign(new Error(`Cannot call tool ${name}: no taskpane for ${key ?? "?"}`), {
+        commitStatus: "not_committed",
+      });
     }
     if (signal?.aborted) {
       throw Object.assign(new Error(`Tool ${name} cancelled before dispatch`), {
         name: "AbortError",
         code: "TOOL_CANCELLED",
+        commitStatus: "not_committed",
       });
     }
-    const id = randomUUID();
+    const id = opId;
     // Capture the WS this call is dispatched on. On close we only reject
     // pending calls belonging to that specific WS — so a stale pane
     // disconnecting after a fresh one is active doesn't kill live work.
@@ -211,31 +258,10 @@ export function createBridge({
         }
       };
       const cleanup = () => signal?.removeEventListener("abort", onAbort);
-      const timer = setTimeout(() => {
-        pendingTools.delete(id);
-        cleanup();
-        cancelPaneCall();
-        reject(
-          Object.assign(
-            new Error(
-              `Tool ${name} timed out after ${TOOL_TIMEOUT_MS}ms; workbook state may be unknown`,
-            ),
-            { code: "TOOL_TIMEOUT", commitStatus: "unknown" },
-          ),
-        );
-      }, TOOL_TIMEOUT_MS);
       const onAbort = () => {
-        if (!pendingTools.delete(id)) return;
-        clearTimeout(timer);
-        cleanup();
         cancelPaneCall();
-        reject(
-          Object.assign(new Error(`Tool ${name} cancelled`), {
-            name: "AbortError",
-            code: "TOOL_CANCELLED",
-            commitStatus: "unknown",
-          }),
-        );
+        // The caller stops waiting through execution.run, but the shared queue
+        // stays occupied until the pane confirms the handler actually ended.
       };
       pendingTools.set(id, {
         ws: ownerWs,
@@ -243,13 +269,17 @@ export function createBridge({
         name,
         resolve,
         reject,
-        timer,
         cleanup,
+        workbookId,
+        write,
+        runtimeId: panes.get(key)?.runtimeId,
       });
       signal?.addEventListener("abort", onAbort, { once: true });
       if (signal?.aborted) onAbort();
     });
-    ownerWs.send(JSON.stringify({ type: "tool_call", id, name, args }));
+    ownerWs.send(
+      JSON.stringify({ type: "tool_call", id, name, args, workbook_revision: revision }),
+    );
     return await promise;
   }
 
@@ -322,8 +352,12 @@ export function createBridge({
           } catch {}
         }
         authed = true;
-        panes.set(boundKey, { ws, context: emptyContext(host, msg.active_doc ?? null) });
-      } else if (!isLivePane()) {
+        panes.set(boundKey, {
+          ws,
+          context: emptyContext(host, msg.active_doc ?? null),
+          runtimeId: msg.runtime_id,
+        });
+      } else if (!isLivePane() && msg.type !== "tool_result" && msg.type !== "tool_settled") {
         // Superseded by a newer same-key pane; its close is in flight.
         // Drop stale frames rather than letting them mutate context or
         // queue a user message for a pane that's going away.
@@ -379,31 +413,46 @@ export function createBridge({
           mergeContext(pane.context, msg);
           break;
         }
+        case "tool_settled":
         case "tool_result": {
           const pending = pendingTools.get(msg.id);
           if (!pending) {
-            console.warn("[bridge] tool_result for unknown id:", msg.id);
+            if (msg.type === "tool_result")
+              console.warn("[bridge] tool_result for unknown id:", msg.id);
             return;
           }
-          if (pending.ws !== ws || pending.key !== boundKey) {
+          const resumedRuntime =
+            pending.runtimeId && pending.runtimeId === panes.get(boundKey)?.runtimeId;
+          if ((pending.ws !== ws && !resumedRuntime) || pending.key !== boundKey) {
             console.warn("[bridge] tool_result owner mismatch for id:", msg.id);
             return;
           }
-          clearTimeout(pending.timer);
           pendingTools.delete(msg.id);
           pending.cleanup?.();
-          if (msg.ok) {
+          execution.settled(pending.workbookId, msg.id);
+          if (msg.type === "tool_settled") {
+            pending.reject(
+              Object.assign(
+                new Error(
+                  "The cancelled Excel operation finished; inspect the workbook before retrying.",
+                ),
+                { code: "TOOL_CANCELLED", commitStatus: "unknown", executionSettled: true },
+              ),
+            );
+          } else if (msg.ok) {
             pending.resolve(msg.result);
           } else {
-            const detail = msg.error && typeof msg.error === "object"
-              ? msg.error
-              : { message: msg.error ?? "Unknown tool error" };
+            const detail =
+              msg.error && typeof msg.error === "object"
+                ? msg.error
+                : { message: msg.error ?? "Unknown tool error" };
             pending.reject(
               Object.assign(new Error(detail.message ?? "Unknown tool error"), {
-                 ...(detail.code ? { code: detail.code } : {}),
-                 ...(detail.commitStatus ? { commitStatus: detail.commitStatus } : {}),
-                 ...(detail.recovery ? { recovery: detail.recovery } : {}),
-               }),
+                ...(detail.code ? { code: detail.code } : {}),
+                ...(detail.commitStatus ? { commitStatus: detail.commitStatus } : {}),
+                ...(detail.recovery ? { recovery: detail.recovery } : {}),
+                executionSettled: true,
+              }),
             );
           }
           break;
@@ -464,15 +513,21 @@ export function createBridge({
       // different (newer) WS may have its own in-flight calls; leave them.
       for (const [id, p] of pendingTools) {
         if (p.ws === ws) {
-          clearTimeout(p.timer);
           p.cleanup?.();
           p.reject(
-            Object.assign(new Error("Taskpane disconnected while a tool call was in flight; workbook state may be unknown"), {
-              code: "TASKPANE_DISCONNECTED",
-              commitStatus: "unknown",
-            }),
+            Object.assign(
+              new Error(
+                "Taskpane disconnected while a tool call was in flight; workbook state may be unknown",
+              ),
+              {
+                code: "TASKPANE_DISCONNECTED",
+                commitStatus: "unknown",
+              },
+            ),
           );
-          pendingTools.delete(id);
+          if (p.write)
+            p.orphaned = true; // A late completion can safely clear the write block.
+          else pendingTools.delete(id);
         }
       }
     });
@@ -487,6 +542,15 @@ export function createBridge({
   );
 
   return {
+    execution,
+    workbookIdFor,
+    acknowledgeWorkbook: (key) => {
+      const workbookId = workbookIdFor(key);
+      const revision = execution.acknowledge(workbookId);
+      for (const [id, pending] of pendingTools)
+        if (pending.orphaned && pending.workbookId === workbookId) pendingTools.delete(id);
+      return revision;
+    },
     nextUserMessage,
     hasPendingUserMessages: (key) => (queues.get(key)?.queue.length ?? 0) > 0,
     pushUserMessage,
