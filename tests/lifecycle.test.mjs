@@ -112,7 +112,16 @@ function harness(t, overrides = {}) {
     ...overrides,
     createBridge: (options) => {
       handlers = options;
-      bridge = createBridge({ ...options, port: 0, token: "test-token", allowedOrigins: [] });
+      // The listen callbacks write the token file and exit the process on a
+      // port clash; neither belongs in a lifecycle test on an ephemeral port.
+      bridge = createBridge({
+        ...options,
+        onListening: undefined,
+        onListenError: undefined,
+        port: 0,
+        token: "test-token",
+        allowedOrigins: [],
+      });
       bridge.sendAssistantEvent = (event, key) => {
         events.push({ ...event, key });
         sandbox.onAssistantEvent?.(event, key);

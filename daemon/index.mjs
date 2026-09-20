@@ -55,13 +55,33 @@ const TOKEN_FILE = join(homedir(), ".claude", "office-addins", "bridge-token");
 // includes it in the first WS hello. Any WS that doesn't present this token
 // (or comes from an unknown origin) is closed.
 const BRIDGE_TOKEN = randomBytes(24).toString("hex");
-{
+
+// The token file is how the task pane's host and the eval harness find this
+// daemon. It is written only once both servers are listening: a second daemon
+// that loses the ports used to overwrite it on its way down, leaving the
+// running daemon reachable but unauthorizable.
+let listenersUp = 0;
+async function noteListening() {
+  if (++listenersUp < 2) return;
   await mkdir(dirname(TOKEN_FILE), { recursive: true });
   await writeFile(TOKEN_FILE, BRIDGE_TOKEN, { mode: 0o600 });
   try {
     await chmod(TOKEN_FILE, 0o600);
   } catch {}
   console.log(`[daemon] Bridge token written to ${TOKEN_FILE}`);
+}
+
+function exitOnListenError(error, port, what) {
+  if (error?.code === "EADDRINUSE") {
+    console.error(
+      `[daemon] Port ${port} is already in use, so this ${what} did not start. ` +
+        "Another Excel Assistant daemon is already running — use it, or quit it (and its tray app) first. " +
+        "The bridge token was left untouched so the running daemon stays usable.",
+    );
+  } else {
+    console.error(`[daemon] The ${what} failed to start: ${error?.message ?? error}`);
+  }
+  process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -246,8 +266,10 @@ const http = createServer(async (req, res) => {
   }
 });
 
+http.on("error", (error) => exitOnListenError(error, HTTP_PORT, "HTTP server"));
 http.listen(HTTP_PORT, "127.0.0.1", () => {
   console.log(`[daemon] HTTP server listening on http://127.0.0.1:${HTTP_PORT}/`);
+  void noteListening();
 });
 
 // ---------------------------------------------------------------------------
@@ -772,6 +794,8 @@ bridge = createBridge({
   onHello: (key, host, doc) => onPaneConnect(key, host, doc),
   onUserMessage: (key, host) => ensureLoopForMessage(key, host),
   onClose: (key) => onPaneClose(key),
+  onListening: () => void noteListening(),
+  onListenError: (error) => exitOnListenError(error, WS_PORT, "WebSocket server"),
   extraHandlers: {
     workbook_history: async (msg, reply, key) => {
       try {

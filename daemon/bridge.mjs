@@ -48,6 +48,8 @@ export function createBridge({
   onHello,
   onUserMessage,
   onClose,
+  onListening,
+  onListenError,
   execution = createWorkbookExecution(),
 }) {
   if (!token) throw new Error("createBridge requires a token");
@@ -537,9 +539,19 @@ export function createBridge({
     });
   });
 
-  console.log(
-    `[bridge] WebSocket server listening on ws://127.0.0.1:${port} (origin allowlist: ${allowedOrigins.join(", ") || "<empty>"})`,
-  );
+  // WebSocketServer binds asynchronously, so this has to wait for the event:
+  // logging it at construction time announced a listener that a port clash
+  // then quietly denied.
+  wss.on("listening", () => {
+    console.log(
+      `[bridge] WebSocket server listening on ws://127.0.0.1:${port} (origin allowlist: ${allowedOrigins.join(", ") || "<empty>"})`,
+    );
+    onListening?.();
+  });
+  wss.on("error", (error) => {
+    if (onListenError) onListenError(error);
+    else console.error(`[bridge] WebSocket server error: ${error.message}`);
+  });
 
   return {
     execution,
