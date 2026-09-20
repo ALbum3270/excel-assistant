@@ -53,7 +53,7 @@
   - 对标：`docs/open-source-comparison.md`；
   - Pi 对照：`docs/pi-for-excel-comparison.md`；
   - 第三方许可：`NOTICE.md`。
-- `README.md` 仍是 Draftspect 原文，待重写。
+- 用户文档：`README.md`（英文）和 `README.zh-CN.md`（中文），内容需保持一致。
 
 ## 常用命令
 

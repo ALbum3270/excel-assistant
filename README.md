@@ -1,426 +1,160 @@
-# Draftspect
+# Excel Assistant
 
-> Add-ins for Word and Excel — **Powered by Claude.**
+English | [简体中文](README.zh-CN.md)
 
-[![CI](https://github.com/LeonardHope/Draftspect-Add-Ins-for-Word-and-Excel-Powered-by-Claude-Code/actions/workflows/ci.yml/badge.svg)](https://github.com/LeonardHope/Draftspect-Add-Ins-for-Word-and-Excel-Powered-by-Claude-Code/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+An AI agent in the Excel side panel. It reads and edits the workbook you have open, runs locally on your machine, and works with the model of your choice: your Claude Code login, or any Anthropic-compatible API such as Qwen, DeepSeek, Kimi, GLM or MiniMax.
 
-Open Word or Excel, click a button, and chat with **your own local Claude Code** — the same agent, with the same MCP servers, subagents, skills, hooks, and `CLAUDE.md` you already use in the terminal — now able to read and edit the active document, leave comments, and write cells and formulas.
+It is assembled from open-source projects rather than written from scratch. Each part comes from the project that already does it best. This repository adds the glue between them, fixes for the upstream bugs found along the way, and an evaluation harness to check the result.
 
-**The point of difference: local context.** Point Claude at any folders or files on your machine — a notes folder, prior drafts, a vendor's spec PDF, last quarter's data export, a code repo — and they become background it reads on demand while it works in your document. It's your real Claude Code, so everything you've configured applies.
+## What it can do
 
-## How Draftspect differs from the official Claude for Word and Excel add-in
+- **Read and edit the workbook** through Office.js tools: values, formulas, formatting, sorting, filters, tables, charts, rows, columns and sheets. Reads and searches page through large sheets instead of loading them whole.
+- **See the workbook before it acts.** Every message carries the workbook overview (sheets, headers, tables, named ranges), your selection with the rows around it, and the cells you changed since the last turn.
+- **Explain formulas and trace dependencies.** It can show what feeds a cell and what breaks if you change it.
+- **Undo its own edits.** Every change creates a restore point covering values, formulas, formatting, sorting, clearing, inserted or deleted rows and columns, and added, deleted or renamed sheets. Restoring a change can itself be redone.
+- **Ask before it writes (optional).** Turn this on and every change waits for Approve, Approve rest of turn or Reject in the chat.
+- **Crunch data too large for the chat** in a sandboxed shell with Python (standard library), awk, jq and sqlite3. Data moves between the sheet and the shell without passing through the model.
+- **Use Excel features Office.js cannot reach** through Windows COM, such as Power Query, PivotTable layouts, the Data Model and DAX, conditional formatting and data validation.
+- **Build finance models** with Anthropic's financial-analysis skills: DCF, LBO, three-statement, comps and model audits.
+- **Read your local files** (notes, specs, prior work) from folders you point it at.
+- **Keep track of the work**: one conversation history per workbook, a restore-point list, queued follow-ups, and the provider and token usage in view.
 
-Anthropic ships a first-party **Claude for Word and Excel** add-in (Office store / Microsoft Marketplace). It's polished, zero-setup, and first-party-supported. Draftspect is a different tool with a different tradeoff — heavier to set up, but it's _your_ local Claude Code with reach beyond Office:
+## How it is built
 
-|                          | Official Claude for Word/Excel                                                                                                                       | **Draftspect**                                                                                                                                                                                                                                                                    |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Context it can use**   | The Office documents you have **open**; you can attach other open Excel/PowerPoint files; plus connectors & Skills configured in your Claude account | Anything on your machine — point it at **arbitrary local folders/files** (a notes dir, prior drafts, a spec, a repo). Read on demand via `Read`/`Glob`/`Grep`/`Bash`, whether or not it's an Office file or open                                                                  |
-| **Whose Claude**         | A standalone Claude experience                                                                                                                       | **Your configured Claude Code** — your MCP servers, subagents, hooks, skills, slash commands, `CLAUDE.md` all apply                                                                                                                                                               |
-| **The code**             | Closed, first-party                                                                                                                                  | **Open and user-modifiable** — clone it and change the task-pane UI, tools, presets, or system prompt to fit how you work                                                                                                                                                         |
-| **Auth**                 | Your Claude account                                                                                                                                  | Your local Claude Code OAuth **or** a plain `ANTHROPIC_API_KEY`                                                                                                                                                                                                                   |
-| **How usage is charged** | Counts against your Claude subscription's normal interactive usage                                                                                   | Programmatic usage. From **2026-06-15** it draws from your plan's dedicated monthly programmatic credit (Pro $20 / Max 5× $100 / Max 20× $200); past that, API-rate extra usage if you've enabled it, else paused until reset. Pick a cheaper model in the composer to stretch it |
-| **Setup & support**      | Zero-setup, first-party-supported                                                                                                                    | Install Claude Code, run a tray app, sideload the add-in. macOS-primary; Windows newer. Single-user local tool, not a hardened service                                                                                                                                            |
+| Part | Taken from | License |
+| --- | --- | --- |
+| Local daemon, WebSocket bridge, task pane, tray app, sideloading | [Draftspect](https://github.com/LeonardHope/Draftspect-Add-Ins-for-Word-and-Excel-Powered-by-Claude-Code) | MIT |
+| Excel Office.js API layer (reads, writes, search, structure, objects) | [office-agents](https://github.com/hewliyang/office-agents) | MIT |
+| Workbook context, formula explain and trace, restore log | [pi-for-excel](https://github.com/tmustier/pi-for-excel) | MIT |
+| Task-solving protocol in the system prompt | [fabric-rlm](https://github.com/pawarbi/fabric-rlm-core), the only open-source entry on the SpreadsheetBench Verified-400 leaderboard | MIT |
+| Sandboxed shell for computation | [just-bash](https://github.com/vercel-labs/just-bash) | Apache-2.0 |
+| COM tools for advanced Excel features | [ThepExcelMCP](https://github.com/ThepExcel/ThepExcelMCP) | MIT |
+| Finance skills | [financial-services-plugins](https://github.com/anthropics/financial-services-plugins) | Apache-2.0 |
+| Agent loop | [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) | Anthropic terms |
 
-Short version: if you want zero-setup and don't need machine-local context, the official add-in is the easy choice. Draftspect exists for when you want the document work to draw on **your own files and your own configured agent**.
+Upstream code is vendored at pinned commits by scripts in `scripts/`, with small patches that must each match exactly once. What this repository adds:
 
-> Both send the document content the model needs to Anthropic's API to get a response (any cloud LLM must — the model has to see it). Draftspect's difference is _where the orchestration, file access, and tool execution happen_ (locally, via your Claude Code), not a different data-handling claim.
+- **Safe writes.** Overwrite protection, a commit receipt from every write tool, and bounded results so large fills don't overflow the model's context. Writes are rejected when the data would spill outside the target range.
+- **Reliable tool calls.** Cancellation and ownership checks on tool calls, and error messages that name the Office.js API that failed.
+- **Fixes to upstream code**, all found by testing in real Excel:
+  - format restore points failed on ranges with mixed formatting;
+  - restoring "no fill" was rejected by Windows Excel;
+  - dependency traces kept only the top-left cell of a range;
+  - undoing a row or column delete left dependent formulas as `#REF!`.
+- **Approve before apply**, built on the SDK's permission hook so the model still sees each real result.
+- **An evaluation harness** for SpreadsheetBench (see below).
 
-## Choosing the model
+The full comparison with other open-source Excel agents is in [docs/open-source-comparison.md](docs/open-source-comparison.md).
 
-A dropdown in the composer picks the model per request — **Haiku** (cheapest), **Sonnet** (balanced, the default), or **Opus** (most capable). The choice is sticky. Because programmatic usage now draws from a fixed monthly credit, this is the main cost lever: Opus costs roughly 5× Sonnet, and Sonnet roughly 3–5× Haiku, so default to Sonnet and reach for Opus only when a task genuinely needs it. The connection indicator in the top bar shows the model the agent is **actually** running (reported by the SDK, not the agent's own unreliable self-description), so you can always see what you're paying for.
+## Architecture
 
-## What it looks like
+```
+ Excel (Windows)                          Your machine
+ ┌─────────────────────────┐   WebSocket   ┌──────────────────────────────┐    HTTPS    ┌──────────────┐
+ │ Task pane (Office.js)   │◄─────────────►│ Daemon (Node)                │◄───────────►│ Model API    │
+ │ excel_* tools, context, │  127.0.0.1    │ Claude Agent SDK loop        │             │ (Claude, or  │
+ │ restore log (IndexedDB) │  :47833       │ in-process MCP tools         │             │ compatible)  │
+ └─────────────────────────┘               │ excel_bash (just-bash)       │             └──────────────┘
+            ▲                              │ approval, permission guard   │
+            │ COM                          └──────────────┬───────────────┘
+            │                                             │ stdio MCP
+            └──────────────── ThepExcelMCP (optional) ◄───┘
+```
 
-Two snapshots below — but the side pane is a full conversational agent, so what it _does_ is whatever you ask of the document, not a fixed set of buttons.
+The tray app (`app/`) starts the daemon and registers the add-in with Excel. The daemon serves the task pane and Office.js locally on port 47834.
 
-**Word** — _shown:_ surgical, tracked edits with margin comments. It also rewrites sections, inserts content, sweeps for issues and highlights them by severity, and answers from your context files — every change reviewable as a tracked change.
+## Requirements
 
-![Draftspect for Word — tracked changes and comments in a document](docs/images/word-demo.png)
-
-**Excel** — _shown:_ a range written with a live `=SUM()` total row. It also reads and explains ranges, finds and selects cells, inserts/deletes rows, and works across sheets — all from the same chat, with formulas written as formulas (not baked-in numbers).
-
-![Draftspect for Excel — a sales sheet with a formula-driven total row](docs/images/excel-demo.png)
-
----
-
-## Status
-
-Single-user tool you run on your own machine — intentionally scoped, not a hardened multi-tenant service (see [Security & privacy](#security--privacy)). Development was done on a Mac; Windows has had only limited testing in a Parallels VM. macOS is the primary, most-polished platform; Windows works but is less exercised.
-
-- **Word** — the more mature surface.
-- **Excel** — newer; the tools work, the UX trails Word slightly.
-
----
-
-## What you can ask it to do
-
-Open your document, click the add-in, and try things like:
-
-- _"Summarize this contract in plain English."_
-- _"Improve the writing in the selection. Use track changes."_
-- _"Add a Total row with `=SUM()` formulas and read back the revenue total."_
-- _"Review the Background section. Highlight anything weak in yellow and leave a comment explaining why."_
-
-The asks that set Draftspect apart are the ones that pull in **local context** — folders or files you add in the Setup tab become background the agent reads on demand:
-
-- _"Compare this draft against my `~/Notes` folder and tell me what's missing."_
-- _"Rewrite the Methodology section using the terminology in `~/Research/glossary.md`."_
-- _"Cross-check every figure in this paper against the data in `~/Project/results/`."_
-- _"Fill this sheet from the assumptions in last quarter's deck (added as a context file)."_
-
-Because it's your local Claude Code, anything you've configured — custom subagents, MCP servers, your `CLAUDE.md` files, hooks, skills — still applies.
-
----
-
-## Prerequisites
-
-Get these in place **before** you launch the app:
-
-| Requirement                     | How to check / get it                                                                                                                                                                            |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **macOS** _or_ Windows 10/11    | (other platforms won't load the manifests)                                                                                                                                                       |
-| **Node.js 18+**                 | `node --version` — [nodejs.org](https://nodejs.org/) or [Volta](https://volta.sh/) / [nvm](https://github.com/nvm-sh/nvm)                                                                        |
-| **Microsoft Word and/or Excel** | Microsoft 365, Office 2019, or 2021. Word needs **WordApi 1.4+**, Excel **ExcelApi 1.4+** (any reasonably recent build; the manifests reject older).                                             |
-| **Claude Code, signed in**      | `claude` in a terminal. Sign in once (Pro/Max works) and the daemon picks up your OAuth from the system keychain. **Or** export `ANTHROPIC_API_KEY=sk-ant-...` before launch (takes precedence). |
-| **Git**                         | for cloning the repo                                                                                                                                                                             |
-
-If you don't have Claude Code yet, [install it](https://docs.claude.com/en/docs/claude-code/overview) first. Draftspect is a thin layer on top of it — without it, nothing connects.
-
----
+- Windows 10 or 11 with desktop Microsoft Excel (Microsoft 365, or Excel 2021 or later; ExcelApi 1.9 or later).
+- Node.js 20.18.1 or later.
+- A model: a signed-in [Claude Code](https://docs.claude.com/en/docs/claude-code/overview), or an API key for an Anthropic-compatible provider.
+- Optional: [uv](https://docs.astral.sh/uv/) and a checkout of ThepExcelMCP for the COM tools; Python and uv for the evaluation harness.
 
 ## Install
 
 ```bash
-git clone https://github.com/LeonardHope/Draftspect-Add-Ins-for-Word-and-Excel-Powered-by-Claude-Code.git
-cd Draftspect-Add-Ins-for-Word-and-Excel-Powered-by-Claude-Code
+git clone <this repository>
+cd excel-assistant
 npm install
 npm start
 ```
 
-A tray icon (menu bar on macOS, system tray on Windows) appears. First launch offers to **install the add-in into Word and Excel for you** — click _Install_.
+A tray icon appears. On first launch it offers to install the add-in into Excel; click **Install**. Quit and reopen Excel, then open **Excel Assistant** from **Insert → Add-ins** (or **Home → Add-ins**). The add-in is registered through the `WEF\Developer` registry key, so no admin rights or network share are needed.
 
-**Fully quit and reopen Word/Excel** so Office picks up the manifest. Then open it:
+To watch the daemon's log in a terminal, run `npm run dev` instead of `npm start`.
 
-- **macOS:** Insert → Add-ins → **Developer Add-ins** → _Draftspect for Word_ / _Draftspect for Excel_.
-- **Windows:** auto-sideloaded via the `WEF\Developer` registry key — find it under **Insert → Add-ins** (or **Home → Add-ins**).
+## Choose a model
 
-> **One install per host.** The manifests use fixed add-in `<Id>` GUIDs, so a single Word (or Excel) install can sideload only one copy at a time. To run two clones side by side, change the `<Id>` in one clone's `manifests/word.xml` / `excel.xml` to a fresh UUID.
-
-> **Daemon-only debugging.** To see daemon output in the terminal, run `npm run dev` instead of `npm start` (skips the Electron shell).
-
----
-
-## How it works
-
-```
-   ┌─ Your computer ────────────────────────────────────────┐
-   │                                                        │
-   │   Tray app  ─► Daemon ◄──WebSocket──► Task pane        │
-   │   (Electron)   (Node)                 (in Word/Excel)  │
-   │                  │                                     │
-   │                  │ forwards MCP servers from           │
-   │                  ▼ ~/.claude.json                      │
-   │             Your other MCP servers                     │
-   │             (Visio, Gmail, custom…)                    │
-   └──────────────────┬─────────────────────────────────────┘
-                      │
-                      │ Claude Agent SDK (local OAuth or API key)
-                      ▼
-              ┌───────────────┐
-              │ Anthropic API │
-              └───────────────┘
-```
-
-Three pieces, all on your machine:
-
-1. **Tray app** (Electron) — spawns and watches the daemon, installs/uninstalls the add-in, surfaces native file pickers.
-2. **Daemon** (Node) — the engine. It embeds the **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`), which runs your locally-installed Claude Code **headlessly** — the same agent loop a non-interactive `claude` session uses, driven by the SDK instead of a terminal. It registers the Office tools as an in-process MCP server, forwards every MCP server from your `~/.claude.json` into the session, and speaks a small WebSocket protocol to the task pane.
-3. **Task pane** — the HTML panel Word/Excel show on the right. Office.js reads and edits the active document; it chats with the daemon over `ws://127.0.0.1:47833`.
-
-**One message, end to end:** you type in the task pane → WebSocket → daemon → Agent SDK `query()` → your Claude Code reasons and calls tools → document-tool calls round-trip back over the WebSocket so the task pane executes them via Office.js in the live document → results stream into the chat. Filesystem / `Bash` / MCP tools run daemon-side exactly as in your terminal Claude Code; only the document tools hop to the task pane.
-
-Each open document gets its **own** session (independent conversation, transcript, and workspace), so Word and Excel — and two Word docs at once — don't cross-talk.
-
-The task pane and daemon both live on `localhost`. The WebSocket bridge requires a per-launch token; the HTTP server only accepts the task pane's own origin.
-
-### Compatibility
-
-The daemon talks to Claude Code **through the Agent SDK**, never by shelling out to `claude` flags — so internal CLI changes are absorbed by the SDK. The dependency is pinned (`@anthropic-ai/claude-agent-sdk`, specific minor in `package.json`); on a breaking SDK major, bump the pin and re-test rather than chasing CLI behavior. You do need a reasonably current Claude Code installed and signed in — that's what the SDK drives.
-
----
-
-## Using the add-in
-
-1. **Launch the tray app first** — Word/Excel won't connect until the daemon is up.
-2. Open a document or workbook, then open the add-in panel (see [Install](#install) for where it appears).
-3. The **workspace** is set automatically: it's the folder your open document lives in. Claude can already read **anything inside that folder** on demand; the workspace just determines which `CLAUDE.md` and conversation history apply. Use **Change workspace** (Setup tab) to override — it holds until you open a document in a different folder.
-4. **Add context files** for material **outside** the workspace folder — notes, prior drafts, a vendor's spec, a glossary, anywhere on disk. Setup tab → Context files → **+ Add file** / **+ Add folder**, with an optional one-line description so Claude knows when to consult it. Entries are saved into the workspace's `CLAUDE.md` and read on demand via `Read`/`Glob`/`Grep`. (Files _inside_ the workspace don't need adding — Claude reaches them already.)
-5. Chat in the **Chat** tab. Pinned presets (chips above the input) are one-click prompts.
-
-**Slash commands** work from the chat box: type `/yourcommand` and your custom commands (`.claude/commands/*.md` in the workspace, or `~/.claude/commands/*.md`) run just like in the terminal. Note that purely interactive, terminal-only built-ins (`/help`, `/context`, `/clear`, …) produce no chat output — Draftspect shows a one-line "command ran, no output" note so it's clear it executed rather than failing.
-
-### Known limitation: cloud-hosted documents (OneDrive / SharePoint)
-
-Workspace auto-detection relies on the host app giving the add-in the document's local file path. Office.js only exposes `Office.context.document.url`, and what that contains depends on how the file's sync provider integrates with Word/Excel — this is intrinsic host behavior the add-in can't override, and it's the same on macOS and Windows:
-
-- **Local folders** and **Google Drive for Desktop** present the document as an ordinary local file, so `document.url` is a real filesystem path. Workspace detection works normally.
-- **OneDrive** and **SharePoint** documents are cloud-service-native: the app treats the Microsoft 365 service as the document's canonical location (it co-authors / AutoSaves against the service, not the local synced copy), so `document.url` is an `https://…sharepoint.com/…` URL. There is no API that returns the local synced path for these files — by design.
-
-**Workaround:** the synced copy still exists on disk under your OneDrive/SharePoint folder. Open the add-in → **Setup → Change workspace** and point Draftspect at that local folder yourself; add anything outside it as a **context file**. Everything works normally once the workspace is set — only the _automatic_ detection is affected.
-
-### Default presets
-
-Presets are host-specific — Word and Excel each get their own set, editable in the **Presets** tab.
-
-**Word**
-
-| Preset                        | What it does                               |
-| ----------------------------- | ------------------------------------------ |
-| Summarize this document       | Read top-to-bottom, return a tight summary |
-| Outline this document         | Heading outline + paragraph counts         |
-| Improve writing in selection  | Tighten the selection, track changes on    |
-| Fix typos and inconsistencies | Sweep + highlight + chat summary           |
-| Simplify the selection        | Plain-language rewrite, track changes      |
-| Add comments on this section  | Review-mode pass, no text edits            |
-| Answer using my context files | Use the folders/files you've added         |
-| Clear highlighting            | Wipe every highlight in one click          |
-
-**Excel**
-
-| Preset                        | What it does                                         |
-| ----------------------------- | ---------------------------------------------------- |
-| Summarize this sheet          | List sheets, read the used range, summarize          |
-| Explain the selected range    | What the selection contains and any pattern          |
-| Add a totals row              | Labelled Total row with `=SUM()` formulas            |
-| Check the data for problems   | Blanks, inconsistencies, dupes — listed, not changed |
-| Find a value                  | `excel_find_value` over a query                      |
-| Answer using my context files | Use the folders/files you've added                   |
-
-### Settings (Setup tab → Preferences)
-
-- **Track changes** (Word only) — Always / Modifications only / Never. "Always" is the safe default; every edit is reviewable.
-- **Show diagnostics in chat** — session/tool/turn events. **Off by default** (quieter); turn on when debugging.
-
----
-
-## What the agent can touch in your documents
-
-### Word
-
-Twenty-six tools, all through Office.js (no filesystem mutation of the live `.docx`):
-
-| Tool                              | Use it for                                              |
-| --------------------------------- | ------------------------------------------------------- |
-| `office_get_selection`            | The implicit subject of "this", "here", "the selection" |
-| `office_read_paragraphs`          | Read by ID, heading section, or range                   |
-| `office_get_document_text`        | Whole-document text + word/character counts             |
-| `office_get_outline`              | The heading tree (id / level / text)                    |
-| `office_insert_paragraphs`        | Add new content after a paragraph or heading            |
-| `office_replace_paragraphs`       | Whole-paragraph rewrites, 1-to-1                        |
-| `office_replace_section`          | Find a heading, replace its section                     |
-| `office_replace_text`             | Surgical sub-paragraph search/replace                   |
-| `office_apply_style`              | Restyle existing paragraphs in place                    |
-| `office_set_font`                 | Bold / italic / underline, size, color, font name       |
-| `office_set_paragraph_formatting` | Alignment, indent, spacing                              |
-| `office_insert_table`             | Append a table, or insert one after a paragraph         |
-| `office_set_table_cell`           | Overwrite a cell in an existing table                   |
-| `office_highlight`                | Color-coded by severity: error/warning/info/uncertain   |
-| `office_clear_highlights`         | By paragraph, section, or all                           |
-| `office_add_comment`              | Anchored on a paragraph or specific text                |
-| `office_clear_comments`           | By paragraph, section, or all                           |
-| `office_list_comments`            | Every comment: id / author / text / resolved            |
-| `office_reply_to_comment`         | Reply to a comment thread by id                         |
-| `office_resolve_comment`          | Resolve or reopen a comment                             |
-| `office_set_list`                 | Bulleted / numbered list from existing paragraphs       |
-| `office_insert_image`             | Inline image from base64                                |
-| `office_insert_hyperlink`         | Linkify a text query or whole paragraph                 |
-| `office_insert_bookmark`          | Named bookmark on a paragraph or query                  |
-| `office_find`                     | Search → matches with their paragraph IDs               |
-| `office_header_footer`            | Set the primary header / footer text                    |
-
-Every write tool respects your track-changes setting.
-
-### Excel
-
-Twenty-three tools, A1 notation, 2D arrays:
-
-| Tool                                                            | Use it for                                            |
-| --------------------------------------------------------------- | ----------------------------------------------------- |
-| `excel_get_selected_range`                                      | The implicit subject of "these cells"                 |
-| `excel_list_sheets`                                             | Worksheet inventory + used ranges                     |
-| `excel_read_range`                                              | Read a range or a whole sheet's used range            |
-| `excel_write_range`                                             | Write a 2D values array (shape-checked)               |
-| `excel_write_formula`                                           | Write a 2D array of formulas (e.g. `=SUM(A1:A9)`)     |
-| `excel_set_format`                                              | Number format, font, fill, borders                    |
-| `excel_find_value`                                              | Substring / whole-cell match across one or all sheets |
-| `excel_insert_rows` / `excel_delete_rows`                       | 1-based row indices                                   |
-| `excel_insert_columns` / `excel_delete_columns`                 | Column-letter addressed                               |
-| `excel_clear_range`                                             | Clear contents, formats, or both                      |
-| `excel_add_sheet` / `excel_delete_sheet` / `excel_rename_sheet` | Worksheet management                                  |
-| `excel_select_range`                                            | Select a cell/range and switch to its sheet           |
-| `excel_sort_range`                                              | Sort a range by a column                              |
-| `excel_autofilter`                                              | Apply or remove an AutoFilter                         |
-| `excel_create_table`                                            | Range → named table (ListObject)                      |
-| `excel_add_table_rows`                                          | Append rows to a table                                |
-| `excel_create_chart`                                            | Column / bar / line / pie / scatter / area            |
-| `excel_set_column_width` / `excel_set_row_height`               | Fixed size or autofit                                 |
-
-### What the agent will refuse
-
-- **Filesystem writes to the live document.** A permission guard refuses `Write`/`Edit`/`MultiEdit` against `.docx`/`.docm`/`.xlsx`/`.xlsm` paths, and `Bash` commands that mutate one in place (a redirection into an Office path, or `rm`/`mv`/`cp`/`tee`/`sed -i`/etc. against one). Reading is allowed — the agent legitimately does `unzip -p draft.docx …`, `cat`, or `git log -- report.docx`. Office holds the document open with unsaved changes; a filesystem write would corrupt it, so the agent uses the in-host tools instead. This is an **accident guard, not a security boundary**: it's heuristic and a determined agent can work around it (see [Security & privacy](#security--privacy)).
-
----
-
-## Make it yours
-
-Draftspect is a clone-and-run repo — the code is yours to modify:
-
-- **Task-pane UI** — `taskpane/shared/taskpane.js` + `styles.css` + the per-host `index.html`. Change the layout, add a tab, restyle.
-- **Presets** — edit the defaults in `taskpane/shared/taskpane.js` (`defaultWordPresets` / `defaultExcelPresets`), or just add/pin your own in the Presets tab at runtime.
-- **Tools** — add a Word/Excel capability: a tool def in `daemon/office-tools.mjs` (zod schema) + an implementation in `taskpane/shared/tools-word.js` / `tools-excel.js` + a dispatch case.
-- **Agent behavior** — the host-specific system prompts in `daemon/system-prompt.md`, `system-prompt-word.md`, `system-prompt-excel.md` are re-read every session start.
-
----
-
-## Troubleshooting
-
-<details>
-<summary><strong>Task pane shows "Disconnected — retrying…"</strong></summary>
-
-The daemon isn't running or crashed. Tray menu → **Open logs** (`~/.claude/office-addins/daemon.log`). The daemon auto-restarts up to 3 times before giving up.
-
-</details>
-
-<details>
-<summary><strong>"Sign-in required" banner appears</strong></summary>
-
-The Agent SDK couldn't authenticate. Either:
-
-- Sign in to Claude Code: run `claude` in a terminal and follow the prompt.
-- Or set `ANTHROPIC_API_KEY` in your shell and **relaunch** the tray app (the daemon reads env at boot).
-
-Then quit the tray app and reopen it.
-
-</details>
-
-<details>
-<summary><strong>An MCP server I configured isn't visible to the agent</strong></summary>
-
-At daemon start the log shows `Loaded N MCP server(s) from ~/.claude.json: …`. The SDK silently drops any server whose initial handshake fails — restart the daemon (tray menu → **Restart daemon**) once it's back up. `~/.claude.json` is read **once at daemon boot**; changes need a daemon restart.
-
-</details>
-
-<details>
-<summary><strong>The workspace is the wrong folder</strong></summary>
-
-The workspace follows the open document's folder automatically. If it's wrong, either you explicitly picked a different folder earlier, or the document is cloud-hosted (OneDrive/SharePoint) — auto-detection can't work for those by design (see [Known limitation: cloud-hosted documents](#known-limitation-cloud-hosted-documents-onedrive--sharepoint)). Use **Change workspace** in the Setup tab to set it; that choice holds until you open a document in a different folder.
-
-</details>
-
-<details>
-<summary><strong>Auto-install of the add-in didn't work</strong></summary>
-
-Manual fallback: in Word/Excel, **Insert → Add-ins → Manage My Add-ins → Upload My Add-in**, point at the file in `manifests/`. If that's missing on your build:
-
-- **macOS:** copy `manifests/word.xml` to `~/Library/Containers/com.microsoft.Word/Data/Documents/wef/` (create the folder if missing). Same for Excel.
-- **Windows:** add a `REG_SZ` value under `HKCU\Software\Microsoft\Office\16.0\WEF\Developer` whose **name and data are the manifest's full path**, then restart Office. (A Trusted Add-in Catalog also works but requires a real UNC network share — a local path is silently ignored.)
-
-</details>
-
-<details>
-<summary><strong>The add-in icon is blank in the gallery (macOS)</strong></summary>
-
-Cosmetic. macOS Office often won't fetch an `http://127.0.0.1` icon for the gallery tile; the add-in itself works regardless. (A fix needs the icon served over HTTPS, deferred.)
-
-</details>
-
-<details>
-<summary><strong>Context-file changes don't seem to take effect</strong></summary>
-
-Saving a context entry restarts the agent session (conversation preserved via `resume`) so the new `CLAUDE.md` loads. If you don't see the change, confirm you're on the right workspace — the topbar chip shows the active one.
-
-</details>
-
----
-
-## Authentication & distribution
-
-The daemon authenticates via the Claude Agent SDK, which reads your **Claude Code OAuth credential** from the system keychain by default. Signed in to a Claude Pro/Max account? It just works. To use an API key instead:
+Without configuration the agent uses your Claude Code login. To use another provider, copy `.env.example` to `.env` and fill it in. This file is read only by this project and does not change your global Claude Code. Example for Qwen:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-npm start
+ANTHROPIC_BASE_URL=https://dashscope.aliyuncs.com/apps/anthropic
+ANTHROPIC_AUTH_TOKEN=sk-your-key
+ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3.7-flash
+ANTHROPIC_DEFAULT_SONNET_MODEL=qwen3.7-plus
+ANTHROPIC_DEFAULT_OPUS_MODEL=qwen3.7-max
 ```
 
-The SDK prefers `ANTHROPIC_API_KEY` over keychain OAuth when present.
+The model picker in the pane switches between these three tiers.
 
-> **Distribution note.** This repo is open source — each user clones and runs it on their own machine with their own auth. That use is sanctioned. Shipping a hosted/packaged product that uses Anthropic subscription OAuth on behalf of users requires partner approval; see the [Agent SDK overview](https://docs.claude.com/en/api/agent-sdk/overview). If this ever becomes a product, expect to switch to BYO-API-key.
+## Optional: advanced tools and skills
 
----
+Copy `agent.config.example.json` to `agent.config.json` to turn on:
 
-## Security & privacy
+- **COM tools** (`mcpServers`): point it at your ThepExcelMCP checkout.
+- **Finance skills** (`plugins`, `skills`): point it at `financial-services-plugins`.
+- **Built-in tools** (`builtinTools`): the default is read-only file access plus web search.
 
-A single-user tool you run on your own machine — threat model is "your own machine, your own documents," not a hardened service. Worth knowing:
+By default the agent does not inherit the MCP servers from your global `~/.claude.json` (`inheritUserMcpServers: false`), which keeps its context small and predictable.
 
-- **The `.docx`/`.xlsx` filesystem-write denial is an accident guard, not a security boundary.** It's regex-based; a determined agent can bypass it (string-built paths, decoded payloads). It stops _accidental_ overwrites of an open Office file, not a hostile agent. Edit Office files through the `office_*` / `excel_*` tools.
-- **The local bridge is loopback-only and token-gated, but trusts every process running as you.** The WebSocket binds `127.0.0.1` and needs a per-daemon token; CORS blocks browser cross-origin reads, but any local process running as your user can read the token. No protection against a malicious local process — out of scope for a personal tool.
-- **Conversation transcripts persist to disk, unredacted.** The Agent SDK writes each session's full transcript — including tool inputs and outputs, which can contain document text and the contents of any local or context files the agent read — to `~/.claude/projects/<hash>/<session_id>.jsonl`, exactly as terminal Claude Code does. `daemon.log` (plaintext of every chat message, tray → Open logs) is only the surface. Treat both `~/.claude/office-addins/daemon.log` and `~/.claude/projects/` as sensitive; delete to scrub history.
-- **The tool writes into your workspace and `~/.claude`.** Adding a context file records it as a `CONTEXT-FILES` block in that workspace's `CLAUDE.md` (paths only — relative when the entry is inside the workspace); workspace/session bookkeeping lives in `~/.claude/office-addins/sessions.json`. Nothing else in your folders is modified except through the document tools.
-- **Document content goes to Anthropic's API.** To answer, the model must see the relevant document text (and any context files it reads) — those are sent to the Anthropic API via the Agent SDK, the same trust boundary as using Claude Code in your terminal. Orchestration, file access, and tool execution stay local.
+## Using it
 
----
+- Open a saved workbook, open the pane and describe what you want, for example "Add a total row under the sales table" or "Why is D14 showing #N/A?".
+- Each write shows a card with what changed: the range, whether it was committed, how it was verified, formula errors, and a restore link.
+- You can queue a follow-up message while the agent is still working.
+- **History** (in the chat header) lists this workbook's past conversations; you can reopen, continue or delete them.
+- **Backups** tab lists the restore points: search them, restore one, or clear them. You can also just ask "undo your last change".
+- **Setup** tab: choose the workspace folder and context files the agent may read, see the current provider and the last turn's token usage, and turn on **Ask before changing the workbook** to approve each edit.
 
-## Developing
+## Safety and privacy
 
-### File layout
+- The workbook is changed only through Office.js tools. The agent is blocked from writing Office files on disk, and VBA and Python in Excel are disabled.
+- Overwriting cells that already hold data needs an explicit flag, and every write reports whether it was committed.
+- Restore points are kept locally in the task pane's storage.
+- The conversation, including the cell contents the model reads, goes to the model provider you configure. Web search and fetch, when the agent uses them, go to the web.
 
-```
-.
-├── app/
-│   ├── main.mjs           Electron tray shell; spawns + watches daemon
-│   ├── sideload.mjs       Add-in install/uninstall (mac wef/, win WEF\Developer)
-│   └── tray-icon.png
-├── daemon/
-│   ├── index.mjs          Agent SDK loop, permission handler, per-doc sessions
-│   ├── bridge.mjs         WebSocket server + per-pane tool-call protocol
-│   ├── office-tools.mjs   Word + Excel tool defs (zod schemas)
-│   ├── workspace.mjs      Workspace = the document's own folder
-│   ├── context.mjs        Per-workspace context-file block in CLAUDE.md
-│   ├── sessions.mjs       Per-(host, workspace) session-id persistence
-│   ├── diag.mjs           Opt-in [diag] logger (CC_OFFICE_DEBUG=1)
-│   └── system-prompt*.md  Shared + per-host system prompt
-├── taskpane/
-│   ├── shared/{taskpane.js, tools-word.js, tools-excel.js, paths.js, styles.css}
-│   ├── word/index.html, excel/index.html
-│   └── icon-{32,64}.png   Add-in icons (regen via scripts/build-icons.py)
-├── manifests/{word.xml, excel.xml}
-├── examples/{word-demo, excel-demo}/   Ready-to-run demo workspaces
-├── scripts/build-icons.py
-├── tests/{workspace,context,sessions,bridge}.test.mjs
-├── .github/workflows/ci.yml
-├── package.json
-└── README.md
-```
+## Evaluation
 
-### Tests
+`evals/run_spreadsheetbench.py` runs [SpreadsheetBench](https://github.com/RUCKBReasoning/SpreadsheetBench) Verified-400 tasks in live Excel and grades them with the benchmark's own comparison code. The task prompt is the official one, plus one line adapting it to a live workbook. The harness pins the configuration of each run, separates infrastructure failures from agent failures, and counts edits outside the answer range, calibrated against the reference solution.
 
-Pure-logic modules have unit tests (no Office.js, no SDK):
+| Run | Model | Tasks | Passed |
+| --- | --- | --- | --- |
+| 2026-09-19, fixed 10-task sample | qwen3.7-flash | 10 | 4 |
+| 2026-09-19, same 10 tasks after the next round of work | qwen3.7-flash | 10 | 5 |
+
+Seven of those ten tasks changed verdict between the two runs, in both directions. With a small model on a small sample, run-to-run variance is larger than the difference between the runs, so neither number shows an improvement.
+
+For scale, the best open-source entry on the official leaderboard is fabric-rlm with MiniMax M3 at 82.5% on all 400 tasks. It edits `.xlsx` files with Python rather than driving live Excel, so the numbers are not directly comparable. A 10-task sample on a small model is a smoke test, not a score.
+
+## Development
 
 ```bash
-npm test
+npm test                      # Node tests
+npm run vendor:office-agents  # rebuild the office-agents bundle
+npm run vendor:pi-context     # rebuild the pi-for-excel bundles
+python -X utf8 evals/run_spreadsheetbench.py --dataset <path/to/spreadsheetbench_verified_400> --run <name> --model haiku --ids <task ids>
 ```
 
-`node:test` runs all of `tests/*.test.mjs`. CI runs the same suite on Node 20.x and 22.x against every PR, plus prettier and an `npm audit`.
+- The vendor scripts need the upstream checkouts at their pinned commits with clean working trees.
+- After changing task-pane code, reload the pane in Excel.
+- Design notes and progress are logged in [docs/optimization-analysis.md](docs/optimization-analysis.md).
 
-### Conventions
+## Limitations
 
-- Feature branches + PRs; nothing direct to `main`. CI green before merge.
-- Don't bypass the filesystem-write guard on Office files — it protects unsaved work.
-- The product name is **Draftspect** ("Powered by Claude"). Accurate references to the user's real **Claude Code** (install, sign-in, OAuth, the SDK driving it) stay as "Claude Code" — that's correct nominative use.
-
----
+- Built and tested on Windows only; the COM tools are Windows-only.
+- No restore points yet for tables, charts, PivotTables, comments, duplicated sheets, hidden rows and columns, frozen panes, or anything changed through the COM tools.
+- After rows, columns or a sheet are deleted and restored, formulas on other sheets that pointed at them stay `#REF!`.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT; see [LICENSE](LICENSE). Third-party components keep their own licenses; see [NOTICE.md](NOTICE.md).
