@@ -124,6 +124,37 @@ function formulaProblem(formula) {
   }
   if (depth !== 0) return "parentheses are unbalanced";
   if (/[+\-*/^&,]$/.test(body.trim())) return "the formula ends with an operator";
+  return topLevelComma(body);
+}
+
+// Beyond pi's checks: a comma is only an argument, union or array separator, so
+// outside every bracket it cannot be valid — that is the shape of
+// "=IF(B6>60000,MIN(B6,90000)-60000)*0.15,0", where the parentheses balance but
+// the arguments ran past the closing one. Commas do appear at paren depth 0
+// inside a quoted sheet name ('My,Sheet'!A1), a structured reference
+// (Table1[[#Data],[Sales]]) and an array constant ({1,2}), so track those too.
+function topLevelComma(body) {
+  let parens = 0;
+  let brackets = 0;
+  let braces = 0;
+  let quote = null;
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index];
+    if (quote) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") quote = char;
+    else if (char === "(") parens += 1;
+    else if (char === ")") parens -= 1;
+    else if (char === "[") brackets += 1;
+    else if (char === "]") brackets -= 1;
+    else if (char === "{") braces += 1;
+    else if (char === "}") braces -= 1;
+    else if (char === "," && parens === 0 && brackets === 0 && braces === 0) {
+      return "a comma sits outside every bracket, so an argument list runs past its closing parenthesis";
+    }
+  }
   return null;
 }
 

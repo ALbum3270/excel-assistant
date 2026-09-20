@@ -312,3 +312,31 @@ test("the same failing call is refused after three attempts instead of dispatche
   await handler({ ...call, cells: [[{ formula: "=LARGE(A1:A9,1)" }]] });
   assert.equal(dispatches, 4);
 });
+
+test("a comma outside every bracket is rejected, but the valid places for one are not", async () => {
+  const calls = [];
+  const server = createOfficeBridgeMcp(
+    {
+      async callTaskpaneTool(name, args) {
+        calls.push(args);
+        return { success: true, commitStatus: "committed" };
+      },
+    },
+    "excel",
+    "test-pane",
+  );
+  const handler = server.instance._registeredTools.excel_set_cell_range.handler;
+  const write = (formula) => handler({ sheetId: 1, range: "B2", cells: [[{ formula }]] });
+
+  const stray = await write("=IF(B6>60000,MIN(B6,90000)-60000)*0.15,0");
+  assert.match(stray.content[0].text, /comma sits outside every bracket/);
+  assert.equal(calls.length, 0);
+
+  // Commas that are legal at paren depth zero: a quoted sheet name, a
+  // structured reference and an array constant.
+  for (const formula of ["='My,Sheet'!A1", "=Table1[[#Data],[Sales]]", "={1,2}+0"]) {
+    const result = await write(formula);
+    assert.doesNotMatch(result.content[0].text, /comma sits outside/, formula);
+  }
+  assert.equal(calls.length, 3);
+});
