@@ -1569,6 +1569,8 @@ function setActiveTab(tabName) {
   if (tabName === "setup") {
     loadContext();
     loadWorkspaceSection();
+  } else if (tabName === "backups") {
+    loadRecoveryHistory();
   }
 }
 
@@ -1580,6 +1582,204 @@ document.querySelectorAll(".tab").forEach((btn) => {
 // Presets — saved prompts that the user can pin to quick-chips or browse
 // in the Library tab.
 // ===========================================================================
+// Workbook backups ----------------------------------------------------------
+const $backupList = document.getElementById("backup-list");
+const $backupStatus = document.getElementById("backup-status");
+const $backupSearch = document.getElementById("backup-search");
+const $backupRefresh = document.getElementById("backup-refresh");
+const $backupClear = document.getElementById("backup-clear");
+let recoverySnapshots = [];
+let recoveryBusy = false;
+
+const RECOVERY_OPERATION_LABELS = {
+  excel_set_cell_range: "Edit cells",
+  excel_clear_cell_range: "Clear cells",
+  excel_copy_to: "Copy cells",
+  excel_set_format: "Format cells",
+  excel_sort_range: "Sort range",
+  excel_resize_range: "Resize rows or columns",
+  excel_modify_sheet_structure: "Insert or delete rows or columns",
+  excel_modify_workbook_structure: "Change worksheet structure",
+  restore: "Restore backup",
+};
+
+function recoveryOperationLabel(operation) {
+  if (RECOVERY_OPERATION_LABELS[operation]) return RECOVERY_OPERATION_LABELS[operation];
+  const plain = String(operation || "Workbook change")
+    .replace(/^excel_/, "")
+    .replaceAll("_", " ");
+  return plain.charAt(0).toUpperCase() + plain.slice(1);
+}
+
+function showRecoveryStatus(message, { error = false } = {}) {
+  if (!$backupStatus) return;
+  $backupStatus.hidden = !message;
+  $backupStatus.classList.toggle("error", error);
+  $backupStatus.textContent = message || "";
+}
+
+function setRecoveryBusy(busy) {
+  recoveryBusy = busy;
+  if ($backupRefresh) $backupRefresh.disabled = busy;
+  if ($backupClear) $backupClear.disabled = busy || recoverySnapshots.length === 0;
+  $backupList?.querySelectorAll("button").forEach((button) => {
+    button.disabled = busy;
+  });
+}
+
+function renderRecoveryHistory() {
+  if (!$backupList) return;
+  $backupList.innerHTML = "";
+  const query = ($backupSearch?.value || "").trim().toLowerCase();
+  const visible = recoverySnapshots.filter((snapshot) => {
+    if (!query) return true;
+    return [
+      recoveryOperationLabel(snapshot.operation),
+      ...(snapshot.addresses || []),
+      ...(snapshot.kinds || []),
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(query);
+  });
+
+  if (visible.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "backup-empty";
+    empty.textContent = recoverySnapshots.length
+      ? "No backups match this search."
+      : "No backups yet. A backup appears here before the assistant changes the workbook.";
+    $backupList.appendChild(empty);
+    if ($backupClear) $backupClear.disabled = recoverySnapshots.length === 0 || recoveryBusy;
+    return;
+  }
+
+  for (const snapshot of visible) {
+    const item = document.createElement("div");
+    item.className = "backup-item";
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "backup-title-row";
+    const title = document.createElement("div");
+    title.className = "backup-title";
+    title.textContent = recoveryOperationLabel(snapshot.operation);
+    const count = document.createElement("span");
+    count.className = "backup-count";
+    count.textContent = `${Number(snapshot.changedCount || 0).toLocaleString()} cells`;
+    titleRow.append(title, count);
+
+    const addresses = document.createElement("div");
+    addresses.className = "backup-addresses";
+    addresses.textContent = (snapshot.addresses || []).join(", ") || "Workbook structure";
+
+    const meta = document.createElement("div");
+    meta.className = "backup-meta";
+    const created = new Date(snapshot.createdAt);
+    meta.textContent = Number.isNaN(created.getTime()) ? "" : created.toLocaleString();
+
+    const actions = document.createElement("div");
+    actions.className = "backup-actions";
+    const restore = document.createElement("button");
+    restore.type = "button";
+    restore.textContent = "Restore";
+    restore.disabled = recoveryBusy;
+    restore.addEventListener("click", async () => {
+      if (turnInFlight || submitPending) {
+        showRecoveryStatus("Stop the current assistant turn before restoring a backup.", {
+          error: true,
+        });
+        return;
+      }
+      await runRecoveryAction("restore", snapshot.id);
+    });
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Delete";
+    remove.disabled = recoveryBusy;
+    let confirmDelete = false;
+    remove.addEventListener("click", async () => {
+      if (!confirmDelete) {
+        confirmDelete = true;
+        remove.textContent = "Delete?";
+        remove.classList.add("backup-delete-confirm");
+        return;
+      }
+      await runRecoveryAction("delete", snapshot.id);
+    });
+
+    actions.append(restore, remove);
+    item.append(titleRow, addresses, meta, actions);
+    $backupList.appendChild(item);
+  }
+  if ($backupClear) $backupClear.disabled = recoveryBusy;
+}
+
+async function loadRecoveryHistory(message = "") {
+  if (!$backupList || recoveryBusy) return;
+  setRecoveryBusy(true);
+  showRecoveryStatus(message || "Loading backups...");
+  try {
+    const result = await workbookHistory({ action: "list", limit: 120 });
+    recoverySnapshots = result.snapshots || [];
+    showRecoveryStatus(message);
+  } catch (error) {
+    showRecoveryStatus(error?.message || String(error), { error: true });
+  } finally {
+    setRecoveryBusy(false);
+    renderRecoveryHistory();
+  }
+}
+
+async function runRecoveryAction(action, snapshotId = null) {
+  if (recoveryBusy) return;
+  setRecoveryBusy(true);
+  showRecoveryStatus(action === "restore" ? "Restoring backup..." : "Deleting backup...");
+  try {
+    const result = await workbookHistory({ action, snapshot_id: snapshotId });
+    const listed = await workbookHistory({ action: "list", limit: 120 });
+    recoverySnapshots = listed.snapshots || [];
+    if (action === "restore") {
+      const targets = result.addresses?.join(", ") || "the workbook";
+      showRecoveryStatus(`Restored ${targets}. A reverse backup was created.`);
+    } else {
+      showRecoveryStatus("Backup deleted.");
+    }
+  } catch (error) {
+    showRecoveryStatus(error?.message || String(error), { error: true });
+  } finally {
+    setRecoveryBusy(false);
+    renderRecoveryHistory();
+  }
+}
+
+$backupRefresh?.addEventListener("click", () => loadRecoveryHistory());
+$backupSearch?.addEventListener("input", renderRecoveryHistory);
+$backupClear?.addEventListener("click", async () => {
+  if ($backupClear.dataset.confirm !== "true") {
+    $backupClear.dataset.confirm = "true";
+    $backupClear.textContent = "Clear all?";
+    $backupClear.classList.add("backup-delete-confirm");
+    return;
+  }
+  if (recoveryBusy) return;
+  setRecoveryBusy(true);
+  showRecoveryStatus("Clearing backups...");
+  try {
+    const result = await workbookHistory({ action: "clear" });
+    recoverySnapshots = [];
+    showRecoveryStatus(`Cleared ${result.removed || 0} backups.`);
+  } catch (error) {
+    showRecoveryStatus(error?.message || String(error), { error: true });
+  } finally {
+    $backupClear.dataset.confirm = "false";
+    $backupClear.textContent = "Clear all";
+    $backupClear.classList.remove("backup-delete-confirm");
+    setRecoveryBusy(false);
+    renderRecoveryHistory();
+  }
+});
+
 const PRESETS_KEY = "claude-code-office-presets-v1:" + HOST;
 
 function defaultPresets() {

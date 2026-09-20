@@ -41,6 +41,7 @@
     <nav class="tabs">
       <button class="tab" data-tab="chat" aria-current="page">Chat</button>
       <button class="tab" data-tab="library">Presets</button>
+      <button class="tab" data-tab="backups">Backups</button>
       <button class="tab" data-tab="setup">Setup</button>
     </nav>
 
@@ -96,6 +97,22 @@
         Click a preset to use it. Pinned presets appear as chips above the chat input.
       </div>
       <div class="library-list" id="library-list"></div>
+    </section>
+
+    <section class="tab-content" data-tab="backups" hidden>
+      <div class="backup-header">
+        <div>
+          <h3>Workbook backups</h3>
+          <p>Created automatically before the assistant changes this workbook.</p>
+        </div>
+        <button type="button" class="btn-secondary btn-small" id="backup-refresh">Refresh</button>
+      </div>
+      <div class="backup-toolbar">
+        <input type="search" id="backup-search" placeholder="Search operation or range" />
+        <button type="button" class="btn-secondary btn-small" id="backup-clear">Clear all</button>
+      </div>
+      <div class="backup-status" id="backup-status" hidden></div>
+      <div class="backup-list" id="backup-list"></div>
     </section>
 
     <!-- Setup tab content -->
