@@ -47,7 +47,7 @@
 | 已完成 | 撤销与恢复点：值、公式、格式、排序、清空、行列尺寸、插删行列、增删和改名工作表 | Pi `src/workbook/recovery-log.ts` + `recovery/*` | 已移植，并在真实 Excel 中验证恢复（第三十七、三十九、四十一节）。表格、图表、批注和 COM 写入仍没有恢复点 |
 | 不做 | 写后发现新出现的错误值就自动回滚 | MS-Excel-AI-plugin `sidecar/src/changeset/manager.ts` | `#N/A` 等错误常是预期结果，自动回滚会撤掉正确写入；改为在回执中报告 `formulaErrors`，由模型判断，需要时用恢复点撤销 |
 | 已完成 | 公式解释、依赖追踪 | Pi `explain-formula.ts`、`trace-dependencies.ts` | 已移植并在真实 Excel 中验证；修复了区域引用只追踪左上角的上游问题（优化分析第四十节） |
-| 已完成 | 写入前预览和审批（可选，默认关闭） | MS-Excel-AI-plugin 的变更集、ExcelLLMAddin 的先批准再执行 | 通过 SDK `canUseTool` 逐次审批，模型每步拿到真实结果（优化分析第四十二节）；恢复点列表仍通过 `excel_workbook_history` 查看，还没有单独的审阅界面 |
+| 已完成 | 写入前预览和审批（可选，默认关闭） | MS-Excel-AI-plugin 的变更集、ExcelLLMAddin 的先批准再执行 | 通过 SDK `canUseTool` 逐次审批，模型每步拿到真实结果（优化分析第四十二节）；侧边栏已有恢复点列表与恢复操作，仍可通过 `excel_workbook_history` 查看 |
 | P2 | 单元格 AI 函数（分类、抽取、拆字段、翻译、`MAP` 批量等） | ExcelLLMAddin `officejs/src/functions/functions.ts`、`core/tasks.ts`；cellm | 需要在 manifest 里加自定义函数；另一类功能，按需求决定 |
 | 待定 | 执行原始 Office.js 的万能工具 | Pi `execute_office_js`、office-agents `eval-officejs` | 会绕过覆盖保护和回执；若有恢复点兜底可再考虑 |
 | 待定 | 沙箱 Python 缺 pandas/openpyxl | Pi 用 Pyodide（需从 CDN 下载约 15MB）；fabric-rlm 用本机 Python | 目前靠 CSV 加标准库已能完成，先不动 |

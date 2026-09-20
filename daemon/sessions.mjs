@@ -17,7 +17,7 @@
 //       "excel": {
 //         "<sha256 of document key>": {
 //           "active_session_id": "uuid…",
-//           "sessions": [{ "session_id": "uuid…", "title": "Summarize Q3" }]
+//           "sessions": [{ "session_id": "uuid…", "title": "Summarize Q3", "compatibility_key": "sha256…" }]
 //         }
 //       }
 //     }
@@ -171,7 +171,25 @@ export async function getSessionId(host, documentKey) {
   return state.conversations?.[h]?.[key]?.active_session_id ?? null;
 }
 
-export async function saveSessionId(host, documentKey, cwd, sessionId, { title = null } = {}) {
+export async function getSessionRecord(host, documentKey, sessionId = null) {
+  const h = normalizeHost(host);
+  const key = documentStorageKey(documentKey);
+  if (!h || !key) return null;
+  const state = await readCurrentState();
+  const conversation = state.conversations?.[h]?.[key];
+  const id = sessionId ?? conversation?.active_session_id;
+  if (!id || !Array.isArray(conversation?.sessions)) return null;
+  const saved = conversation.sessions.find((entry) => entry.session_id === id);
+  return saved ? { ...saved } : null;
+}
+
+export async function saveSessionId(
+  host,
+  documentKey,
+  cwd,
+  sessionId,
+  { title = null, compatibilityKey = null } = {},
+) {
   const h = normalizeHost(host);
   const key = documentStorageKey(documentKey);
   if (!h || !key || typeof sessionId !== "string" || !sessionId) return;
@@ -189,6 +207,7 @@ export async function saveSessionId(host, documentKey, cwd, sessionId, { title =
         session_id: sessionId,
         cwd: cwd ?? null,
         title: typeof title === "string" && title.trim() ? title.trim() : "New conversation",
+        compatibility_key: compatibilityKey,
         created_at: now,
         last_used: now,
       };
@@ -196,6 +215,7 @@ export async function saveSessionId(host, documentKey, cwd, sessionId, { title =
     } else {
       saved.cwd = cwd ?? saved.cwd ?? null;
       saved.last_used = now;
+      if (compatibilityKey) saved.compatibility_key = compatibilityKey;
       if (
         typeof title === "string" &&
         title.trim() &&

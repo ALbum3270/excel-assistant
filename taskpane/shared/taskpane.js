@@ -139,6 +139,7 @@ let pendingModelShort = null; // target short name while a switch restarts
 
 // Tier alias → real model id when the daemon runs a non-Claude provider.
 let tierModels = {};
+let readOnlyHistory = false;
 
 function shortModelName(idOrAlias) {
   const s = String(idOrAlias || "");
@@ -157,6 +158,8 @@ async function refreshModelLabels() {
     const r = await sendRequest("get_models");
     if (!r.ok) return;
     tierModels = Object.fromEntries(Object.entries(r.models).filter(([, id]) => id));
+    const provider = document.getElementById("provider-name");
+    if (provider) provider.textContent = r.provider || "Anthropic";
     for (const option of document.querySelectorAll("#composer-model option")) {
       const id = tierModels[option.value];
       const tier = option.value.charAt(0).toUpperCase() + option.value.slice(1);
@@ -188,6 +191,16 @@ function renderConnection() {
   $connectionStatus.className = `status ${connState}`;
   $connectionStatus.textContent = text;
   $connectionStatus.title = title;
+}
+
+function renderTurnUsage(usage) {
+  const target = document.getElementById("usage-last");
+  if (!target || !usage) return;
+  const input = Number(usage.input_tokens || 0);
+  const output = Number(usage.output_tokens || 0);
+  const cacheRead = Number(usage.cache_read_input_tokens || 0);
+  const cacheCreate = Number(usage.cache_creation_input_tokens || 0);
+  target.textContent = `Last turn (main agent, SDK reported): ${input.toLocaleString()} input, ${output.toLocaleString()} output, ${cacheRead.toLocaleString()} cache read, ${cacheCreate.toLocaleString()} cache write tokens.`;
 }
 
 function setConnectionStatus(state, label) {
@@ -276,13 +289,13 @@ function renderConversationHistory(history) {
 
     const meta = document.createElement("div");
     meta.className = "history-meta";
-    meta.textContent = historyTimestamp(session.last_used);
+    meta.textContent = `${historyTimestamp(session.last_used)}${session.resume_compatible ? "" : " · View only (agent setup changed)"}`;
 
     const actions = document.createElement("div");
     actions.className = "history-actions";
     const resume = document.createElement("button");
     resume.type = "button";
-    resume.textContent = active ? "Current" : "Continue";
+    resume.textContent = active ? "Current" : session.resume_compatible ? "Continue" : "View";
     resume.disabled = active;
     resume.addEventListener("click", async () => {
       resume.disabled = true;
@@ -290,6 +303,7 @@ function renderConversationHistory(history) {
         clearTurnQueue();
         const result = await sendRequest("activate_session", { session_id: session.session_id });
         if (!result.ok) throw new Error(result.error || "Could not open conversation");
+        readOnlyHistory = !!result.read_only;
         setAgentStatus("idle", "Ready");
         closeHistory();
       } catch (error) {
@@ -1091,7 +1105,13 @@ async function handleServerMessage(msg) {
       break;
 
     case "transcript_replay":
+      readOnlyHistory = !!msg.session_id && msg.resume_compatible === false;
       renderTranscriptReplay(msg.events || [], !!msg.truncated);
+      if (readOnlyHistory) {
+        appendNotice(
+          "This conversation can be viewed, but its agent setup changed. Your next message starts a new conversation.",
+        );
+      }
       break;
 
     case "assistant_text":
@@ -1107,6 +1127,7 @@ async function handleServerMessage(msg) {
         }
         setAgentStatus("working", statusForTool(msg.tool));
       } else if (msg.event === "turn_complete") {
+        renderTurnUsage(msg.usage);
         if (!msg.interrupted && msg.subtype && msg.subtype !== "success") {
           appendError(msg.error || `The agent ended this request with ${msg.subtype}.`);
           setAgentStatus("idle", "Stopped — see message");
@@ -1121,6 +1142,8 @@ async function handleServerMessage(msg) {
       } else if (msg.event === "approval_resolved") {
         resolveApprovalCard(msg.request_id, msg.decision);
       } else if (msg.event === "info") {
+        appendNotice(msg.message);
+      } else if (msg.event === "session_incompatible") {
         appendNotice(msg.message);
       } else if (msg.event === "context_compacting") {
         setAgentStatus("working", "Compacting context...");
@@ -1146,6 +1169,7 @@ async function handleServerMessage(msg) {
         if (wsReady) setConnectionStatus("err", "Sign-in required");
         endTurn({ drainQueue: false });
       } else if (msg.event === "session_init") {
+        readOnlyHistory = false;
         appendEvent(`Session ${msg.session_id?.slice(0, 8)}… (${msg.model})`);
         // Authoritative: this is the model the SDK actually started with.
         liveModel = msg.model || liveModel;
@@ -1734,6 +1758,10 @@ async function sendUserTurn(text) {
     if (!wsReady) {
       appendEvent("Disconnected before the message could be sent.");
       return false;
+    }
+    if (readOnlyHistory) {
+      readOnlyHistory = false;
+      renderTranscriptReplay([], false);
     }
     const turn = { text, selection };
     if (turnInFlight || queuedTurns.length > 0) {

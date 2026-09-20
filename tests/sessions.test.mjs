@@ -61,6 +61,16 @@ test("save → get round-trip is keyed by host AND document", async () => {
   });
 });
 
+test("session compatibility key survives persistence and can be read for history entries", async () => {
+  await withFakeHome(async ({ saveSessionId, getSessionRecord, listSessions }) => {
+    await saveSessionId("excel", "doc-a", "/tmp/folder", "first", { compatibilityKey: "setup-a" });
+    await saveSessionId("excel", "doc-a", "/tmp/folder", "second", { compatibilityKey: "setup-b" });
+    assert.equal((await getSessionRecord("excel", "doc-a")).compatibility_key, "setup-b");
+    assert.equal((await getSessionRecord("excel", "doc-a", "first")).compatibility_key, "setup-a");
+    assert.equal((await listSessions("excel", "doc-a")).sessions.length, 2);
+  });
+});
+
 test("two workbooks in one folder remain independent after a module restart", async () => {
   await withFakeHome(async ({ saveSessionId }) => {
     await saveSessionId("excel", "book-a", "/tmp/shared", "session-a");

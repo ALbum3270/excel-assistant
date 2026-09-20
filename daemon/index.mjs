@@ -11,6 +11,7 @@ import { resolveWorkspaceRoot, suggestWorkspaceRoot, ensureWorkspaceMarker } fro
 import { randomUUID } from "node:crypto";
 import {
   getSessionId,
+  getSessionRecord,
   saveSessionId,
   touchFolder,
   clearSessionId,
@@ -378,6 +379,10 @@ function documentKeyForPane(key) {
   return separator === -1 ? key : key.slice(separator + 1);
 }
 
+function isSessionCompatible(record) {
+  return record?.compatibility_key === SESSION_COMPATIBILITY_KEY;
+}
+
 // Resolve the session id to replay for this pane. Prefer the pane's live
 // session id (set once the SDK reports init); otherwise the id persisted
 // for (host, document) — covers the window before the SDK has re-inited.
@@ -395,9 +400,24 @@ async function resolveReplaySessionId(key, host, cwd) {
 // Reconstruct this pane's prior conversation from its .jsonl and push it
 // to THAT pane only. Sent on every taskpane hello and after a workspace
 // switch (cwd_changed). Empty events => fresh chat, no divider.
-async function sendTranscriptReplayTo(key, host, cwd, token = invalidateReplay(key)) {
+async function sendTranscriptReplayTo(
+  key,
+  host,
+  cwd,
+  token = invalidateReplay(key),
+  sessionIdOverride = undefined,
+) {
   try {
-    const sessionId = await resolveReplaySessionId(key, host, cwd);
+    const sessionId =
+      sessionIdOverride === undefined
+        ? await resolveReplaySessionId(key, host, cwd)
+        : sessionIdOverride;
+    const live = sessionFor(key);
+    const saved = sessionId
+      ? await getSessionRecord(host, documentKeyForPane(key), sessionId)
+      : null;
+    const resumeCompatible =
+      !sessionId || live?.sessionId === sessionId || isSessionCompatible(saved);
     const { events, truncated } = sessionId
       ? await readTranscript(sessionId, { maxEvents: 200 })
       : { events: [], truncated: false };
@@ -406,6 +426,7 @@ async function sendTranscriptReplayTo(key, host, cwd, token = invalidateReplay(k
       {
         type: "transcript_replay",
         session_id: sessionId ?? null,
+        resume_compatible: resumeCompatible,
         truncated,
         events,
       },
@@ -581,7 +602,8 @@ function startNewConversation(key, host) {
 
 async function activateConversation(key, host, sessionId) {
   const history = await listSessions(host, documentKeyForPane(key));
-  if (!history.sessions.some((entry) => entry.session_id === sessionId)) {
+  const selected = history.sessions.find((entry) => entry.session_id === sessionId);
+  if (!selected) {
     throw new Error("Conversation no longer exists");
   }
   cancelPaneSession(key);
@@ -589,10 +611,17 @@ async function activateConversation(key, host, sessionId) {
   const token = replayTokenByKey.get(key);
   bridge.sendAssistantEvent({ event: "turn_complete", interrupted: true }, key);
   return updateWorkspace(key, async () => {
+    if (!isSessionCompatible(selected)) {
+      await clearSessionId(host, documentKeyForPane(key));
+      if (sessionGenerationByKey.get(key) !== generation) return { read_only: true };
+      await sendTranscriptReplayTo(key, host, cwdForKey(key), token, sessionId);
+      return { read_only: true };
+    }
     const activated = await activateSession(host, documentKeyForPane(key), sessionId);
     if (!activated) throw new Error("Conversation no longer exists");
     if (sessionGenerationByKey.get(key) !== generation) return;
     await sendTranscriptReplayTo(key, host, cwdForKey(key), token);
+    return { read_only: false };
   });
 }
 
@@ -634,7 +663,20 @@ async function ensureLoopForMessage(key, host) {
   }
   let resumeId = null;
   try {
-    resumeId = await getSessionId(host, documentKeyForPane(key));
+    const saved = await getSessionRecord(host, documentKeyForPane(key));
+    if (isSessionCompatible(saved)) {
+      resumeId = saved.session_id;
+    } else if (saved) {
+      await clearSessionId(host, documentKeyForPane(key));
+      bridge.sendAssistantEvent(
+        {
+          event: "session_incompatible",
+          message:
+            "The previous conversation was opened as read-only because the model provider or agent tools changed. This message starts a new conversation.",
+        },
+        key,
+      );
+    }
   } catch {
     /* fresh session if lookup fails */
   }
@@ -772,6 +814,7 @@ bridge = createBridge({
           sonnet: process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || null,
           opus: process.env.ANTHROPIC_DEFAULT_OPUS_MODEL || null,
         },
+        provider: providerLabel(),
         request_id: msg.request_id,
       });
     },
@@ -795,6 +838,10 @@ bridge = createBridge({
           type: "list_sessions_result",
           ok: true,
           ...history,
+          sessions: history.sessions.map((entry) => ({
+            ...entry,
+            resume_compatible: isSessionCompatible(entry),
+          })),
           request_id: msg.request_id,
         });
       } catch (e) {
@@ -808,8 +855,8 @@ bridge = createBridge({
     },
     activate_session: async (msg, reply, key, host) => {
       try {
-        await activateConversation(key, host, msg.session_id);
-        reply({ type: "activate_session_result", ok: true, request_id: msg.request_id });
+        const result = await activateConversation(key, host, msg.session_id);
+        reply({ type: "activate_session_result", ok: true, ...result, request_id: msg.request_id });
       } catch (e) {
         reply({
           type: "activate_session_result",
@@ -1110,20 +1157,13 @@ async function runEvalTool({ doc, name, args = {}, paneWaitMs = 90_000 }) {
 // Everything that changes agent behavior without changing the repo commit,
 // so a run manifest can refuse to mix configurations.
 async function evalInfo() {
-  const sdkPackage = join(
-    PROJECT_ROOT,
-    "node_modules",
-    "@anthropic-ai",
-    "claude-agent-sdk",
-    "package.json",
-  );
   const baseUrl = process.env.ANTHROPIC_BASE_URL;
   const configuredEnv = Object.fromEntries(
     Object.entries(agentConfig.env ?? {}).sort(([a], [b]) => a.localeCompare(b)),
   );
   return {
     node: process.version,
-    sdkVersion: JSON.parse(await readFile(sdkPackage, "utf8")).version,
+    sdkVersion: SDK_VERSION,
     provider: baseUrl ? new URL(baseUrl).host : "anthropic",
     models: {
       haiku: process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL || "haiku",
@@ -1230,6 +1270,49 @@ Object.assign(process.env, agentConfig.env);
 const globalMcpServers = agentConfig.inheritUserMcpServers ? await loadUserMcpServers() : {};
 const userMcpServers = { ...globalMcpServers, ...agentConfig.mcpServers };
 const agentPlugins = agentConfig.plugins;
+
+function compatibilityMcpShape(servers) {
+  return Object.fromEntries(
+    Object.entries(servers)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, config]) => [
+        name,
+        {
+          type: config?.type ?? null,
+          url: config?.url ?? null,
+          command: config?.command ?? null,
+          args: config?.args ?? null,
+        },
+      ]),
+  );
+}
+
+const SDK_PACKAGE = join(
+  PROJECT_ROOT,
+  "node_modules",
+  "@anthropic-ai",
+  "claude-agent-sdk",
+  "package.json",
+);
+const SDK_VERSION = JSON.parse(await readFile(SDK_PACKAGE, "utf8")).version;
+const SESSION_COMPATIBILITY_KEY = createHash("sha256")
+  .update(
+    JSON.stringify({
+      provider: process.env.ANTHROPIC_BASE_URL || "anthropic",
+      sdk: SDK_VERSION,
+      officeTools: createHash("sha256")
+        .update(await readFile(join(__dirname, "office-tools.mjs"), "utf8"))
+        .digest("hex"),
+      mcpServers: compatibilityMcpShape(userMcpServers),
+      plugins: agentPlugins.map((plugin) => plugin.path),
+      skills: agentConfig.skills ?? null,
+      builtinTools: agentConfig.builtinTools,
+      disallowedTools: agentConfig.disallowedTools,
+      settingSources: agentConfig.settingSources,
+      envKeys: Object.keys(agentConfig.env ?? {}).sort(),
+    }),
+  )
+  .digest("hex");
 for (const [source, servers] of [
   ["~/.claude.json", globalMcpServers],
   ["agent.config.json", agentConfig.mcpServers],
@@ -1441,6 +1524,7 @@ async function* userMessageStream(key, session) {
     if (session?.sessionId) {
       saveSessionId(session.host, documentKeyForPane(session.key), session.cwd, session.sessionId, {
         title: session.title,
+        compatibilityKey: SESSION_COMPATIBILITY_KEY,
       }).catch((err) => console.warn("[daemon] Could not update session history:", err.message));
     }
     // The Agent SDK only treats a turn as a slash command (built-in or a
@@ -1764,7 +1848,8 @@ async function switchFolder(rawCwd, key, host = null) {
   if (!s.isDirectory()) throw new Error(`Not a directory: ${cwd}`);
   // Switch ONLY the requesting pane to the target folder. Its workbook
   // conversation remains the same; every other pane stays untouched.
-  const resumeId = host ? await getSessionId(host, documentKeyForPane(key)) : null;
+  const saved = host ? await getSessionRecord(host, documentKeyForPane(key)) : null;
+  const resumeId = isSessionCompatible(saved) ? saved.session_id : null;
   cancelPaneSession(key);
   workspaceByKey.set(key, cwd);
   bridge.sendAssistantEvent({ event: "turn_complete", interrupted: true }, key);
@@ -1826,7 +1911,7 @@ function handleAgentMessage(msg, session) {
             documentKeyForPane(session.key),
             session.cwd,
             msg.session_id,
-            { title: session.title },
+            { title: session.title, compatibilityKey: SESSION_COMPATIBILITY_KEY },
           ).catch((err) => console.warn("[daemon] Could not save session id:", err.message));
         }
       } else if (msg.subtype === "status") {

@@ -63,6 +63,7 @@ function createTurnHarness({ attached = true, captureFails = false } = {}) {
 
   const sent = [];
   const loads = [];
+  const replays = [];
   let excelRuns = 0;
   const sandbox = {
     attachSelection: attached,
@@ -70,6 +71,7 @@ function createTurnHarness({ attached = true, captureFails = false } = {}) {
     wsReady: true,
     turnInFlight: false,
     submitPending: false,
+    readOnlyHistory: false,
     queuedTurns: [],
     $turnQueue: null,
     $turnQueueList: null,
@@ -108,6 +110,9 @@ function createTurnHarness({ attached = true, captureFails = false } = {}) {
     setAgentStatus() {},
     setComposerDisabled() {},
     refreshSelectionChip() {},
+    renderTranscriptReplay(...args) {
+      replays.push(args);
+    },
     wsSend(message) {
       sent.push(message);
     },
@@ -119,7 +124,7 @@ function createTurnHarness({ attached = true, captureFails = false } = {}) {
   vm.runInContext(source.slice(start, end), sandbox, {
     filename: "taskpane-selection-under-test.js",
   });
-  return { sandbox, sent, loads, excelRuns: () => excelRuns };
+  return { sandbox, sent, loads, replays, excelRuns: () => excelRuns };
 }
 
 test("a turn snapshots Excel selection immediately before submit", async () => {
@@ -165,19 +170,41 @@ test("follow-ups wait for the current turn and keep their submit-time selection"
   assert.equal(message.selection.address, "Sheet1!B2");
 });
 
+test("sending from a view-only conversation clears its transcript", async () => {
+  const h = createTurnHarness();
+  h.sandbox.readOnlyHistory = true;
+  assert.equal(await h.sandbox.sendUserTurn("new task"), true);
+  assert.equal(h.replays.length, 1);
+  assert.equal(h.replays[0][0].length, 0);
+  assert.equal(h.replays[0][1], false);
+  assert.equal(h.sandbox.readOnlyHistory, false);
+  assert.equal(h.sent.find((entry) => entry.type === "user_message").text, "new task");
+});
+
 test("auto-context bounds text and shares an unfinished overview read", async () => {
   const start = source.indexOf("const changeTracker = new ChangeTracker();");
   const end = source.indexOf("async function runOfficeTool(msg)", start);
   assert.ok(start >= 0 && end > start);
 
   let resolveOverview;
-  const pendingOverview = new Promise((resolve) => { resolveOverview = resolve; });
+  const pendingOverview = new Promise((resolve) => {
+    resolveOverview = resolve;
+  });
   let overviewCalls = 0;
   const selectionAddresses = [];
   const sandbox = {
-    ChangeTracker: class { flush() { return "changed A1"; } },
-    createWorkbookCoordinator: () => ({ runWrite: async (_context, execute) => ({ result: await execute(), revision: 1 }) }),
-    buildOverview() { overviewCalls++; return pendingOverview; },
+    ChangeTracker: class {
+      flush() {
+        return "changed A1";
+      }
+    },
+    createWorkbookCoordinator: () => ({
+      runWrite: async (_context, execute) => ({ result: await execute(), revision: 1 }),
+    }),
+    buildOverview() {
+      overviewCalls++;
+      return pendingOverview;
+    },
     getWorkbookMetadata: async () => ({ sheetsMetadata: [{ name: "Sheet1", id: 1 }] }),
     async readSelectionContext(address) {
       selectionAddresses.push(address);
@@ -258,9 +285,13 @@ test("an Excel InvalidArgument on a formula write names likely syntax causes", a
   const sandbox = { getWorkbookMetadata: async () => ({ sheetsMetadata: [] }) };
   vm.createContext(sandbox);
   vm.runInContext(source.slice(start, end), sandbox);
-  const invalid = Object.assign(new Error("参数无效或缺少，或格式不正确。"), { code: "InvalidArgument" });
+  const invalid = Object.assign(new Error("参数无效或缺少，或格式不正确。"), {
+    code: "InvalidArgument",
+  });
 
-  const formulaWrite = await sandbox.describeOfficeToolError(invalid, { cells: [[{ formula: '=IF(C2!="",C2,B2)' }]] });
+  const formulaWrite = await sandbox.describeOfficeToolError(invalid, {
+    cells: [[{ formula: '=IF(C2!="",C2,B2)' }]],
+  });
   const valueWrite = await sandbox.describeOfficeToolError(invalid, { cells: [[{ value: 1 }]] });
 
   assert.match(formulaWrite, /<> not !=/);
@@ -272,7 +303,9 @@ test("every mutation receives a uniform receipt with its verification level", ()
   const end = source.indexOf("async function runOfficeTool(msg)", start);
   assert.ok(start >= 0 && end > start);
   const sandbox = {
-    createWorkbookCoordinator: () => ({ runWrite: async (_context, execute) => ({ result: await execute(), revision: 1 }) }),
+    createWorkbookCoordinator: () => ({
+      runWrite: async (_context, execute) => ({ result: await execute(), revision: 1 }),
+    }),
   };
   vm.createContext(sandbox);
   vm.runInContext(
@@ -313,7 +346,10 @@ test("approval summaries include the material arguments of each write", () => {
   assert.ok(start >= 0 && end > start);
   const sandbox = {};
   vm.createContext(sandbox);
-  vm.runInContext(`${source.slice(start, end)}\nglobalThis.describeApproval = describeApproval;`, sandbox);
+  vm.runInContext(
+    `${source.slice(start, end)}\nglobalThis.describeApproval = describeApproval;`,
+    sandbox,
+  );
 
   const copy = sandbox.describeApproval("excel_copy_to", {
     sheetId: 1,
@@ -363,7 +399,10 @@ test("a failed mutation persists its captured recovery checkpoint", async () => 
     console: { error() {} },
   };
   vm.createContext(sandbox);
-  vm.runInContext(`${source.slice(start, end)}\nglobalThis.runOfficeTool = runOfficeTool;`, sandbox);
+  vm.runInContext(
+    `${source.slice(start, end)}\nglobalThis.runOfficeTool = runOfficeTool;`,
+    sandbox,
+  );
 
   await sandbox.runOfficeTool({
     id: "write-1",

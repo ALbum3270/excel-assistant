@@ -70,6 +70,7 @@ function harness(t, overrides = {}) {
     userMcpServers: {},
     agentPlugins: [],
     agentConfig: {},
+    SESSION_COMPATIBILITY_KEY: "test-compat",
     customPermissionHandler() {},
     ApprovalManager,
     needsApproval,
@@ -77,6 +78,10 @@ function harness(t, overrides = {}) {
     buildSystemPromptAppend: async () => "test prompt",
     createOfficeBridgeMcp: () => ({}),
     getSessionId: async () => null,
+    getSessionRecord: async (host, documentKey, sessionId) => {
+      const id = sessionId ?? (await sandbox.getSessionId(host, documentKey));
+      return id ? { session_id: id, compatibility_key: "test-compat" } : null;
+    },
     saveSessionId: async () => {},
     clearSessionId: async () => {},
     listSessions: async () => ({ active_session_id: null, sessions: [] }),
@@ -452,8 +457,8 @@ test("conversation history can list and activate a prior workbook session", asyn
   const history = {
     active_session_id: "current",
     sessions: [
-      { session_id: "current", title: "Current" },
-      { session_id: "prior", title: "Prior" },
+      { session_id: "current", title: "Current", compatibility_key: "test-compat" },
+      { session_id: "prior", title: "Prior", compatibility_key: "test-compat" },
     ],
   };
   const h = harness(t, {
@@ -474,11 +479,47 @@ test("conversation history can list and activate a prior workbook session", asyn
 
   const result = await h.handle("activate_session", { session_id: "prior" });
   assert.equal(result.ok, true);
+  assert.equal(result.read_only, false);
   assert.deepEqual(activated, [["excel", "test-book", "prior"]]);
   assert.equal(
     h.events.some((event) => event.type === "transcript_replay" && event.session_id === "prior"),
     true,
   );
+});
+
+test("an incompatible saved session is viewable but a new message starts fresh", async (t) => {
+  const cleared = [];
+  const activated = [];
+  const h = harness(t, {
+    getSessionId: async () => "old-session",
+    getSessionRecord: async () => ({ session_id: "old-session", compatibility_key: "old-setup" }),
+    listSessions: async () => ({
+      active_session_id: "old-session",
+      sessions: [{ session_id: "old-session", compatibility_key: "old-setup" }],
+    }),
+    clearSessionId: async (...args) => cleared.push(args),
+    activateSession: async (...args) => activated.push(args),
+    readTranscript: async () => ({
+      events: [{ kind: "user", text: "previous" }],
+      truncated: false,
+    }),
+  });
+  const listed = await h.handle("list_sessions");
+  assert.equal(listed.sessions[0].resume_compatible, false);
+  const selected = await h.handle("activate_session", { session_id: "old-session" });
+  assert.equal(selected.read_only, true);
+  assert.deepEqual(activated, []);
+  assert.equal(
+    h.events.findLast((event) => event.type === "transcript_replay")?.resume_compatible,
+    false,
+  );
+  await h.send("fresh question");
+  await until(() => h.received.length === 1);
+  assert.equal(h.queries[0].options.resume, undefined);
+  assert.deepEqual(cleared, [
+    ["excel", "test-book"],
+    ["excel", "test-book"],
+  ]);
 });
 
 test("deleting the active conversation removes its transcript and clears the replay", async (t) => {
