@@ -1176,6 +1176,13 @@ function updateToolCardSuccess(id, name, args, receipt) {
     renderReadResult(card, name, args, receipt);
     return;
   }
+  renderMutationReceipt(card, id, name, args, receipt);
+}
+
+// The rows a write leaves behind. Used both live and when a conversation is
+// replayed from the transcript, so reopening the workbook does not reduce every
+// past change to a bare argument dump.
+function renderMutationReceipt(card, id, name, args, receipt) {
   const result = card.querySelector(".tool-result");
   result.hidden = false;
   result.classList.remove("error");
@@ -1313,10 +1320,16 @@ function renderTranscriptReplay(events, truncated) {
     $messages.appendChild(t);
   }
 
+  const replayed = new Map();
   for (const ev of events) {
     if (ev.kind === "user") appendUserMessage(ev.text);
     else if (ev.kind === "assistant") appendAssistantMessage(ev.text);
-    else if (ev.kind === "tool") appendToolUse(ev.name, ev.input);
+    else if (ev.kind === "tool") {
+      const card = appendToolUse(ev.name, ev.input, ev.id ?? null);
+      if (ev.id) replayed.set(ev.id, { card, name: localToolName(ev.name), args: ev.input });
+    } else if (ev.kind === "tool_result") {
+      replayToolResult(replayed.get(ev.id), ev);
+    }
   }
 
   if (events.length > 0) {
@@ -1327,6 +1340,33 @@ function renderTranscriptReplay(events, truncated) {
     // End of a replay is an explicit "take me to latest" — the user just
     // resumed, they want the cursor at the live tail.
     forceScrollToBottom();
+  }
+}
+
+function localToolName(name) {
+  return /^mcp__office__(.+)$/.exec(name || "")?.[1] ?? name;
+}
+
+function replayToolResult(call, event) {
+  if (!call) return;
+  const id = call.card.dataset.toolCallId;
+  if (event.isError) {
+    setToolCardState(id, "error", "Failed");
+    appendToolCardError(call.card, event.text.slice(0, 400));
+    return;
+  }
+  setToolCardState(id, "success", "Completed");
+  let receipt = null;
+  try {
+    receipt = JSON.parse(event.text);
+  } catch {
+    // A truncated or non-JSON result: the card still shows it completed.
+    return;
+  }
+  if (isMutationCall(call.name, call.args)) {
+    renderMutationReceipt(call.card, id, call.name, call.args, receipt);
+  } else {
+    renderReadResult(call.card, call.name, call.args, receipt);
   }
 }
 

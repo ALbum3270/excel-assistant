@@ -69,6 +69,22 @@ async function locateSessionFile(sessionId) {
   return candidates[0].path;
 }
 
+// A receipt is small; anything larger is a bulk read the panel re-renders from
+// its own preview, so cap what the replay carries.
+const MAX_RESULT_CHARS = 4000;
+
+function toolResultText(content) {
+  const text = Array.isArray(content)
+    ? content
+        .filter((part) => part && part.type === "text" && typeof part.text === "string")
+        .map((part) => part.text)
+        .join("")
+    : typeof content === "string"
+      ? content
+      : "";
+  return text.slice(0, MAX_RESULT_CHARS);
+}
+
 function eventsFromLine(obj) {
   const out = [];
   const m = obj && obj.message;
@@ -81,8 +97,19 @@ function eventsFromLine(obj) {
       const text = stripContextHeader(content).trim();
       if (text) out.push({ kind: "user", text });
     } else if (Array.isArray(content)) {
-      // Arrays are tool_result blocks (skip) — but defensively surface any
-      // genuine text blocks if a build ever mixes them in.
+      // Arrays carry tool_result blocks. They are not user-typed text, but
+      // they hold the write receipts — status, range, verification, revision,
+      // backup — so a replayed conversation shows what each change did instead
+      // of a bare argument dump.
+      for (const b of content) {
+        if (!b || b.type !== "tool_result" || !b.tool_use_id) continue;
+        out.push({
+          kind: "tool_result",
+          id: b.tool_use_id,
+          isError: Boolean(b.is_error),
+          text: toolResultText(b.content),
+        });
+      }
       const text = content
         .filter((b) => b && b.type === "text" && typeof b.text === "string")
         .map((b) => b.text)
@@ -101,7 +128,7 @@ function eventsFromLine(obj) {
         const t = b.text.trim();
         if (t) out.push({ kind: "assistant", text: t });
       } else if (b.type === "tool_use") {
-        out.push({ kind: "tool", name: b.name || "", input: b.input ?? {} });
+        out.push({ kind: "tool", id: b.id ?? null, name: b.name || "", input: b.input ?? {} });
       }
       // b.type === "thinking" -> skip (not shown in the live UI either)
     }

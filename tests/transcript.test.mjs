@@ -28,12 +28,24 @@ test("eventsFromLine: user string → user bubble (header stripped)", () => {
   assert.deepEqual(evs, [{ kind: "user", text: "hello" }]);
 });
 
-test("eventsFromLine: user array (tool_result) → skipped", () => {
+test("eventsFromLine: a tool_result becomes a receipt event for its call", () => {
   const evs = eventsFromLine({
     type: "user",
-    message: { role: "user", content: [{ type: "tool_result", content: "ok" }] },
+    message: {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "call_1", content: "ok" }],
+    },
   });
-  assert.deepEqual(evs, []);
+  assert.deepEqual(evs, [{ kind: "tool_result", id: "call_1", isError: false, text: "ok" }]);
+
+  // Without an id there is no call to attach it to, so it stays skipped.
+  assert.deepEqual(
+    eventsFromLine({
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", content: "ok" }] },
+    }),
+    [],
+  );
 });
 
 test("eventsFromLine: assistant text + tool_use, thinking skipped", () => {
@@ -50,7 +62,7 @@ test("eventsFromLine: assistant text + tool_use, thinking skipped", () => {
   });
   assert.deepEqual(evs, [
     { kind: "assistant", text: "Done." },
-    { kind: "tool", name: "mcp__office__office_replace_text", input: { a: 1 } },
+    { kind: "tool", id: null, name: "mcp__office__office_replace_text", input: { a: 1 } },
   ]);
 });
 
@@ -102,7 +114,7 @@ test("readTranscript round-trips a real .jsonl under ~/.claude/projects + trunca
       { kind: "user", text: "first" },
       { kind: "assistant", text: "reply one" },
       { kind: "user", text: "second" },
-      { kind: "tool", name: "Bash", input: {} },
+      { kind: "tool", id: null, name: "Bash", input: {} },
     ]);
 
     // maxEvents ring buffer: keep only the last 2, flag truncated.
