@@ -93,17 +93,18 @@ const $composer = document.getElementById("composer");
 const $chip = document.getElementById("selection-chip");
 const $chipText = document.getElementById("selection-chip-text");
 const $chipDetach = document.getElementById("selection-chip-detach");
+const $turnQueue = document.getElementById("turn-queue");
+const $turnQueueList = document.getElementById("turn-queue-list");
 
 let assistantTurnElem = null;
 let attachSelection = true;
 
 // True while a user turn is mid-flight (we've sent user_message and are
-// waiting for turn_complete / error / auth_error). The composer is disabled
-// during this window so a second submit can't break turn ordering — without
-// the gate, appendUserMessage would reset assistantTurnElem and subsequent
-// streaming deltas would land in a new (wrong) bubble.
+// waiting for turn_complete / error / auth_error). Additional submissions
+// stay in queuedTurns so streaming output keeps the correct assistant bubble.
 let turnInFlight = false;
 let submitPending = false;
+const queuedTurns = [];
 
 function setComposerDisabled(disabled) {
   $send.disabled = disabled;
@@ -112,13 +113,16 @@ function setComposerDisabled(disabled) {
 
 function beginTurn() {
   turnInFlight = true;
-  setComposerDisabled(true);
+  setComposerDisabled(false);
+  $send.textContent = "Queue";
 }
 
-function endTurn() {
+function endTurn({ drainQueue = true } = {}) {
   flushAssistantRendering();
   turnInFlight = false;
   setComposerDisabled(false);
+  $send.textContent = "Send";
+  if (drainQueue) drainTurnQueue();
 }
 
 // The connection status doubles as the live-model indicator. Horizontal
@@ -211,6 +215,7 @@ $stopAgent?.addEventListener("click", () => {
 // transcript (clearing the panel); the next message starts a fresh session.
 document.getElementById("new-chat")?.addEventListener("click", async () => {
   try {
+    clearTurnQueue();
     const r = await sendRequest("new_session");
     if (!r.ok) throw new Error(r.error || "Could not start a new chat");
     setAgentStatus("idle", "Ready");
@@ -281,6 +286,7 @@ function renderConversationHistory(history) {
     resume.addEventListener("click", async () => {
       resume.disabled = true;
       try {
+        clearTurnQueue();
         const result = await sendRequest("activate_session", { session_id: session.session_id });
         if (!result.ok) throw new Error(result.error || "Could not open conversation");
         setAgentStatus("idle", "Ready");
@@ -304,6 +310,7 @@ function renderConversationHistory(history) {
       }
       for (const button of actions.querySelectorAll("button")) button.disabled = true;
       try {
+        if (active) clearTurnQueue();
         const result = await sendRequest("delete_session", { session_id: session.session_id });
         if (!result.ok) throw new Error(result.error || "Could not delete conversation");
         await refreshConversationHistory();
@@ -1004,7 +1011,7 @@ function wsConnect() {
     // Release the composer if a turn was mid-flight when the connection
     // dropped — otherwise the user is stuck waiting for a turn_complete
     // that will never arrive.
-    endTurn();
+    endTurn({ drainQueue: false });
     // Daemon may have been restarted, in which case it has rotated the
     // bridge token. Re-fetch from /bridge-token before each reconnect
     // attempt so the next hello carries the current token. fetchBridgeToken
@@ -1096,24 +1103,38 @@ async function handleServerMessage(msg) {
         } else {
           setAgentStatus("idle", msg.interrupted ? "Stopped" : "Ready");
         }
-        endTurn();
+        endTurn({
+          drainQueue: Boolean(msg.interrupted) || !msg.subtype || msg.subtype === "success",
+        });
       } else if (msg.event === "approval_request") {
         appendApprovalRequest(msg);
       } else if (msg.event === "approval_resolved") {
         resolveApprovalCard(msg.request_id, msg.decision);
       } else if (msg.event === "info") {
         appendNotice(msg.message);
+      } else if (msg.event === "context_compacting") {
+        setAgentStatus("working", "Compacting context...");
+      } else if (msg.event === "context_compacted") {
+        const before = Number(msg.pre_tokens || 0).toLocaleString();
+        const after = msg.post_tokens ? ` to ${Number(msg.post_tokens).toLocaleString()}` : "";
+        appendEvent(`Context compacted (${before}${after} tokens).`);
+        setAgentStatus("working", "Working...");
+      } else if (msg.event === "context_compaction_complete") {
+        setAgentStatus("working", "Working...");
+      } else if (msg.event === "context_compaction_failed") {
+        appendNotice(`Context compaction failed: ${msg.error || "unknown error"}`);
+        setAgentStatus("working", "Working...");
       } else if (msg.event === "error") {
         // Always-visible bubble (NOT .msg.event, which the diagnostics
         // toggle hides). Status reads "Stopped — see message" so the
         // user knows the turn ended on this error, not normally.
         appendError(msg.error || "The agent stopped without producing a result.");
         setAgentStatus("idle", "Stopped — see message");
-        endTurn();
+        endTurn({ drainQueue: false });
       } else if (msg.event === "auth_error") {
         showAuthErrorBanner(msg.error);
         if (wsReady) setConnectionStatus("err", "Sign-in required");
-        endTurn();
+        endTurn({ drainQueue: false });
       } else if (msg.event === "session_init") {
         appendEvent(`Session ${msg.session_id?.slice(0, 8)}… (${msg.model})`);
         // Authoritative: this is the model the SDK actually started with.
@@ -1609,11 +1630,57 @@ function onSelectionChanged() {
   selectionDebounce = setTimeout(captureSelection, 100);
 }
 
+function renderTurnQueue() {
+  if (!$turnQueue || !$turnQueueList) return;
+  $turnQueue.hidden = queuedTurns.length === 0;
+  $turnQueueList.innerHTML = "";
+  queuedTurns.forEach((turn, index) => {
+    const item = document.createElement("div");
+    item.className = "turn-queue-item";
+    const text = document.createElement("span");
+    text.className = "turn-queue-text";
+    text.textContent = turn.text;
+    text.title = turn.text;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "turn-queue-remove";
+    remove.title = "Remove queued follow-up";
+    remove.setAttribute("aria-label", "Remove queued follow-up");
+    remove.textContent = "\u00d7";
+    remove.addEventListener("click", () => {
+      queuedTurns.splice(index, 1);
+      renderTurnQueue();
+    });
+    item.append(text, remove);
+    $turnQueueList.appendChild(item);
+  });
+}
+
+function clearTurnQueue() {
+  queuedTurns.length = 0;
+  renderTurnQueue();
+}
+
+function dispatchCapturedTurn({ text, selection }) {
+  appendUserMessage(text);
+  wsSend({ type: "user_message", text, selection });
+  setAgentStatus("working", "Working...");
+  beginTurn();
+}
+
+function drainTurnQueue() {
+  if (turnInFlight || !wsReady || queuedTurns.length === 0) return false;
+  const next = queuedTurns.shift();
+  renderTurnQueue();
+  dispatchCapturedTurn(next);
+  return true;
+}
+
 async function sendUserTurn(text) {
   // Snapshot selection immediately before the message. This closes the
   // debounce window where Excel has moved but context_update still carries
   // the previous range. Detaching explicitly sends null for this turn.
-  if (turnInFlight || submitPending || !text) return false;
+  if (submitPending || !text) return false;
   if (!wsReady) {
     appendEvent("Not connected to daemon.");
     return false;
@@ -1626,17 +1693,22 @@ async function sendUserTurn(text) {
       appendEvent("Disconnected before the message could be sent.");
       return false;
     }
-    appendUserMessage(text);
-    wsSend({ type: "user_message", text, selection });
-    setAgentStatus("working", "Working…");
-    beginTurn();
+    const turn = { text, selection };
+    if (turnInFlight || queuedTurns.length > 0) {
+      queuedTurns.push(turn);
+      renderTurnQueue();
+      drainTurnQueue();
+    } else {
+      dispatchCapturedTurn(turn);
+    }
     // The detach choice applies to one turn; the next turn starts attached.
     attachSelection = true;
     refreshSelectionChip();
     return true;
   } finally {
     submitPending = false;
-    if (!turnInFlight) setComposerDisabled(false);
+    setComposerDisabled(false);
+    $send.textContent = turnInFlight ? "Queue" : "Send";
   }
 }
 

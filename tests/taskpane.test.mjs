@@ -70,6 +70,10 @@ function createTurnHarness({ attached = true, captureFails = false } = {}) {
     wsReady: true,
     turnInFlight: false,
     submitPending: false,
+    queuedTurns: [],
+    $turnQueue: null,
+    $turnQueueList: null,
+    $send: { textContent: "Send" },
     clearTimeout,
     setTimeout,
     Excel: {
@@ -144,6 +148,21 @@ test("a failed submit-time capture does not reuse stale selection", async () => 
   assert.equal(await h.sandbox.sendUserTurn("calculate"), true);
   const message = h.sent.find((entry) => entry.type === "user_message");
   assert.equal(message.selection, null);
+});
+
+test("follow-ups wait for the current turn and keep their submit-time selection", async () => {
+  const h = createTurnHarness();
+  h.sandbox.turnInFlight = true;
+  assert.equal(await h.sandbox.sendUserTurn("next step"), true);
+  assert.equal(h.sent.length, 1, "selection context update is the only immediate message");
+  assert.equal(h.sandbox.queuedTurns.length, 1);
+  assert.equal(h.sandbox.queuedTurns[0].selection.address, "Sheet1!B2");
+
+  h.sandbox.turnInFlight = false;
+  assert.equal(h.sandbox.drainTurnQueue(), true);
+  const message = h.sent.find((entry) => entry.type === "user_message");
+  assert.equal(message.text, "next step");
+  assert.equal(message.selection.address, "Sheet1!B2");
 });
 
 test("auto-context bounds text and shares an unfinished overview read", async () => {

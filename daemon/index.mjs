@@ -1829,6 +1829,31 @@ function handleAgentMessage(msg, session) {
             { title: session.title },
           ).catch((err) => console.warn("[daemon] Could not save session id:", err.message));
         }
+      } else if (msg.subtype === "status") {
+        if (msg.status === "compacting") {
+          bridge.sendAssistantEvent({ event: "context_compacting" }, session?.key);
+        } else if (msg.compact_result) {
+          bridge.sendAssistantEvent(
+            {
+              event:
+                msg.compact_result === "success"
+                  ? "context_compaction_complete"
+                  : "context_compaction_failed",
+              error: msg.compact_error,
+            },
+            session?.key,
+          );
+        }
+      } else if (msg.subtype === "compact_boundary") {
+        bridge.sendAssistantEvent(
+          {
+            event: "context_compacted",
+            trigger: msg.compact_metadata?.trigger,
+            pre_tokens: msg.compact_metadata?.pre_tokens,
+            post_tokens: msg.compact_metadata?.post_tokens,
+          },
+          session?.key,
+        );
       } else {
         console.log(`[agent] system/${msg.subtype}`);
       }

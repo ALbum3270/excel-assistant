@@ -832,6 +832,50 @@ body {
 .quick-chips[hidden] {
   display: none;
 }
+.turn-queue {
+  margin: 6px 12px 0;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bubble-asst);
+}
+.turn-queue[hidden] {
+  display: none;
+}
+.turn-queue-title {
+  color: var(--fg-muted);
+  font-size: 10px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.turn-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 3px 0;
+}
+.turn-queue-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.turn-queue-remove {
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.turn-queue-remove:hover {
+  color: var(--status-err);
+}
 .quick-chip {
   background: transparent;
   border: 1px solid var(--send-bg);
