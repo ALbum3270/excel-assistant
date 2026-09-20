@@ -103,7 +103,41 @@ function normalizeCellMatrix(raw, range) {
   return [parsed.map(toCellInput)];
 }
 
+// Ported from pi-for-excel's validateFormula (src/tools/write-cells.ts): the
+// cheap structural checks a host rejects anyway, run before the write so the
+// model gets a reason instead of Excel's generic "invalid argument".
+function formulaProblem(formula) {
+  if (typeof formula !== "string" || !formula.startsWith("=")) return null;
+  const body = formula.slice(1);
+  if (!body.trim()) return "the formula is empty";
+  if ((body.match(/"/g) ?? []).length % 2 !== 0) return "quotes are unbalanced";
+  let depth = 0;
+  let inString = false;
+  for (const char of body) {
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === "(") depth += 1;
+    if (char === ")" && --depth < 0) return "parentheses are unbalanced";
+  }
+  if (depth !== 0) return "parentheses are unbalanced";
+  if (/[+\-*/^&,]$/.test(body.trim())) return "the formula ends with an operator";
+  return null;
+}
+
+function rejectBadFormulas(cellMatrix) {
+  for (const row of cellMatrix) {
+    for (const cell of row) {
+      const problem = formulaProblem(cell?.formula);
+      if (problem) throw new Error(`Excel will reject ${cell.formula}: ${problem}.`);
+    }
+  }
+}
+
 function prepareCellWrite(args, cellMatrix) {
+  rejectBadFormulas(cellMatrix);
   const size = parseA1RangeSize(args.range);
   const width = cellMatrix[0]?.length ?? 0;
   // A formula pattern aimed at a larger explicit range means "fill it through
@@ -260,10 +294,51 @@ export function createOfficeBridgeMcp(
     },
   );
 
+  // SheetCopilot caps repeated failures with an explicit error budget
+  // (agent/Agent/agent.py: max_error_count / max_cycle_times) so a model cannot
+  // spend a task resending one broken call. We do the same at the tool boundary:
+  // the same call, failing the same way, is refused instead of dispatched again.
+  // It is not a task-level abort — any change to the arguments starts over.
+  const REPEAT_LIMIT = 3;
+  const repeatedFailures = new Map();
+  // JSON.stringify's array replacer filters nested keys too, which would make
+  // two different formulas look like the same call. Sort keys at every level.
+  const stable = (value) => {
+    if (Array.isArray(value)) return value.map(stable);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.keys(value)
+          .sort()
+          .map((key) => [key, stable(value[key])]),
+      );
+    }
+    return value;
+  };
+  const fingerprint = (name, args) => `${name}:${JSON.stringify(stable(args ?? {}))}`;
+  const failed = (result) => result && typeof result === "object" && result.success === false;
+
   const wrap = (name) => async (args) => {
+    const key = fingerprint(name, args);
+    const previous = repeatedFailures.get(key);
+    if (previous && previous.count >= REPEAT_LIMIT) {
+      return asMcpError(
+        new Error(
+          `This exact call has already failed ${previous.count} times: ${previous.reason} ` +
+            "Sending it again fails the same way. Change the arguments or take a different approach.",
+        ),
+      );
+    }
+    const remember = (reason) => {
+      if (repeatedFailures.size > 200) repeatedFailures.clear();
+      repeatedFailures.set(key, { count: (previous?.count ?? 0) + 1, reason });
+    };
     try {
-      return asMcpResult(boundWriteReceipt(await call(name, args ?? {})));
+      const result = boundWriteReceipt(await call(name, args ?? {}));
+      if (failed(result)) remember(String(result.error ?? "the call reported success: false."));
+      else repeatedFailures.delete(key);
+      return asMcpResult(result);
     } catch (e) {
+      remember(e?.message ?? String(e));
       return asMcpError(e);
     }
   };

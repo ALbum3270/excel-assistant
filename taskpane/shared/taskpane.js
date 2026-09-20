@@ -1523,8 +1523,10 @@ function sendRequest(type, payload = {}) {
 // ---------------------------------------------------------------------------
 // Tool dispatcher
 // ---------------------------------------------------------------------------
-// Excel rejects a malformed formula with a generic, localized "invalid
-// argument" message. Its code is stable, so name the likely cause.
+// Excel's rejection message is localized but says what it rejected; pass it
+// through and only translate the error code. An earlier version appended a
+// list of syntax rules Excel had not complained about, which buried its
+// actual "argument invalid or missing" wording.
 function hasFormulaInput(args) {
   return JSON.stringify(args?.cells ?? []).includes('"formula"');
 }
@@ -1536,8 +1538,9 @@ async function describeOfficeToolError(error, args) {
   const message = `${error?.message ?? String(error)}${location ? ` [at ${location}]` : ""}`;
   if (error?.code === "InvalidArgument" && hasFormulaInput(args)) {
     return (
-      `${message} (Excel rejected the write as an invalid argument; check the formula uses Excel syntax: ` +
-      "<> not !=, = not ==, AND()/OR() not &&/||, text in double quotes, balanced parentheses.)"
+      `${message} (Excel rejected the formula itself, not the range: InvalidArgument means a function ` +
+      "argument is missing, extra or of the wrong kind. Read the message above — it is Excel's own " +
+      "wording — and change the formula rather than resending it.)"
     );
   }
   if (!/Worksheet with ID .+ not found/i.test(message)) return message;

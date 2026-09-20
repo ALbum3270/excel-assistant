@@ -278,7 +278,7 @@ test("an old context response cannot overwrite a newly selected workspace", asyn
   assert.equal(state.contextCache[0].path, "new.txt");
 });
 
-test("an Excel InvalidArgument on a formula write names likely syntax causes", async () => {
+test("an Excel InvalidArgument on a formula write keeps Excel's own wording", async () => {
   const start = source.indexOf("function hasFormulaInput(args)");
   const end = source.indexOf("const changeTracker = new ChangeTracker();", start);
   assert.ok(start >= 0 && end > start);
@@ -294,7 +294,11 @@ test("an Excel InvalidArgument on a formula write names likely syntax causes", a
   });
   const valueWrite = await sandbox.describeOfficeToolError(invalid, { cells: [[{ value: 1 }]] });
 
-  assert.match(formulaWrite, /<> not !=/);
+  // Excel already said what it rejected ("参数无效或缺少"); the note translates
+  // the code instead of listing rules Excel never complained about.
+  assert.match(formulaWrite, /参数无效或缺少/);
+  assert.match(formulaWrite, /argument is missing, extra or of the wrong kind/);
+  assert.doesNotMatch(formulaWrite, /<> not !=/);
   assert.equal(valueWrite, invalid.message);
 });
 

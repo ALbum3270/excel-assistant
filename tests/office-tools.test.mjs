@@ -252,3 +252,63 @@ test("write receipts keep a bounded sample of formula results and errors", async
   assert.equal(receipt.formulaErrors.length, 50);
   assert.equal(receipt.formulaErrorCount, 60);
 });
+
+test("a formula Excel would reject is refused before the write", async () => {
+  const calls = [];
+  const server = createOfficeBridgeMcp(
+    {
+      async callTaskpaneTool(name, args) {
+        calls.push({ name, args });
+        return { success: true, commitStatus: "committed" };
+      },
+    },
+    "excel",
+    "test-pane",
+  );
+  const handler = server.instance._registeredTools.excel_set_cell_range.handler;
+
+  const unbalanced = await handler({
+    sheetId: 1,
+    range: "B2",
+    cells: [[{ formula: "=SUM(A1:A9" }]],
+  });
+  assert.match(unbalanced.content[0].text, /parentheses are unbalanced/);
+  assert.equal(calls.length, 0);
+
+  const trailing = await handler({
+    sheetId: 1,
+    range: "B3",
+    cells: [[{ formula: "=A1+" }]],
+  });
+  assert.match(trailing.content[0].text, /ends with an operator/);
+
+  await handler({ sheetId: 1, range: "B4", cells: [[{ formula: "=SUM(A1:A9)" }]] });
+  assert.equal(calls.length, 1);
+});
+
+test("the same failing call is refused after three attempts instead of dispatched again", async () => {
+  let dispatches = 0;
+  const server = createOfficeBridgeMcp(
+    {
+      async callTaskpaneTool() {
+        dispatches += 1;
+        throw new Error("参数无效或缺少，或格式不正确。");
+      },
+    },
+    "excel",
+    "test-pane",
+  );
+  const handler = server.instance._registeredTools.excel_set_cell_range.handler;
+  const call = { sheetId: 1, range: "B2", cells: [[{ formula: "=LARGE(A1:A9)" }]] };
+
+  for (let attempt = 0; attempt < 3; attempt += 1) await handler({ ...call });
+  assert.equal(dispatches, 3);
+
+  const refused = await handler({ ...call });
+  assert.match(refused.content[0].text, /already failed 3 times/);
+  assert.equal(dispatches, 3, "the fourth identical call never reaches Excel");
+
+  // A different formula is a different call, so it is dispatched.
+  await handler({ ...call, cells: [[{ formula: "=LARGE(A1:A9,1)" }]] });
+  assert.equal(dispatches, 4);
+});
