@@ -1866,7 +1866,10 @@ async function autoContext(key, session, ctx) {
   }
   if (snapshot?.selection) sections.push(snapshot.selection);
   if (snapshot?.changes) sections.push(snapshot.changes);
-  return sections.length ? `[Auto-context]\n${sections.join("\n\n")}` : "";
+  // The closing marker exists so the panel can strip the block when it replays
+  // the conversation; without it the workbook dump shows up inside the user's
+  // own message bubble.
+  return sections.length ? `[Auto-context]\n${sections.join("\n\n")}\n[/Auto-context]` : "";
 }
 
 function renderContextHeader(ctx) {

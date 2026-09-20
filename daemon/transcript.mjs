@@ -38,9 +38,14 @@ const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 // Selection:/Track changes:, then a blank line, then the user's actual
 // text).
 function stripContextHeader(text) {
-  return text.replace(
-    /^\[(?:Host:|Doc:|Selection:|Cursor in paragraph|Track changes:)[^\n]*\]\n\n?/,
-    "",
+  return (
+    text
+      .replace(/^\[(?:Host:|Doc:|Selection:|Cursor in paragraph|Track changes:)[^\n]*\]\n\n?/, "")
+      // The workbook overview, selection and recent edits the daemon attaches
+      // to every turn. Messages recorded before the closing marker existed keep
+      // it: there is no delimiter to cut on, and guessing risks eating what the
+      // user actually wrote.
+      .replace(/^\[Auto-context\][\s\S]*?\[\/Auto-context\]\n\n?/, "")
   );
 }
 

@@ -396,8 +396,11 @@ body {
 /* When diagnostics setting is off, hide event lines (session init, errors,
    turn boundaries) and tool-use chips. The chat then shows only user and
    assistant bubbles. */
+/* Diagnostics hide session/turn events and read-only tool cards. A card for a
+   change to the workbook is never hidden: its receipt, cell diff and Restore
+   button are the record of what the agent did. */
 .messages[data-show-diagnostics="false"] .msg.event,
-.messages[data-show-diagnostics="false"] .msg.tool {
+.messages[data-show-diagnostics="false"] .msg.tool:not(.tool-write) {
   display: none;
 }
 

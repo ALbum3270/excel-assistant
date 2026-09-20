@@ -136,3 +136,14 @@ test("readTranscript round-trips a real .jsonl under ~/.claude/projects + trunca
     await rm(fakeHome, { recursive: true, force: true });
   }
 });
+
+test("stripContextHeader removes the auto-context block, not the user's text", () => {
+  const message =
+    "[Host: Excel · Doc: C:/a.xlsx]\n\n" +
+    "[Auto-context]\nsheetId for tools: Sales=1\n\n## Workbook: a.xlsx\n\nrow | row\n[/Auto-context]\n\n" +
+    "把 Amount 列保留两位小数\n\n第二段也要保留";
+  assert.equal(
+    stripContextHeader(message),
+    "把 Amount 列保留两位小数\n\n第二段也要保留",
+  );
+});

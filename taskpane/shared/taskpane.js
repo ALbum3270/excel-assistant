@@ -968,6 +968,10 @@ function appendToolUse(name, args, id = null) {
   el.querySelector(".tool-args").textContent =
     argText.length > 200 ? argText.slice(0, 197) + "..." : argText;
   el.dataset.toolName = localName;
+  // A change to the workbook always shows; reads stay behind the toggle.
+  if (isMutationCall(localName, typeof args === "object" && args ? args : {})) {
+    el.classList.add("tool-write");
+  }
   if (id) {
     el.dataset.toolCallId = id;
     el.dataset.toolState = "running";
