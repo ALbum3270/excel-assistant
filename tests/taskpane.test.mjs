@@ -373,17 +373,19 @@ test("approval summaries include the material arguments of each write", () => {
 });
 
 test("a failed mutation persists its captured recovery checkpoint", async () => {
-  const start = source.indexOf("async function runOfficeTool(msg)");
+  const start = source.indexOf("async function settleRecovery(");
   const end = source.indexOf("// Selection tracking", start);
   assert.ok(start >= 0 && end > start);
   const sent = [];
   let recoveryResult;
+  let recoveryFailure;
   const sandbox = {
     cancelledToolCalls: new Set(),
     WRITE_TOOLS: new Set(["excel_set_cell_range"]),
     async prepareMutationRecovery() {
-      return async (result) => {
+      return async (result, failure) => {
         recoveryResult = result;
+        recoveryFailure = failure;
         return { status: "checkpoint_created", snapshotIds: ["before-write"] };
       };
     },
@@ -417,6 +419,7 @@ test("a failed mutation persists its captured recovery checkpoint", async () => 
   });
 
   assert.equal(recoveryResult, undefined);
+  assert.equal(recoveryFailure.commitStatus, "unknown");
   assert.equal(sent[0].ok, false);
   assert.equal(sent[0].error.commitStatus, "unknown");
   assert.equal(sent[0].error.recovery.status, "checkpoint_created");
@@ -449,4 +452,50 @@ globalThis.probe = refuseInCellEditMode;`, sandbox);
     throw new Error("GeneralException");
   };
   assert.equal(await sandbox.probe(), undefined);
+});
+
+test("a backup that cannot be saved does not swallow the write's result", async () => {
+  const start = source.indexOf("async function settleRecovery(");
+  const end = source.indexOf("// Selection tracking", start);
+  const sent = [];
+  let commits = 0;
+  const sandbox = {
+    cancelledToolCalls: new Set(),
+    WRITE_TOOLS: new Set(["excel_set_cell_range"]),
+    async prepareMutationRecovery() {
+      return async () => {
+        commits += 1;
+        throw new Error("QuotaExceededError");
+      };
+    },
+    async setCellRange() {
+      return { success: true, commitStatus: "committed" };
+    },
+    isMutationCall: () => true,
+    refuseInCellEditMode: async () => {},
+    CANCELLED_TOOL_RESULT: Symbol("cancelled-tool-result"),
+    async runWorkbookWrite(_id, _name, execute) {
+      return { result: await execute(), revision: 1 };
+    },
+    withMutationReceipt: (_name, _args, result) => result,
+    describeOfficeToolError: async (error) => error.message,
+    updateToolCardSuccess() {},
+    updateToolCardFailure() {},
+    takeMutationDiff: () => undefined,
+    wsSend: (message) => sent.push(message),
+    console: { error() {} },
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(`${source.slice(start, end)}
+globalThis.runOfficeTool = runOfficeTool;`, sandbox);
+  await sandbox.runOfficeTool({
+    id: "write-1",
+    name: "excel_set_cell_range",
+    args: { sheetId: 1, range: "A1", cells: [[{ value: 1 }]] },
+  });
+  assert.equal(sent.length, 1, "exactly one tool_result");
+  assert.equal(sent[0].ok, true, "the write happened and is reported");
+  assert.equal(sent[0].result.recovery.status, "not_available");
+  assert.match(sent[0].result.recovery.reason, /QuotaExceededError/);
+  assert.equal(commits, 1, "no second commit on a failure path");
 });

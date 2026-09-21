@@ -1964,6 +1964,21 @@ async function refuseInCellEditMode() {
   }
 }
 
+// Saving a restore point is secondary to reporting what the write did. A
+// storage failure (IndexedDB quota, a closed transaction) used to escape into
+// the failure path, which committed a second time, threw again, and sent no
+// tool_result at all while the workbook had in fact changed.
+async function settleRecovery(commit, result, failure) {
+  try {
+    return await commit(result, failure);
+  } catch (error) {
+    return {
+      status: "not_available",
+      reason: `The backup could not be saved: ${error?.message ?? String(error)}`,
+    };
+  }
+}
+
 async function runOfficeTool(msg) {
   const { id, name, args } = msg;
   if (cancelledToolCalls.has(id)) {
@@ -1971,6 +1986,7 @@ async function runOfficeTool(msg) {
     return;
   }
   let commitRecovery = null;
+  let committedRecovery = null;
   const cancelledBeforeExecution = new Error("Tool call cancelled before execution");
   try {
     const execute = async () => {
@@ -2102,11 +2118,13 @@ async function runOfficeTool(msg) {
       // daemon timeout/session stop must prevent a late result from being
       // mistaken for the current turn's result.
       if (cancelledToolCalls.delete(id)) {
-        if (commitRecovery) await commitRecovery(result);
+        // Cancelled from the daemon's side, but the write did complete.
+        if (commitRecovery) committedRecovery = await settleRecovery(commitRecovery, result);
         return CANCELLED_TOOL_RESULT;
       }
       if (commitRecovery) {
-        result = { ...result, recovery: await commitRecovery(result) };
+        committedRecovery = await settleRecovery(commitRecovery, result);
+        result = { ...result, recovery: committedRecovery };
       }
       if (cancelledToolCalls.delete(id)) return CANCELLED_TOOL_RESULT;
       // Excel.run has synced by the time a tool resolves. Attach one receipt
@@ -2137,7 +2155,15 @@ async function runOfficeTool(msg) {
       settleCancelledTool(id);
       return;
     }
-    const recovery = commitRecovery && isMutationCall(name, args) ? await commitRecovery() : null;
+    // The failure path commits once, and tells the checkpoint the write failed:
+    // a range snapshot is still true, but a structure inverse would not be.
+    const recovery =
+      committedRecovery ??
+      (commitRecovery && isMutationCall(name, args)
+        ? await settleRecovery(commitRecovery, undefined, {
+            commitStatus: err?.commitStatus ?? "unknown",
+          })
+        : null);
     takeMutationDiff(id); // failed call: drop the pane-side diff, no card renders it
     if (cancelledToolCalls.has(id)) {
       settleCancelledTool(id);

@@ -5,7 +5,9 @@
 // Office.js tools do. What we can do is copy the workbook file before the
 // write. The copy is the workbook as it was last saved — edits still only in
 // Excel's memory are not in it — so every caller has to say that plainly.
-import { copyFile, mkdir, readdir, stat, unlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { access, copyFile, mkdir, readdir, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 
@@ -26,12 +28,41 @@ export function comBackupEnabled() {
   return String(process.env.EXCEL_COM_BACKUP ?? "").toLowerCase() !== "off";
 }
 
+// One folder per workbook, not per file name: a\Budget.xlsx and b\Budget.xlsx
+// used to share a folder, so each could prune or replace the other's copies.
+// The readable name is for people; the path digest is what keeps them apart.
 function folderName(workbookPath) {
-  return basename(workbookPath).replace(/[^\p{L}\p{N}._-]+/gu, "_").slice(0, 80) || "workbook";
+  const readable = basename(workbookPath).replace(/[^\p{L}\p{N}._-]+/gu, "_").slice(0, 60) || "workbook";
+  const digest = createHash("sha256").update(workbookPath.toLowerCase()).digest("hex").slice(0, 12);
+  return `${readable}-${digest}`;
 }
 
 function stamp(date) {
-  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+  return date.toISOString().replace(/[-:]/g, "").replace(".", "-");
+}
+
+// Never replace an existing copy: two saves in one millisecond, or a clock that
+// repeats, get a suffix instead of silently overwriting the earlier backup.
+async function copyWithoutOverwrite(source, directory, name, extension) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const file = join(directory, `${name}${attempt ? `-${attempt}` : ""}${extension}`);
+    try {
+      await copyFile(source, file, constants.COPYFILE_EXCL);
+      return file;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+  }
+  throw new Error(`Could not find a free backup name in ${directory}`);
+}
+
+async function exists(file) {
+  try {
+    await access(file);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function pruneOlder(directory) {
@@ -61,15 +92,19 @@ export async function backupWorkbookFile(workbookPath, { now = () => new Date() 
     };
   }
   const previous = lastBackup.get(workbookPath);
-  if (previous && previous.mtimeMs === info.mtimeMs && previous.size === info.size) {
+  if (
+    previous &&
+    previous.mtimeMs === info.mtimeMs &&
+    previous.size === info.size &&
+    (await exists(previous.file))
+  ) {
     return { status: "reused", file: previous.file, savedAt: new Date(info.mtimeMs).toISOString() };
   }
 
   const directory = join(comBackupRoot(), folderName(workbookPath));
   await mkdir(directory, { recursive: true });
   const extension = extname(workbookPath) || ".xlsx";
-  const file = join(directory, `${stamp(now())}${extension}`);
-  await copyFile(workbookPath, file);
+  const file = await copyWithoutOverwrite(workbookPath, directory, stamp(now()), extension);
   lastBackup.set(workbookPath, { mtimeMs: info.mtimeMs, size: info.size, file });
   await pruneOlder(directory);
   return { status: "copied", file, savedAt: new Date(info.mtimeMs).toISOString() };

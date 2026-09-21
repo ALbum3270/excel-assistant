@@ -38,10 +38,24 @@ function parseCell(a1) {
   return { col, row: Number(match[2]) - 1 };
 }
 
-function cellInput(raw) {
+// Excel parses a written string the way it parses typing: "00123" becomes 123,
+// "9007199254740993" loses its last digits, "3-4" becomes a date, "=1+1" a
+// formula (checked in a scratch Excel instance). A leading apostrophe stores the
+// exact text and is not part of the value. CSV carries no types, so:
+//  - by default, only conversions that destroy data are stopped — integers with
+//    leading zeros and integers too long for a double stay text; dates,
+//    percentages, booleans and formulas still parse, as a generated CSV expects;
+//  - --text writes every cell as its exact text (codes, IDs, a text round trip);
+//  - --no-formulas writes a leading "=" as text instead of a formula.
+const LOSSY_INTEGER = /^[+-]?(?:0\d+|\d{16,})$/;
+const asText = (raw) => ({ value: `'${raw}` });
+
+function cellInput(raw, { text = false, formulas = true } = {}) {
   if (raw === "") return { value: "" };
-  if (raw.startsWith("=")) return { formula: raw };
+  if (text) return asText(raw);
+  if (raw.startsWith("=")) return formulas ? { formula: raw } : asText(raw);
   if (/^(true|false)$/i.test(raw)) return { value: raw.toLowerCase() === "true" };
+  if (LOSSY_INTEGER.test(raw.trim())) return asText(raw);
   const number = Number(raw);
   return raw.trim() !== "" && !Number.isNaN(number) ? { value: number } : { value: raw };
 }
@@ -105,11 +119,13 @@ function workbookCommands(call) {
 
   const csvToSheet = defineCommand("csv-to-sheet", async (args, ctx) => {
     const force = args.includes("--force");
-    const [file, sheetArg, startArg = "A1"] = args.filter((a) => a !== "--force");
+    const exactText = args.includes("--text");
+    const formulas = !args.includes("--no-formulas");
+    const [file, sheetArg, startArg = "A1"] = args.filter((a) => !a.startsWith("--"));
     const sheetId = Number.parseInt(sheetArg, 10);
     const start = parseCell(startArg ?? "");
     if (!file || !Number.isInteger(sheetId) || !start) {
-      return failure("Usage: csv-to-sheet <file> <sheetId> [startCell] [--force]");
+      return failure("Usage: csv-to-sheet <file> <sheetId> [startCell] [--force] [--text] [--no-formulas]");
     }
     const committed = [];
     try {
@@ -126,7 +142,9 @@ function workbookCommands(call) {
       if (rows.length === 0) return failure("CSV file is empty");
       const width = Math.max(...rows.map((r) => r.length));
       if (width < 1 || width > 16_384) return failure(`CSV width ${width} is outside Excel's limits`);
-      const cells = rows.map((row) => Array.from({ length: width }, (_, i) => cellInput(row[i] ?? "")));
+      const cells = rows.map((row) =>
+        Array.from({ length: width }, (_, i) => cellInput(row[i] ?? "", { text: exactText, formulas })),
+      );
       const target = `${columnLetters(start.col)}${start.row + 1}:${columnLetters(start.col + width - 1)}${start.row + rows.length}`;
       if (!force) {
         // Check the whole target before the first chunk so a conflict never leaves a partial write.
@@ -204,8 +222,11 @@ export const COMPUTE_TOOL_DESCRIPTION =
   "assistant restarts, so re-export if one is missing), no network, and no access to the workbook file, local " +
   "files or Windows programs. Use it for bulk data work too large to read into chat: " +
   "`sheet-to-csv <sheetId> [range] [file]` exports a range (default: used range) to a file; " +
-  "`csv-to-sheet <file> <sheetId> [startCell] [--force]` writes a CSV back (refuses to overwrite data unless --force, " +
-  "which is allowed when the user's requested edit targets those cells). Typical flow: " +
+  "`csv-to-sheet <file> <sheetId> [startCell] [--force] [--text] [--no-formulas]` writes a CSV back (refuses to overwrite data unless --force, " +
+  "which is allowed when the user's requested edit targets those cells). CSV carries no types: numbers, dates, booleans and " +
+  "leading = are parsed as Excel parses typing, except that integers with leading zeros or over 15 digits stay text. " +
+  "Use --text to write every cell as its exact text (codes, IDs, text written back unchanged) and --no-formulas to keep a leading = as text. " +
+  "Typical flow: " +
   "sheet-to-csv 1 A1:D5000 data.csv && python3 script.py && " +
   "csv-to-sheet out.csv 1 F1. sheet-to-csv and csv-to-sheet are shell commands: run them in the shell, " +
   "not from Python (subprocess cannot reach them). Write scripts with heredocs (cat > script.py <<'EOF' ... EOF). " +

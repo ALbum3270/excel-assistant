@@ -63,3 +63,39 @@ test("csv-to-sheet finishes every chunk and then lists formula errors", async ()
   assert.match(result.stdout, /Committed 2001 rows x 1 columns .* 2 committed chunk/);
   assert.match(result.stdout, /Formula errors in 1 cell\(s\): A1=#N\/A/);
 });
+
+test("csv-to-sheet keeps lossy numbers as text and offers exact text on request", async () => {
+  const writes = [];
+  const shell = createComputeShell(async (name, args) => {
+    if (name === "excel_set_cell_range") writes.push(args.cells);
+    return { success: true, commitStatus: "committed", writtenRange: args.range };
+  });
+  // The four values the audit round-tripped, plus a date and a plain number.
+  await shell({
+    command:
+      "printf '00123,9007199254740993,TRUE,=1+1,2026-03-04,42\n' > t.csv && csv-to-sheet t.csv 1 A1 --force",
+  });
+  assert.deepEqual(writes[0], [
+    [
+      { value: "'00123" },
+      { value: "'9007199254740993" },
+      { value: true },
+      { formula: "=1+1" },
+      { value: "2026-03-04" },
+      { value: 42 },
+    ],
+  ]);
+
+  await shell({ command: "csv-to-sheet t.csv 1 A1 --force --no-formulas" });
+  assert.deepEqual(writes[1][0][3], { value: "'=1+1" });
+
+  await shell({ command: "csv-to-sheet t.csv 1 A1 --force --text" });
+  assert.deepEqual(writes[2][0], [
+    { value: "'00123" },
+    { value: "'9007199254740993" },
+    { value: "'TRUE" },
+    { value: "'=1+1" },
+    { value: "'2026-03-04" },
+    { value: "'42" },
+  ]);
+});

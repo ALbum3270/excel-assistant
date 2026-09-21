@@ -1000,7 +1000,21 @@ async function prepareStructureRecovery(name, args, toolCallId) {
   } catch (error) {
     failure = error?.message ?? String(error);
   }
-  return async function commitStructureRecovery(result) {
+  return async function commitStructureRecovery(result, failure) {
+    // A structure checkpoint is an inverse: rows_absent deletes the rows this
+    // call inserted, sheet_absent deletes the sheet it created. Published for a
+    // call that failed, it can delete rows or a sheet that were already there.
+    // The arguments cannot show whether a failed change happened, so none is
+    // recorded; the user is told to look instead.
+    if (failure) {
+      return {
+        status: "not_available",
+        reason:
+          failure.commitStatus === "not_committed"
+            ? "The structure change did not happen, so there is nothing to undo."
+            : "The structure change failed part-way. No undo was recorded, because whether it happened cannot be told from the request; check the rows, columns or sheets involved.",
+      };
+    }
     try {
       const createdSheetId = prepared?.after ? prepared.after(result).newSheetId : null;
       const checkpoint = prepared?.after
