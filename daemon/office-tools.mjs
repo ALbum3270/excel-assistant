@@ -3,11 +3,6 @@ import { z } from "zod";
 import { diag } from "./diag.mjs";
 import { COMPUTE_TOOL_DESCRIPTION, createComputeShell } from "./compute-tool.mjs";
 import { needsApproval } from "./approval.mjs";
-import {
-  createTaskVerification,
-  TASK_CHECK_SCHEMA,
-  TASK_CHECK_DESCRIPTION,
-} from "./task-verification.mjs";
 
 // Wrap a bridge tool result for MCP. Handlers return {content: [...]}.
 function asMcpResult(result, { isError = false } = {}) {
@@ -246,7 +241,7 @@ export function createOfficeBridgeMcp(
   bridge,
   host = null,
   paneKey = null,
-  { signal, verification, revisionState = { value: undefined } } = {},
+  { signal, revisionState = { value: undefined } } = {},
 ) {
   // `paneKey` routes every call to the exact workbook pane this session
   // belongs to (so two open workbooks don't cross-talk).
@@ -263,30 +258,7 @@ export function createOfficeBridgeMcp(
     if (Number.isInteger(result?.workbookRevision)) revisionState.value = result.workbookRevision;
     return result;
   };
-  const taskVerification = verification ?? createTaskVerification(rawCall);
-  const call = (name, args, options = {}) => {
-    if (isWrite(name, args)) taskVerification.markMutation();
-    return rawCall(name, args, options);
-  };
-
-  const excel_verify_task = tool(
-    "excel_verify_task",
-    TASK_CHECK_DESCRIPTION,
-    TASK_CHECK_SCHEMA,
-    async (args) => {
-      try {
-        const result =
-          args.action === "define"
-            ? await taskVerification.define(args.checks)
-            : await taskVerification.run();
-        return asMcpResult(result, {
-          isError: ["failed", "incomplete", "not_checked"].includes(result.status),
-        });
-      } catch (error) {
-        return asMcpError(error);
-      }
-    },
-  );
+  const call = rawCall;
 
   const excel_get_selected_range = tool(
     "excel_get_selected_range",
@@ -892,7 +864,6 @@ export function createOfficeBridgeMcp(
     excel_create_table,
     excel_add_table_rows,
     excel_workbook_history,
-    excel_verify_task,
     excel_bash,
   ];
   const tools = excelTools;

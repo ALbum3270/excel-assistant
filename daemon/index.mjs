@@ -24,7 +24,6 @@ import { readTranscript, locateSessionFile, deleteTranscript } from "./transcrip
 import { diag } from "./diag.mjs";
 import { getContextEntries, setContextEntries } from "./context.mjs";
 import { ApprovalManager, needsApproval } from "./approval.mjs";
-import { createTaskVerification } from "./task-verification.mjs";
 import { createThepExcelGateway } from "./thepexcel-gateway.mjs";
 import { stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -1193,7 +1192,6 @@ for (const method of ["sendAssistantEvent", "sendAssistantText"]) {
           usage: payload.usage,
           numTurns: payload.num_turns,
           costUsd: payload.total_cost_usd,
-          taskVerification: payload.task_verification,
         });
       else if (payload.event === "error" || payload.event === "auth_error")
         observer.finish({ status: "error", error: payload.error });
@@ -1546,7 +1544,6 @@ const SESSION_COMPATIBILITY_KEY = createHash("sha256")
       systemPrompt: promptFingerprint,
       officeTools: createHash("sha256")
         .update(await readFile(join(__dirname, "office-tools.mjs"), "utf8"))
-        .update(await readFile(join(__dirname, "task-verification.mjs"), "utf8"))
         .update(await readFile(join(__dirname, "thepexcel-gateway.mjs"), "utf8"))
         .digest("hex"),
       mcpServers: compatibilityMcpShape(configuredMcpServers),
@@ -1721,13 +1718,6 @@ async function permissionFor(key, session, host, toolName, input) {
   const result = await customPermissionHandler(toolName, input, { host });
   // External COM calls bypass the Office bridge. Record the attempt so a turn
   // cannot silently lose its result-check summary just because it used COM.
-  if (
-    result.behavior === "allow" &&
-    toolName.startsWith("mcp__thepexcel-excel__") &&
-    needsApproval(toolName, input)
-  ) {
-    session?.verification?.markMutation();
-  }
   return result;
 }
 
@@ -1797,7 +1787,6 @@ async function* userMessageStream(key, session) {
       session.lastUserText = text;
       session.contextRecovery = null;
     }
-    if (!internalRecoveryMessage) session?.verification?.reset();
     if (session?.isNew && !session.title) {
       const compact = typeof text === "string" ? text.replace(/\s+/g, " ").trim() : "";
       session.title = compact.length > 72 ? `${compact.slice(0, 69)}...` : compact || null;
@@ -2026,14 +2015,6 @@ async function startSessionForFolder(
     host,
     generation,
     workbookRevision,
-    verification: createTaskVerification(async (name, args) => {
-      const result = await bridge.callTaskpaneTool(name, args, key, {
-        signal: abortController.signal,
-      });
-      if (Number.isInteger(result?.workbookRevision))
-        workbookRevision.value = result.workbookRevision;
-      return result;
-    }),
   };
   sessions.set(key, session);
   workspaceByKey.set(key, cwd);
@@ -2087,7 +2068,6 @@ async function startSessionForFolder(
     }
     officeMcp = createOfficeBridgeMcp(bridge, host, key, {
       signal: abortController.signal,
-      verification: session.verification,
       revisionState: session.workbookRevision,
     });
     if (host === "excel" && thepExcelGateway) {
@@ -2198,10 +2178,6 @@ async function startSessionForFolder(
             continue;
           }
           if (session.contextRecovery?.phase === "retrying") session.contextRecovery = null;
-          if (msg.subtype === "success" && !msg.is_error) {
-            msg.taskVerification = await session.verification.finish();
-            if (!isCurrentSession(session)) break;
-          }
           session.turnOpen = false;
           session.sawAnyResult = true;
         }
@@ -2429,7 +2405,6 @@ function handleAgentMessage(msg, session) {
           model_usage: msg.modelUsage,
           num_turns: msg.num_turns,
           total_cost_usd: msg.total_cost_usd,
-          task_verification: msg.taskVerification ?? null,
         },
         session?.key,
       );

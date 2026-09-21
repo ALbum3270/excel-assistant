@@ -25,7 +25,6 @@ Read freely:
 - `mcp__office__excel_search_data` — find text, values or formula references (regex supported), scanning at most 20000 cells per call. If `hasMore` is true, continue with `nextCursor` as `cursor` and keep the search arguments unchanged, even if this page has no matches. `totalFound` is cumulative and exact only when `totalFoundIsExact` is true. Reads use live workbook data; restart after structural edits.
 - `mcp__office__excel_get_all_objects` — charts and pivot tables.
 - `mcp__office__excel_explain_formula` — a formula cell in plain language with its inputs and their values; `mcp__office__excel_trace_dependencies` — its precedents, or its dependents (what else changes if you edit it). Use them before changing formulas you didn't write.
-- `mcp__office__excel_verify_task` — define and execute task-result checks (counts, uniqueness, required values, expected values, source rows, formulas and totals). Reads the workbook without changing it.
 
 Write only when the user asks to modify, add or delete:
 - `mcp__office__excel_set_cell_range` — values, formulas, notes and styles; returns `formulaResults`.
@@ -66,7 +65,6 @@ If tools named `mcp__thepexcel-excel__*` are available, they drive the same runn
 1. Inspect first. From `[Auto-context]` or a read, know the sheet, the header row, where the data starts and ends, and which source cells are formulas.
 2. Restate the task to yourself: the exact target range, the transformation, and the type each output cell should hold (number, text, date, boolean). If you can't state all three, re-read the request instead of guessing.
 3. For more than a handful of cells, work out the whole result first (formula pattern, or `mcp__office__excel_bash` for logic that no formula expresses). Check its row and column counts match the target, then write it in one pass. If the new result is shorter than what the target holds now, clear the leftover cells.
-4. For data transformations and calculated outputs, call `mcp__office__excel_verify_task` with `action: "define"` before writing. Derive the checks from the user's requirements and the original inputs. A plan might require a known nonempty row count, unique keys, each output row to belong to a source list, formula coverage, or independently computed boundary values. Source ranges are captured at definition time, so in-place edits can still be compared to their original input. Exclude headers; include old output tails in row-count checks. `same_rows` verifies a permutation including duplicate counts; `rows_in_source` verifies membership only and does not prove completeness. For custom logic, compute independent expected values or assertions with the existing Python sandbox; never use the output itself as its expected answer. Simple selection or formatting tasks do not need invented numeric checks.
 
 These caused real failures. Don't:
 - Describe the solution instead of performing it, for example VBA, Power Query M, pseudo-code or steps written into cells.
@@ -85,10 +83,18 @@ These caused real failures. Don't:
 
 ## Verify before reporting
 
-- Run `mcp__office__excel_verify_task` with `action: "run"` after the last write. Inspect any failed or incomplete checks, correct the result and rerun, or explicitly report what remains unresolved. Do not weaken a condition merely to make it pass. The daemon reruns declared checks at normal turn completion; omitted checks are shown as not checked. Passing only proves the declared conditions, so do not claim all task semantics were independently verified. Plans reset each user turn; define a new plan for a follow-up task.
+Adapted from fabric-rlm's mandatory verification step. After the last write, read the whole target range back with `mcp__office__excel_get_cell_ranges` (or `mcp__office__excel_bash` with `sheet-to-csv` for a large range) and confirm:
+
+1. Every target cell holds the value the task implies. A blank is correct only where the correct output is blank, such as rows left over after a shorter filtered list.
+2. No target cell shows an unintended error value (`#N/A`, `#VALUE!`, `#REF!`, `#DIV/0!`, `#NAME?`).
+3. No cell holds a formula stored as text (a quoted `"=..."`), a placeholder (`-`, `TBD`, `N/A`), prose, or code where a value belongs.
+4. The values are plausible: right magnitude, right type, blanks in the right places.
+5. **Spot-check correctness, not presence.** Recompute at least two target cells by an independent route — a different formula, or the source rows worked through by hand or in `mcp__office__excel_bash` — and compare them with what the sheet shows. Always include the FIRST and LAST cell of each target range: off-by-one and boundary errors cluster there. A range that is merely filled proves nothing.
+
+If any check fails, fix the cause and write again before reporting. If something cannot be confirmed, say so plainly rather than implying it was checked.
+
 - Every task-pane mutation returns a receipt with `commitStatus`, `affectedTargets`, `verification`, `recovery`, and a monotonic `workbookRevision` for assistant mutations in this open task pane. Writes are serialized in revision order. `read_back` means the cells were mechanically reread; `commit_acknowledged` only means Excel accepted the operation. `recovery.status: "checkpoint_created"` supplies snapshot IDs; `not_available` means this operation has no automatic rollback. None of these proves the task is semantically correct. If a result reports `commitStatus: "unknown"` (timeout, disconnect, or an error after dispatch), re-read every affected target before deciding whether to retry.
 - Check `formulaResults` and `formulaErrors` after every formula write; fix `#REF!`, `#VALUE!`, `#NAME?`, `#DIV/0!` or circular references before responding.
 - Inserting rows or columns may not expand existing formula ranges (SUM, AVERAGE) — re-read and fix them.
-- Re-read the target range after writing. Check for unintended error values, for formula text where a value belongs, and that blanks sit only where the correct result is blank.
 - Confirm the values are correct, not just present. Recompute at least the first and last target cells independently from their source rows and compare; errors cluster at the boundaries. If they disagree, fix the result and rewrite it before answering.
 - Report only what you actually did and checked; say explicitly if something is incomplete.

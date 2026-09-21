@@ -20,7 +20,6 @@ const GROUP_LABELS = {
   excel_copy_to: "copies",
   excel_modify_sheet_structure: "row/column changes",
   excel_modify_workbook_structure: "sheet changes",
-  excel_verify_task: "result checks",
   excel_bash: "calculations",
 };
 

@@ -334,49 +334,6 @@ function renderTurnUsage(usage, cost, modelUsage) {
       : " — the SDK reported no cost estimate.");
 }
 
-function appendTaskVerification(report) {
-  if (!report) return;
-  if (report.status === "not_checked") {
-    // Nothing was declared, so nothing was verified — worth recording, but it
-    // is not a finding about the workbook. Failed and incomplete checks below
-    // stay prominent.
-    appendEvent("Result checks: none were declared for this turn.");
-    return;
-  }
-  const card = document.createElement("details");
-  card.className = "msg notice task-checks";
-  card.open = report.status !== "passed";
-  const summary = document.createElement("summary");
-  summary.textContent = `Result checks: ${report.passed}/${report.total} passed${report.status === "incomplete" ? " (incomplete)" : ""}`;
-  card.appendChild(summary);
-  const scope = document.createElement("p");
-  scope.textContent =
-    "Only the listed conditions were checked." +
-    (report.definedBeforeChanges === false
-      ? " Conditions were specified after edits had started."
-      : "");
-  card.appendChild(scope);
-  for (const check of report.checks || []) {
-    const row = document.createElement("p");
-    row.append(document.createTextNode(`${check.status === "passed" ? "✓" : "!"} ${check.label} (`));
-    row.append(cellLink(check.target.range));
-    row.append(
-      document.createTextNode(
-        ")" +
-          (check.reason ? ` — ${check.reason}` : "") +
-          (check.failedCount ? ` — ${check.failedCount} mismatch(es)` : ""),
-      ),
-    );
-    card.appendChild(row);
-    for (const example of check.examples || []) {
-      const detail = document.createElement("div");
-      detail.textContent = JSON.stringify(example);
-      card.appendChild(detail);
-    }
-  }
-  $messages.appendChild(card);
-  maybeScrollToBottom();
-}
 
 function setConnectionStatus(state, label) {
   connState = state;
@@ -1613,16 +1570,11 @@ async function handleServerMessage(msg) {
         setAgentStatus("working", statusForTool(msg.tool));
       } else if (msg.event === "turn_complete") {
         renderTurnUsage(msg.usage, msg.total_cost_usd, msg.model_usage);
-        appendTaskVerification(msg.task_verification);
         if (!msg.interrupted && (msg.is_error || (msg.subtype && msg.subtype !== "success"))) {
           appendError(msg.error || `The agent ended this request with ${msg.subtype}.`);
           setAgentStatus("idle", "Stopped — see message");
         } else {
-          const checkFailed = ["failed", "incomplete"].includes(msg.task_verification?.status);
-          setAgentStatus(
-            "idle",
-            msg.interrupted ? "Stopped" : checkFailed ? "Result checks need attention" : "Ready",
-          );
+          setAgentStatus("idle", msg.interrupted ? "Stopped" : "Ready");
         }
         endTurn({
           drainQueue: Boolean(msg.interrupted) || !msg.subtype || msg.subtype === "success",
