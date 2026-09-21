@@ -126,24 +126,42 @@ function resultWithRevision(result, revision) {
   };
 }
 
-export async function createThepExcelGateway(config, execution) {
-  if (!config || config.type !== "stdio" || !config.command) return null;
-  const transport = new StdioClientTransport({
-    command: config.command,
-    args: config.args ?? [],
-    cwd: config.cwd,
-    env: { ...getDefaultEnvironment(), ...(config.env ?? {}) },
-    stderr: "inherit",
-  });
-  const client = new Client({ name: "excel-assistant-workbook-gateway", version: "0.2.0" });
-  await client.connect(transport);
+// `client` lets a test drive the gateway with an in-memory MCP client instead
+// of spawning the COM server; production always passes a stdio config.
+export async function createThepExcelGateway(config, execution, { client: injected } = {}) {
+  if (!injected && (!config || config.type !== "stdio" || !config.command)) return null;
+  let transport = null;
+  let client = injected;
+  if (!client) {
+    transport = new StdioClientTransport({
+      command: config.command,
+      args: config.args ?? [],
+      cwd: config.cwd,
+      env: { ...getDefaultEnvironment(), ...(config.env ?? {}) },
+      stderr: "inherit",
+    });
+    client = new Client({ name: "excel-assistant-workbook-gateway", version: "0.2.0" });
+    await client.connect(transport);
+  }
   const listed = await client.listTools({}, { timeout: 30_000 });
   const upstreamTools = listed.tools;
 
-  async function callUpstream(name, args) {
+  async function callUpstream(name, args, signal) {
     return client.callTool({ name, arguments: args }, undefined, {
       timeout: UPSTREAM_TIMEOUT_MS,
       maxTotalTimeout: UPSTREAM_TIMEOUT_MS,
+      ...(signal ? { signal } : {}),
+    });
+  }
+
+  // A call that was stopped or timed out while it waited on the workbook check
+  // or the backup must not go on to write: the caller has already been told it
+  // was cancelled. Checked before every step that could start one.
+  function stopIfCancelled(runSignal) {
+    if (!runSignal?.aborted) return;
+    throw Object.assign(new Error("The COM operation was cancelled before it started writing."), {
+      code: "TOOL_CANCELLED",
+      commitStatus: "not_committed",
     });
   }
 
@@ -194,7 +212,7 @@ export async function createThepExcelGateway(config, execution) {
                   timeoutMs: 60_000,
                   toolName: definition.name,
                 },
-                async () => {
+                async ({ signal: runSignal } = {}) => {
                   const args = targetArguments(
                     definition.name,
                     rawArgs,
@@ -205,10 +223,12 @@ export async function createThepExcelGateway(config, execution) {
                     definition.name === "excel_workbook" &&
                     String(args.action).toLowerCase() === "list";
                   if (!isUntargetedList) {
-                    const info = await callUpstream("excel_workbook", {
-                      action: "info",
-                      workbook: workbookName,
-                    });
+                    const info = await callUpstream(
+                      "excel_workbook",
+                      { action: "info", workbook: workbookName },
+                      runSignal,
+                    );
+                    stopIfCancelled(runSignal);
                     if (info.isError) return info;
                     const actualPath = parseTextResult(info)?.path;
                     if (!actualPath || canonicalWorkbookId(actualPath) !== workbookId) {
@@ -235,7 +255,10 @@ export async function createThepExcelGateway(config, execution) {
                       );
                     }
                   }
-                  const result = await callUpstream(definition.name, args);
+                  // Once dispatched, a COM write cannot be interrupted, so the
+                  // last cancellation check is here, right before it.
+                  stopIfCancelled(runSignal);
+                  const result = await callUpstream(definition.name, args, write ? undefined : runSignal);
                   if (backup) result.comBackup = backup;
                   if (write && isUpstreamTimeout(result)) {
                     throw Object.assign(
@@ -265,6 +288,6 @@ export async function createThepExcelGateway(config, execution) {
       });
     },
     toolCount: upstreamTools.length,
-    close: () => transport.close(),
+    close: () => transport?.close(),
   };
 }
