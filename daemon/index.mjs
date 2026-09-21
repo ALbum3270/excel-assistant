@@ -1794,6 +1794,7 @@ async function* userMessageStream(key, session) {
       recovering.phase = "retrying";
     } else if (session) {
       session.lastUserText = text;
+      session.turn.value += 1;
       session.contextRecovery = null;
     }
     if (session?.isNew && !session.title) {
@@ -2024,6 +2025,8 @@ async function startSessionForFolder(
     host,
     generation,
     workbookRevision,
+    // Counts user turns; the tools' repeat-failure budget starts over each turn.
+    turn: { value: 0 },
   };
   sessions.set(key, session);
   workspaceByKey.set(key, cwd);
@@ -2079,6 +2082,7 @@ async function startSessionForFolder(
       signal: abortController.signal,
       revisionState: session.workbookRevision,
       approveWrite: (toolName, input) => decideApproval(key, session, toolName, input),
+      turnState: session.turn,
     });
     if (host === "excel" && thepExcelGateway) {
       thepExcelMcp = thepExcelGateway.createSessionServer({

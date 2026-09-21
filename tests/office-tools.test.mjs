@@ -411,3 +411,58 @@ test("cells keyed by address are refused instead of becoming one empty cell", as
   assert.match(typo.content[0].text, /unknown key\(s\) valeu/);
   assert.equal(calls.length, 0);
 });
+
+test("the repeat budget ignores transient failures and starts over each turn", async () => {
+  let dispatches = 0;
+  let editing = true;
+  const turn = { value: 1 };
+  const server = createOfficeBridgeMcp(
+    {
+      async callTaskpaneTool() {
+        dispatches += 1;
+        if (editing) {
+          throw Object.assign(new Error("Excel is in cell-edit mode"), {
+            code: "InvalidOperationInCellEditMode",
+            commitStatus: "not_committed",
+          });
+        }
+        return { success: true, commitStatus: "committed" };
+      },
+    },
+    "excel",
+    "test-pane",
+    { turnState: turn },
+  );
+  const handler = server.instance._registeredTools.excel_set_cell_range.handler;
+  const call = { sheetId: 1, range: "B2", cells: [[{ value: 1 }]] };
+
+  // Audit B08: three edit-mode failures, then the user presses Enter.
+  for (let attempt = 0; attempt < 3; attempt += 1) await handler({ ...call });
+  editing = false;
+  const after = await handler({ ...call });
+  assert.doesNotMatch(after.content[0].text, /already failed/);
+  assert.equal(dispatches, 4, "the fourth call reaches Excel once the cell is no longer being edited");
+});
+
+test("a call refused three times in one turn is allowed again in the next", async () => {
+  let dispatches = 0;
+  const turn = { value: 1 };
+  const server = createOfficeBridgeMcp(
+    {
+      async callTaskpaneTool() {
+        dispatches += 1;
+        throw new Error("参数无效或缺少，或格式不正确。");
+      },
+    },
+    "excel",
+    "test-pane",
+    { turnState: turn },
+  );
+  const handler = server.instance._registeredTools.excel_set_cell_range.handler;
+  const call = { sheetId: 1, range: "B2", cells: [[{ formula: "=LARGE(A1:A9)" }]] };
+  for (let attempt = 0; attempt < 4; attempt += 1) await handler({ ...call });
+  assert.equal(dispatches, 3, "the fourth identical call in the turn is refused");
+  turn.value += 1;
+  await handler({ ...call });
+  assert.equal(dispatches, 4, "a new turn starts the count over");
+});

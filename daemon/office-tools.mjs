@@ -274,7 +274,7 @@ export function createOfficeBridgeMcp(
   bridge,
   host = null,
   paneKey = null,
-  { signal, revisionState = { value: undefined }, approveWrite } = {},
+  { signal, revisionState = { value: undefined }, approveWrite, turnState = { value: 0 } } = {},
 ) {
   // `paneKey` routes every call to the exact workbook pane this session
   // belongs to (so two open workbooks don't cross-talk).
@@ -350,7 +350,20 @@ export function createOfficeBridgeMcp(
     }
     return value;
   };
-  const fingerprint = (name, args) => `${name}:${JSON.stringify(stable(args ?? {}))}`;
+  // Keyed by user turn: within a turn the budget stops a loop; across turns the
+  // user has had a chance to change something, so the count starts over.
+  const fingerprint = (name, args) =>
+    `${turnState.value}:${name}:${JSON.stringify(stable(args ?? {}))}`;
+  // Failures that say nothing about the arguments. The same call is right to
+  // retry once the user leaves cell-edit mode, a timeout clears or the model
+  // re-reads; counting them locked out a call that would now succeed.
+  const TRANSIENT_FAILURES = new Set([
+    "InvalidOperationInCellEditMode",
+    "TOOL_CANCELLED",
+    "TOOL_TIMEOUT",
+    "STALE_WORKBOOK_REVISION",
+    "WORKBOOK_UNCERTAIN",
+  ]);
   const failed = (result) => result && typeof result === "object" && result.success === false;
 
   // Runs one tool call under the budget. The key is what the model sent, and the
@@ -369,17 +382,18 @@ export function createOfficeBridgeMcp(
         ),
       );
     }
-    const remember = (reason) => {
+    const remember = (reason, code) => {
+      if (TRANSIENT_FAILURES.has(code)) return;
       if (repeatedFailures.size > 200) repeatedFailures.clear();
       repeatedFailures.set(key, { count: (previous?.count ?? 0) + 1, reason });
     };
     try {
       const result = await body();
-      if (failed(result)) remember(String(result.error ?? "the call reported success: false."));
+      if (failed(result)) remember(String(result.error ?? "the call reported success: false."), result.code);
       else repeatedFailures.delete(key);
       return asMcpResult(result);
     } catch (e) {
-      remember(e?.message ?? String(e));
+      remember(e?.message ?? String(e), e?.code);
       return asMcpError(e);
     }
   };
