@@ -181,8 +181,13 @@ test("set-cell refuses ambiguous payloads and never repeats plain values", async
   const flat = await handler({ sheetId: 1, range: "A1:B2", cells: [1, 2, 3, 4] });
   // A column sent for a row target (seen in 183-8) must not land in J3:J5.
   const spill = await handler({ sheetId: 1, range: "J3:L3", cells: [["=D3"], ["=E3"], ["=F3"]] });
-  await handler({ sheetId: 1, range: "A1:D1", cells: [["Total"]] });
+  // Smaller than the range is refused too: one value for four cells used to
+  // write A1 only and report success.
+  const partial = await handler({ sheetId: 1, range: "A1:D1", cells: [["Total"]] });
+  await handler({ sheetId: 1, range: "A1", cells: [["Total"]] });
 
+  assert.equal(partial.isError, true);
+  assert.match(partial.content[0].text, /1x1 but range A1:D1 is 1x4.*top-left cell \(A1\)/);
   assert.equal(malformed.isError, true);
   assert.match(malformed.content[0].text, /not valid JSON/);
   assert.equal(flat.isError, true);
@@ -190,7 +195,7 @@ test("set-cell refuses ambiguous payloads and never repeats plain values", async
   assert.equal(spill.isError, true);
   assert.match(spill.content[0].text, /3x1 but range J3:L3 is 1x3/);
   assert.deepEqual(calls, [
-    { name: "excel_set_cell_range", args: { sheetId: 1, range: "A1:D1", cells: [[{ value: "Total" }]] } },
+    { name: "excel_set_cell_range", args: { sheetId: 1, range: "A1", cells: [[{ value: "Total" }]] } },
   ]);
 });
 
@@ -364,4 +369,45 @@ test("a formula refused before dispatch counts toward the repeat budget", async 
   const refused = await handler({ ...call });
   assert.match(refused.content[0].text, /already failed 3 times/);
   assert.equal(dispatches, 0, "a refused formula never reaches Excel");
+});
+
+test("a data block smaller than its range is refused, not written in part", async () => {
+  const calls = [];
+  const server = createOfficeBridgeMcp(
+    { async callTaskpaneTool(name, args) { calls.push(args); return { success: true, commitStatus: "committed" }; } },
+    "excel",
+    "test-pane",
+  );
+  const handler = server.instance._registeredTools.excel_set_cell_range.handler;
+  // Task 57989: a 7x7 target sent as a 7x1 column, written to one column 22 times.
+  const column = Array.from({ length: 7 }, (_, row) => [row]);
+  const refused = await handler({ sheetId: 1, range: "B25:H31", cells: column });
+  assert.match(refused.content[0].text, /7x1 but range B25:H31 is 7x7.*Send 7 row\(s\) of 7/);
+  assert.equal(calls.length, 0);
+
+  // The same data anchored at one cell writes its own shape, as pi's start_cell does.
+  await handler({ sheetId: 1, range: "B25", cells: column });
+  assert.equal(calls.length, 1);
+  // A formula pattern still fills a larger range through copyToRange.
+  await handler({ sheetId: 1, range: "C2:C9", cells: [["=A2*B2"]] });
+  assert.equal(calls[1].copyToRange, "C2:C9");
+});
+
+test("cells keyed by address are refused instead of becoming one empty cell", async () => {
+  const calls = [];
+  const server = createOfficeBridgeMcp(
+    { async callTaskpaneTool(name, args) { calls.push(args); return { success: true, commitStatus: "committed" }; } },
+    "excel",
+    "test-pane",
+  );
+  const handler = server.instance._registeredTools.excel_set_cell_range.handler;
+  // Task 433-47 sent this as a JSON string; the raw object must fail the same way.
+  const keyed = { A1: "", B1: { value: "unit1" }, C1: { value: "unit2" } };
+  for (const cells of [JSON.stringify(keyed), keyed]) {
+    const refused = await handler({ sheetId: 1, range: "A1:I21", cells });
+    assert.match(refused.content[0].text, /object keyed by address \(A1, B1, C1…\)/);
+  }
+  const typo = await handler({ sheetId: 1, range: "A1", cells: [[{ valeu: 3 }]] });
+  assert.match(typo.content[0].text, /unknown key\(s\) valeu/);
+  assert.equal(calls.length, 0);
 });

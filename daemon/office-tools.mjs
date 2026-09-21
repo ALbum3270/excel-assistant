@@ -10,8 +10,29 @@ function asMcpResult(result, { isError = false } = {}) {
   return { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) };
 }
 
+const CELL_KEYS = new Set(["value", "formula", "note", "cellStyles", "borderStyles"]);
+const ADDRESS_KEY = /^\$?[A-Z]{1,3}\$?[1-9]\d*$/i;
+
+// A cell object may only use a cell's own keys. The schema used to drop unknown
+// keys silently, so {"A1": …, "B1": …} — 189 cells keyed by address — passed as
+// one empty cell and was written to A1 with success reported.
 function toCellInput(cell) {
-  if (cell !== null && typeof cell === "object") return cell;
+  if (cell !== null && typeof cell === "object") {
+    const unknown = Object.keys(cell).filter((key) => !CELL_KEYS.has(key));
+    if (unknown.length && unknown.every((key) => ADDRESS_KEY.test(key))) {
+      throw new Error(
+        `cells looks like an object keyed by address (${unknown.slice(0, 3).join(", ")}…). ` +
+          "Send a 2D array of rows instead, starting at the range's top-left cell.",
+      );
+    }
+    if (unknown.length) {
+      throw new Error(
+        `a cell has unknown key(s) ${unknown.slice(0, 5).join(", ")}; a cell takes only ` +
+          "value, formula, note, cellStyles and borderStyles.",
+      );
+    }
+    return cell;
+  }
   return typeof cell === "string" && cell.startsWith("=") ? { formula: cell } : { value: cell };
 }
 
@@ -191,6 +212,18 @@ function prepareCellWrite(args, cellMatrix) {
     throw new Error(
       `cells is ${height}x${width} but range ${args.range} is ${size.rows}x${size.columns}; ` +
         "the write would spill outside range. Reshape cells (outer array = rows) or fix range.",
+    );
+  }
+  // Smaller is refused too. The pane used to shrink the range to the data and
+  // report success, leaving the rest of the named range untouched: a 7x7 target
+  // sent as a 7x1 column was written to one column, 22 times over, in one task.
+  // pi-for-excel avoids the conflict by taking only a start cell, so the data
+  // alone sets the shape; a single-cell range here does the same.
+  if (size && size.rows * size.columns > 1 && (height !== size.rows || width !== size.columns)) {
+    throw new Error(
+      `cells is ${height}x${width} but range ${args.range} is ${size.rows}x${size.columns}, so part of the ` +
+        `range would be left as it is. Send ${size.rows} row(s) of ${size.columns} (use "" to clear a cell), ` +
+        `or give only the top-left cell (${size.start}) to write the data's own shape.`,
     );
   }
   return { ...args, cells: cellMatrix };
@@ -497,7 +530,10 @@ export function createOfficeBridgeMcp(
     borderStyles: z
       .object({ top: borderSide, bottom: borderSide, left: borderSide, right: borderSide })
       .optional(),
-  });
+  })
+    // Pass unknown keys through to toCellInput, which names them; stripping
+    // them here is how an address-keyed object turned into one empty cell.
+    .passthrough();
   const cellMatrix = z
     .array(z.array(z.union([cellInput, scalarCell])).min(1))
     .min(1)
@@ -661,10 +697,10 @@ export function createOfficeBridgeMcp(
 
   const excel_set_cell_range = tool(
     "excel_set_cell_range",
-    "WRITE. Write values, formulas, and formatting to cells. Accepts 2D matrices, a single cell, or a 1D list (a row, or a column when range is one column wide). A formula pattern smaller than range is filled across it with relative-reference translation; values are written once from the top-left cell. Computed formula values and errors come back for verification. OVERWRITE PROTECTION: use allow_overwrite=true immediately when the user's requested edit targets existing cells; ask only when the overwrite is outside the requested scope. Use copyToRange to expand larger patterns.",
+    "WRITE. Write values, formulas, and formatting to cells. Accepts 2D matrices, a single cell, or a 1D list (a row, or a column when range is one column wide). A formula pattern smaller than range is filled across it with relative-reference translation. Otherwise cells must match a multi-cell range exactly — a larger or smaller block is refused — so to write the data's own shape, give only its top-left cell as range. Computed formula values and errors come back for verification. OVERWRITE PROTECTION: use allow_overwrite=true immediately when the user's requested edit targets existing cells; ask only when the overwrite is outside the requested scope. Use copyToRange to expand larger patterns.",
     {
       sheetId,
-      range: z.string().describe("Target range in A1 notation (auto-expands to match cells)."),
+      range: z.string().describe("A single top-left cell (the data sets the shape), or a range that cells matches exactly."),
       cells: cellPayload,
       copyToRange: z
         .string()
