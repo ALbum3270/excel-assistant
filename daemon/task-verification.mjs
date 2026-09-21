@@ -62,6 +62,8 @@ function fittingRange(shape, rows, columns) {
  * by its label and saying exactly what to send instead. Returns the checks with
  * defaults filled in (label, single-cell targets sized from their matrix).
  */
+const NUMERIC_TEXT = /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/;
+
 function validateChecks(checks) {
   const problems = [];
   const normalized = [];
@@ -89,8 +91,14 @@ function validateChecks(checks) {
         fail("row_count `expected` must be a non-negative whole number.");
       }
     }
-    if (item.type === "sum" && item.expected !== undefined && !Number.isFinite(item.expected)) {
-      fail("sum `expected` must be a finite number.");
+    // A total sent as text ("305", "-12.5") has one reading, so take it; anything
+    // with separators or units ("1,234", "305 kg") is still refused, since the
+    // intended number is no longer certain.
+    if (item.type === "sum" && typeof item.expected === "string" && NUMERIC_TEXT.test(item.expected.trim())) {
+      entry = { ...entry, expected: Number(item.expected.trim()) };
+    }
+    if (item.type === "sum" && entry.expected !== undefined && !Number.isFinite(entry.expected)) {
+      fail("sum `expected` must be a number, e.g. 305 or \"305\" (no separators or units).");
     }
 
     let shape;
@@ -100,8 +108,27 @@ function validateChecks(checks) {
       fail(error.message);
     }
 
-    if (item.type === "matches" && item.expected !== undefined && shape) {
-      const matrix = item.expected;
+    // One value for one cell is unambiguous, the same way a cell write takes a
+    // single value; for any larger target the rows and columns must be spelled
+    // out, because a scalar could mean "every cell" or "the first cell".
+    if (item.type === "matches" && shape && item.expected !== undefined && !Array.isArray(item.expected)) {
+      if (isScalar(item.expected) && shape.rows === 1 && shape.columns === 1) {
+        entry = { ...entry, expected: [[item.expected]] };
+      } else if (isScalar(item.expected)) {
+        fail(
+          `a single value only fits a one-cell target; ${item.target.range} is ${shape.rows} x ${shape.columns}, ` +
+            "so send `expected` as a 2D array with one row per target row.",
+        );
+      }
+    }
+
+    if (
+      item.type === "matches" &&
+      entry.expected !== undefined &&
+      shape &&
+      (Array.isArray(entry.expected) || !isScalar(entry.expected))
+    ) {
+      const matrix = entry.expected;
       if (!Array.isArray(matrix) || matrix.length === 0 || !Array.isArray(matrix[0])) {
         fail("matches `expected` must be a 2D array, e.g. [[1,\"a\"],[2,\"b\"]].");
       } else if (matrix.some((row) => !Array.isArray(row) || row.length !== matrix[0].length)) {
@@ -169,8 +196,8 @@ export const TASK_CHECK_DESCRIPTION =
   "call action=define with checks derived from the user's requirements; source ranges are snapshotted then. " +
   "After writing, call action=run to see failures and fix the result before reporting. Checks are per user turn; " +
   "the daemon also reruns the declared plan at normal turn completion. Ranges include both ends (C2:D8 is 7 rows), and "
-  "a single-cell target (C2) takes its size from the expected matrix. row_count, sum and matches need `expected` "
-  "(a whole number, a number, and a 2D array); unique, not_blank and formulas take none; rows_in_source and same_rows need `source`. "
+  "a single-cell target (C2) takes its size from the expected matrix, and a one-cell matches check also accepts a single value. row_count, sum and matches need `expected` "
+  "(a whole number; a number or plain numeric text; a 2D array); unique, not_blank and formulas take none; rows_in_source and same_rows need `source`. "
   "A rejected call lists every problem at once — fix them all in the next call. row_count counts rows with any nonblank value; " +
   "unique checks whole-row tuples (choose the key columns as target); not_blank checks every value; formulas requires " +
   "a formula in every target cell; matches compares the full target to an independently computed expected matrix; " +

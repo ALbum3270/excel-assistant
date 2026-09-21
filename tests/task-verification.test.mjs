@@ -178,3 +178,32 @@ test("a sheet id sent as text is accepted rather than bouncing the call", async 
   ]);
   assert.equal((await verification.run()).status, "passed");
 });
+
+test("a one-cell matches check takes a single value; a larger one still needs rows", async () => {
+  const verification = createTaskVerification(workbook({ I2: 305, I3: 7 }));
+  await verification.define([
+    { type: "matches", label: "one cell", target: target("I2"), expected: 305 },
+  ]);
+  const result = await verification.run();
+  assert.equal(result.status, "passed");
+
+  const error = await verification
+    .define([{ type: "matches", label: "two cells", target: target("I2:I3"), expected: 305 }])
+    .then(() => null, (e) => e);
+  assert.match(error.message, /single value only fits a one-cell target; I2:I3 is 2 x 1/);
+});
+
+test("a sum sent as plain numeric text is accepted, but not with separators or units", async () => {
+  const verification = createTaskVerification(workbook({ B2: 300, B3: 5 }));
+  await verification.define([
+    { type: "sum", label: "total", target: target("B2:B3"), expected: "305" },
+  ]);
+  assert.equal((await verification.run()).status, "passed");
+
+  for (const expected of ["1,234", "305 kg", "abc"]) {
+    const error = await verification
+      .define([{ type: "sum", label: "total", target: target("B2:B3"), expected }])
+      .then(() => null, (e) => e);
+    assert.match(error.message, /sum `expected` must be a number/, expected);
+  }
+});
