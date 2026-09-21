@@ -104,6 +104,41 @@ test("a write with an unknown outcome consumes its revision", async () => {
   );
 });
 
+test("a write that fails part-way still consumes its revision", async () => {
+  const execution = createWorkbookExecution();
+  const path = "C:\Books\Partial.xlsx";
+  // The pane returns every error settled; this one had already changed cells.
+  await assert.rejects(
+    execution.run(path, { write: true, toolName: "write" }, async () => {
+      throw Object.assign(new Error("format sync failed after values were written"), {
+        commitStatus: "unknown",
+        executionSettled: true,
+      });
+    }),
+    (error) => error.workbookRevision === 1,
+  );
+  assert.equal(execution.snapshot(path).blocked, null, "a settled error does not block the queue");
+  let staleRan = false;
+  await assert.rejects(
+    execution.run(path, { write: true, expectedRevision: 0, toolName: "stale" }, async () => {
+      staleRan = true;
+    }),
+    (error) => error.code === "STALE_WORKBOOK_REVISION",
+  );
+  assert.equal(staleRan, false);
+
+  // A refusal the pane marks not committed still leaves the number alone.
+  await assert.rejects(
+    execution.run(path, { write: true, toolName: "write" }, async () => {
+      throw Object.assign(new Error("cell-edit mode"), {
+        commitStatus: "not_committed",
+        executionSettled: true,
+      });
+    }),
+    (error) => error.workbookRevision === 1,
+  );
+});
+
 test("a timed-out write keeps the shared queue until the executor settles", async () => {
   const execution = createWorkbookExecution();
   let releaseWrite;

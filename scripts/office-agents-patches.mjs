@@ -209,10 +209,12 @@ function excelColorToHex(
       }
     }`,
     `    let copyDestination: Excel.Range | null = null;
-    if (copyToRange && !allowOverwrite) {
-      copyDestination = sheet.getRange(copyToRange);
-      copyDestination.load("rowCount,columnCount,values,formulas,address");
-      await context.sync();
+    if (copyToRange) {
+      copyDestination = await effectiveCopyTarget(context, range, sheet.getRange(copyToRange));
+      if (!allowOverwrite) {
+        copyDestination.load("rowCount,columnCount,values,formulas,address");
+        await context.sync();
+      }
     }
 
     if (!allowOverwrite) {
@@ -379,7 +381,28 @@ function excelColorToHex(
     const source = sheet.getRange(sourceRange);
     const dest = sheet.getRange(destinationRange);
     dest.copyFrom(source, Excel.RangeCopyType.all);`,
-    `export async function copyTo(
+    `// Range.copyFrom expands a destination smaller than its source (documented
+// Office.js behavior), so the cells a copy touches are the destination's
+// top-left cell resized to the larger of the two in each dimension. The
+// overwrite check, the copy and the receipt all use that one range; checking
+// the destination as given let a copy to D1 overwrite E2 unchecked.
+async function effectiveCopyTarget(
+  context: Excel.RequestContext,
+  source: Excel.Range,
+  dest: Excel.Range,
+): Promise<Excel.Range> {
+  source.load("rowCount,columnCount");
+  dest.load("rowCount,columnCount");
+  await context.sync();
+  return dest
+    .getCell(0, 0)
+    .getResizedRange(
+      Math.max(source.rowCount, dest.rowCount) - 1,
+      Math.max(source.columnCount, dest.columnCount) - 1,
+    );
+}
+
+export async function copyTo(
   sheetId: number,
   sourceRange: string,
   destinationRange: string,
@@ -390,7 +413,7 @@ function excelColorToHex(
     if (!sheet) throw new Error(\`Worksheet with ID \${sheetId} not found\`);
 
     const source = sheet.getRange(sourceRange);
-    const dest = sheet.getRange(destinationRange);
+    const dest = await effectiveCopyTarget(context, source, sheet.getRange(destinationRange));
     if (!allowOverwrite) {
       source.load("rowCount,columnCount,address");
       dest.load("rowCount,columnCount,values,formulas,address");

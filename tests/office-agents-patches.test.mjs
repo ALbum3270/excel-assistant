@@ -34,6 +34,16 @@ function range(address, initialValues, initialFormulas = initialValues) {
     getCell() {
       return {
         address: "Sheet1!A1",
+        getResizedRange(rowsDown, columnsRight) {
+          const [, letters, row] = /^([A-Z]+)(\d+)/.exec(address);
+          const index = [...letters].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
+          const letter = (n) => (n > 0 ? letter(Math.floor((n - 1) / 26)) + String.fromCharCode(65 + ((n - 1) % 26)) : "");
+          const end = `${letter(index + columnsRight)}${Number(row) + rowsDown}`;
+          const key = rowsDown === 0 && columnsRight === 0 ? `${letters}${row}` : `${letters}${row}:${end}`;
+          const result = typeof currentRanges === "function" ? currentRanges(key) : currentRanges[key];
+          assert.ok(result, `Unexpected resized range: ${key}`);
+          return result;
+        },
         load() {},
         format: {
           font: {},
@@ -68,6 +78,8 @@ function range(address, initialValues, initialFormulas = initialValues) {
   return object;
 }
 
+let currentRanges = {};
+
 function installExcel(ranges, { usedAddress = "A1:A3" } = {}) {
   let runCalls = 0;
   const sheet = {
@@ -80,6 +92,7 @@ function installExcel(ranges, { usedAddress = "A1:A3" } = {}) {
         ? { ...ranges(usedAddress), isNullObject: false }
         : { isNullObject: false, address: `Sheet1!${usedAddress}`, load() {} },
     getRange(address) {
+      currentRanges = ranges;
       const result = typeof ranges === "function" ? ranges(address) : ranges[address];
       assert.ok(result, `Unexpected range request: ${address}`);
       return result;
@@ -424,4 +437,18 @@ test("copy protection permits source cells inside a larger destination", async (
   installExcel({ A1: source, "A1:A3": destination });
   await api.copyTo(1, "A1", "A1:A3");
   assert.equal(destination.state.copies, 1);
+});
+
+test("a copy is checked against the range it expands to, not the one it was given", async () => {
+  // Range.copyFrom expands D1 to D1:E2 for a 2x2 source; E2 must be protected.
+  const source = range("A1:B2", [[1, 2], [3, 4]]);
+  const given = range("D1", [[""]]);
+  const expanded = range("D1:E2", [["", ""], ["", "KEEP"]]);
+  installExcel({ "A1:B2": source, D1: given, "D1:E2": expanded });
+  await assert.rejects(api.copyTo(1, "A1:B2", "D1"), /Would overwrite.*E2/);
+  assert.equal(expanded.state.copies, 0);
+  assert.equal(given.state.copies, 0);
+  // Authorized, the copy goes into the expanded range.
+  await api.copyTo(1, "A1:B2", "D1", true);
+  assert.equal(expanded.state.copies, 1);
 });

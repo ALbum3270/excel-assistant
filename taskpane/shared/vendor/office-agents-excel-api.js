@@ -576,10 +576,12 @@ async function setCellRange(sheetId, rangeAddr, cells, options = {}) {
       await context.sync();
     }
     let copyDestination = null;
-    if (copyToRange && !allowOverwrite) {
-      copyDestination = sheet.getRange(copyToRange);
-      copyDestination.load("rowCount,columnCount,values,formulas,address");
-      await context.sync();
+    if (copyToRange) {
+      copyDestination = await effectiveCopyTarget(context, range, sheet.getRange(copyToRange));
+      if (!allowOverwrite) {
+        copyDestination.load("rowCount,columnCount,values,formulas,address");
+        await context.sync();
+      }
     }
     if (!allowOverwrite) {
       const overwritten = nonEmptyCellAddresses(range, (r, c) => {
@@ -787,12 +789,21 @@ async function clearCellRange(sheetId, rangeAddr, clearType = "contents") {
     return { success: true, clearedRange: rangeAddr };
   });
 }
+async function effectiveCopyTarget(context, source, dest) {
+  source.load("rowCount,columnCount");
+  dest.load("rowCount,columnCount");
+  await context.sync();
+  return dest.getCell(0, 0).getResizedRange(
+    Math.max(source.rowCount, dest.rowCount) - 1,
+    Math.max(source.columnCount, dest.columnCount) - 1
+  );
+}
 async function copyTo(sheetId, sourceRange, destinationRange, allowOverwrite = false) {
   return Excel.run(async (context) => {
     const sheet = await getWorksheetById(context, sheetId);
     if (!sheet) throw new Error(`Worksheet with ID ${sheetId} not found`);
     const source = sheet.getRange(sourceRange);
-    const dest = sheet.getRange(destinationRange);
+    const dest = await effectiveCopyTarget(context, source, sheet.getRange(destinationRange));
     if (!allowOverwrite) {
       source.load("rowCount,columnCount,address");
       dest.load("rowCount,columnCount,values,formulas,address");

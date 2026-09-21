@@ -232,33 +232,47 @@ async function resolveWorksheet(context, { sheetId, sheet, address }) {
   return { worksheet: context.workbook.worksheets.getActiveWorksheet(), a1: parsed.a1 };
 }
 
+// The range a write will touch, resolved before anything is read from it.
+// A copy expands a destination smaller than its source (Range.copyFrom), so
+// with a source the extent is the larger of the two in each dimension — the
+// same rule the copy itself uses. Only dimensions are loaded here.
+async function captureRange(context, target) {
+  const { worksheet, a1 } = await resolveWorksheet(context, target);
+  let range = target.useUsedRange ? worksheet.getUsedRangeOrNullObject() : worksheet.getRange(a1);
+  range.load("address,rowCount,columnCount,isNullObject");
+  const source = target.sizeFromAddress ? worksheet.getRange(target.sizeFromAddress) : null;
+  source?.load("rowCount,columnCount");
+  await context.sync();
+  let baseRows = 1;
+  let baseColumns = 1;
+  if (range.isNullObject) range = worksheet.getRange("A1");
+  else {
+    baseRows = range.rowCount;
+    baseColumns = range.columnCount;
+  }
+  let rows = target.rows;
+  let columns = target.columns;
+  if (source) {
+    rows = Math.max(source.rowCount, baseRows);
+    columns = Math.max(source.columnCount, baseColumns);
+  }
+  if (rows && columns) range = range.getCell(0, 0).getResizedRange(rows - 1, columns - 1);
+  range.load("address,rowCount,columnCount");
+  await context.sync();
+  return range;
+}
+
 async function captureRangeSnapshot(target) {
   return Excel.run(async (context) => {
-    const { worksheet, a1 } = await resolveWorksheet(context, target);
-    let range = target.useUsedRange
-      ? worksheet.getUsedRangeOrNullObject()
-      : worksheet.getRange(a1);
-    let rows = target.rows;
-    let columns = target.columns;
-    if (target.sizeFromAddress && !String(target.address).includes(":")) {
-      const source = worksheet.getRange(target.sizeFromAddress);
-      source.load("rowCount,columnCount");
-      await context.sync();
-      rows = source.rowCount;
-      columns = source.columnCount;
-    }
-    range.load("address,rowCount,columnCount,isNullObject");
-    await context.sync();
-    if (range.isNullObject) range = worksheet.getRange("A1");
-    if (rows && columns) {
-      range = range.getCell(0, 0).getResizedRange(rows - 1, columns - 1);
-    }
-    range.load("address,rowCount,columnCount,values,formulas");
-    await context.sync();
+    const range = await captureRange(context, target);
+    // Refuse on size before loading a single value: a million-cell target used
+    // to be read in full and only then turned away.
     const cellCount = range.rowCount * range.columnCount;
     if (cellCount > MAX_RECOVERY_CELLS) {
       throw new Error(`Recovery snapshot exceeds the ${MAX_RECOVERY_CELLS}-cell limit.`);
     }
+    range.load("values,formulas");
+    await context.sync();
     return {
       kind: "range",
       address: range.address,
@@ -270,35 +284,7 @@ async function captureRangeSnapshot(target) {
 }
 
 async function qualifiedAddress(target) {
-  return Excel.run(async (context) => {
-    const { worksheet, a1 } = await resolveWorksheet(context, target);
-    let range = target.useUsedRange
-      ? worksheet.getUsedRangeOrNullObject()
-      : worksheet.getRange(a1);
-    let rows = target.rows;
-    let columns = target.columns;
-    if (target.sizeFromAddress && !String(target.address).includes(":")) {
-      const source = worksheet.getRange(target.sizeFromAddress);
-      source.load("rowCount,columnCount");
-      await context.sync();
-      rows = source.rowCount;
-      columns = source.columnCount;
-    }
-    range.load("address,isNullObject");
-    await context.sync();
-    if (!range.isNullObject) {
-      if (rows && columns) {
-        range = range.getCell(0, 0).getResizedRange(rows - 1, columns - 1);
-        range.load("address");
-        await context.sync();
-      }
-      return range.address;
-    }
-    const firstCell = worksheet.getRange("A1");
-    firstCell.load("address");
-    await context.sync();
-    return firstCell.address;
-  });
+  return Excel.run(async (context) => (await captureRange(context, target)).address);
 }
 
 // Pi records one format state per area and gives up when an area mixes formats
@@ -398,8 +384,14 @@ function recoveryPlan(name, args) {
         { capture: "range", target: bySheetId(args.range, shape) },
         ...(args.copyToRange
           ? [
-              { capture: "range", target: bySheetId(args.copyToRange) },
-              { capture: "format", target: bySheetId(args.copyToRange, shape), selection: CELL_FORMAT_PROPERTIES },
+              // The fill covers copyToRange, expanded to the pattern if smaller;
+              // sizing it by the pattern's own shape captured only its first block.
+              { capture: "range", target: bySheetId(args.copyToRange, { sizeFromAddress: args.range }) },
+              {
+                capture: "format",
+                target: bySheetId(args.copyToRange, { sizeFromAddress: args.range }),
+                selection: CELL_FORMAT_PROPERTIES,
+              },
             ]
           : []),
       ];

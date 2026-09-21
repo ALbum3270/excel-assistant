@@ -147,9 +147,14 @@ export function createWorkbookExecution() {
             this.settled(workbookId, opId);
             return { result, revision: state.revision, uncertain: Boolean(state.blocked) };
           } catch (error) {
-            if (write && error.commitStatus !== "not_committed" && !error.executionSettled) {
-              // The outcome is unknown, so assume it may have landed.
-              state.revision = pending;
+            // Settled means the operation stopped running, not that nothing
+            // changed: a write can apply its first batch and fail on a later
+            // sync, and a cancelled write can finish after the caller gave up.
+            // Only an explicit not_committed keeps the number; tying it to
+            // "still running" let stale writers through after a partial write.
+            const mayHaveChanged = write && error.commitStatus !== "not_committed";
+            if (mayHaveChanged) state.revision = pending;
+            if (mayHaveChanged && !error.executionSettled) {
               state.blocked = { opId, toolName, reason: error.message };
             } else this.settled(workbookId, opId);
             throw Object.assign(error, { workbookRevision: state.revision });
