@@ -340,3 +340,28 @@ test("a comma outside every bracket is rejected, but the valid places for one ar
   }
   assert.equal(calls.length, 3);
 });
+
+test("a formula refused before dispatch counts toward the repeat budget", async () => {
+  let dispatches = 0;
+  const server = createOfficeBridgeMcp(
+    {
+      async callTaskpaneTool() {
+        dispatches += 1;
+        return { success: true, commitStatus: "committed" };
+      },
+    },
+    "excel",
+    "test-pane",
+  );
+  const handler = server.instance._registeredTools.excel_fill_formula.handler;
+  // The unbalanced formula a flash run resent three times in task 42354.
+  const call = { sheetId: 1, range: "D2:D9", formula: "=IF(ISERROR(A2),\"\",IF(NOT(ISNUMBER(A2)),A2,\"\")" };
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const result = await handler({ ...call });
+    assert.match(result.content[0].text, /parentheses are unbalanced/);
+  }
+  const refused = await handler({ ...call });
+  assert.match(refused.content[0].text, /already failed 3 times/);
+  assert.equal(dispatches, 0, "a refused formula never reaches Excel");
+});

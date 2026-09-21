@@ -348,7 +348,12 @@ export function createOfficeBridgeMcp(
   const fingerprint = (name, args) => `${name}:${JSON.stringify(stable(args ?? {}))}`;
   const failed = (result) => result && typeof result === "object" && result.success === false;
 
-  const wrap = (name) => async (args) => {
+  // Runs one tool call under the budget. The key is what the model sent, and the
+  // body covers everything the call does — including the pre-write checks — so
+  // a formula refused before it reaches Excel counts like one Excel refused.
+  // (The first version counted only dispatched calls; a run then showed the
+  // same unbalanced formula resent three times with nothing counting it.)
+  const guarded = async (name, args, body) => {
     const key = fingerprint(name, args);
     const previous = repeatedFailures.get(key);
     if (previous && previous.count >= REPEAT_LIMIT) {
@@ -364,7 +369,7 @@ export function createOfficeBridgeMcp(
       repeatedFailures.set(key, { count: (previous?.count ?? 0) + 1, reason });
     };
     try {
-      const result = boundWriteReceipt(await call(name, args ?? {}));
+      const result = await body();
       if (failed(result)) remember(String(result.error ?? "the call reported success: false."));
       else repeatedFailures.delete(key);
       return asMcpResult(result);
@@ -373,6 +378,9 @@ export function createOfficeBridgeMcp(
       return asMcpError(e);
     }
   };
+
+  const wrap = (name) => (args) =>
+    guarded(name, args, async () => boundWriteReceipt(await call(name, args ?? {})));
 
   const scalarCell = z.union([z.string(), z.number(), z.boolean(), z.null()]);
   const tableValues = z
@@ -700,14 +708,11 @@ export function createOfficeBridgeMcp(
         ),
       explanation,
     },
-    (args) => {
-      try {
+    (args) =>
+      guarded("excel_set_cell_range", args, async () => {
         const cells = cellMatrix.parse(normalizeCellMatrix(args.cells, args.range));
-        return wrap("excel_set_cell_range")(prepareCellWrite(args, cells));
-      } catch (error) {
-        return asMcpError(error);
-      }
-    },
+        return boundWriteReceipt(await call("excel_set_cell_range", prepareCellWrite(args, cells)));
+      }),
   );
 
   const excel_fill_formula = tool(
@@ -724,17 +729,16 @@ export function createOfficeBridgeMcp(
       allow_overwrite: z.boolean().optional(),
       explanation,
     },
-    (args) => {
-      try {
+    (args) =>
+      guarded("excel_fill_formula", args, async () => {
         if (!parseA1RangeSize(args.range)) {
           throw new Error("range must be a valid A1 cell or rectangular range");
         }
         const { formula, ...writeArgs } = args;
-        return wrap("excel_set_cell_range")(prepareCellWrite(writeArgs, [[{ formula }]]));
-      } catch (error) {
-        return asMcpError(error);
-      }
-    },
+        return boundWriteReceipt(
+          await call("excel_set_cell_range", prepareCellWrite(writeArgs, [[{ formula }]])),
+        );
+      }),
   );
 
   const excel_clear_cell_range = tool(

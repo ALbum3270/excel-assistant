@@ -406,6 +406,25 @@ def summarize(run: str, results: list[dict]) -> dict:
     }
 
 
+def keep_awake() -> None:
+    """Hold off idle sleep for as long as this process runs.
+
+    A 40-task run lost five tasks to idle sleep: twice before the AC timeout
+    was turned off, and three times after, once the laptop was unplugged and
+    the battery timeout applied. Power settings are the wrong lever; this is
+    the documented Windows API media players use, it needs no settings change,
+    and it lapses on its own when the process exits. Closing the lid still
+    sleeps the machine.
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    ES_CONTINUOUS = 0x80000000
+    ES_SYSTEM_REQUIRED = 0x00000001
+    ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dataset", type=Path, required=True, help="spreadsheetbench_verified_400 directory")
@@ -421,6 +440,7 @@ def main() -> None:
     parser.add_argument("--timeout", type=int, default=900, help="per-task agent timeout, seconds")
     parser.add_argument("--retry-infra", action="store_true", help="rerun tasks whose last attempt was an infra failure")
     args = parser.parse_args()
+    keep_awake()
 
     sys.path.insert(0, str(args.spreadsheetbench / "evaluation"))
     from evaluation import compare_cell_value, compare_workbooks

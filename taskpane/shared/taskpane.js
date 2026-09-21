@@ -1762,6 +1762,12 @@ async function describeOfficeToolError(error, args) {
   // debugInfo; the localized message alone doesn't say what was rejected.
   const location = error?.debugInfo?.errorLocation;
   const message = `${error?.message ?? String(error)}${location ? ` [at ${location}]` : ""}`;
+  if (error?.code === "InvalidOperationInCellEditMode" && error?.commitStatus !== "not_committed") {
+    return (
+      `${message} (Excel entered cell-edit mode while this change was running, so part of it may ` +
+      "have been applied. Ask the user to press Enter or Esc, then read the range before retrying.)"
+    );
+  }
   if (error?.code === "InvalidArgument" && hasFormulaInput(args)) {
     return (
       `${message} (Excel rejected the formula itself, not the range: InvalidArgument means a function ` +
@@ -1979,6 +1985,33 @@ function withMutationReceipt(name, args, result, receiptId) {
   };
 }
 
+// Excel fails a whole batch while someone is editing a cell, before running any
+// of it (Office.js RunOptions.delayForCellEdit). Probe before a write so it
+// never starts and the outcome is known — nothing changed — instead of the
+// write failing mid-way with an unknown outcome, which locks the workbook until
+// someone confirms it by hand. A user who starts editing between the probe and
+// the write still gets an unknown outcome; that race is real and stays honest.
+const CELL_EDIT_MODE_MESSAGE =
+  "Excel is in cell-edit mode (someone is typing in a cell), so nothing was changed. " +
+  "Ask the user to press Enter or Esc in Excel, then try again — retrying before that fails the same way.";
+
+async function refuseInCellEditMode() {
+  try {
+    await Excel.run(async (context) => {
+      context.workbook.load("name");
+      await context.sync();
+    });
+  } catch (error) {
+    if (error?.code === "InvalidOperationInCellEditMode") {
+      throw Object.assign(new Error(CELL_EDIT_MODE_MESSAGE), {
+        code: "InvalidOperationInCellEditMode",
+        commitStatus: "not_committed",
+      });
+    }
+    // Any other probe failure is the write's to report.
+  }
+}
+
 async function runOfficeTool(msg) {
   const { id, name, args } = msg;
   if (cancelledToolCalls.has(id)) {
@@ -1990,6 +2023,7 @@ async function runOfficeTool(msg) {
   try {
     const execute = async () => {
       if (cancelledToolCalls.delete(id)) throw cancelledBeforeExecution;
+      if (isMutationCall(name, args)) await refuseInCellEditMode();
       commitRecovery = WRITE_TOOLS.has(name) ? await prepareMutationRecovery(name, args, id) : null;
       if (cancelledToolCalls.delete(id)) throw cancelledBeforeExecution;
       let result;

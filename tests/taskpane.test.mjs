@@ -400,6 +400,7 @@ test("a failed mutation persists its captured recovery checkpoint", async () => 
     updateToolCardSuccess() {},
     updateToolCardFailure() {},
     takeMutationDiff: () => undefined,
+    refuseInCellEditMode: async () => {},
     wsSend: (message) => sent.push(message),
     console: { error() {} },
   };
@@ -419,4 +420,33 @@ test("a failed mutation persists its captured recovery checkpoint", async () => 
   assert.equal(sent[0].ok, false);
   assert.equal(sent[0].error.commitStatus, "unknown");
   assert.equal(sent[0].error.recovery.status, "checkpoint_created");
+});
+
+test("a write refused for cell-edit mode reports that nothing was committed", async () => {
+  const start = source.indexOf("const CELL_EDIT_MODE_MESSAGE =");
+  const end = source.indexOf("async function runOfficeTool(msg)", start);
+  assert.ok(start >= 0 && end > start);
+  const editing = Object.assign(new Error("Excel 处于单元格编辑模式。"), {
+    code: "InvalidOperationInCellEditMode",
+  });
+  const sandbox = {
+    Excel: {
+      async run() {
+        throw editing;
+      },
+    },
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(`${source.slice(start, end)}
+globalThis.probe = refuseInCellEditMode;`, sandbox);
+
+  const error = await sandbox.probe().then(() => null, (e) => e);
+  assert.equal(error.commitStatus, "not_committed");
+  assert.match(error.message, /nothing was changed/);
+
+  // Any other probe failure is left for the write itself to report.
+  sandbox.Excel.run = async () => {
+    throw new Error("GeneralException");
+  };
+  assert.equal(await sandbox.probe(), undefined);
 });
