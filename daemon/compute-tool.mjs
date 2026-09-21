@@ -63,7 +63,7 @@ function cellInput(raw, { text = false, formulas = true } = {}) {
 const failure = (stderr) => ({ stdout: "", stderr: `${stderr}\n`, exitCode: 1 });
 const resolvePath = (ctx, path) => (path.startsWith("/") ? path : `${ctx.cwd}/${path}`);
 
-function workbookCommands(call) {
+function workbookCommands(call, approveWrite) {
   const sheetToCsv = defineCommand("sheet-to-csv", async (args, ctx) => {
     const [sheetArg, second, third] = args;
     const sheetId = Number.parseInt(sheetArg, 10);
@@ -168,6 +168,23 @@ function workbookCommands(call) {
           );
         }
       }
+      // Approval is asked here, where the sandbox actually writes, not from the
+      // command text: a saved script (`bash later.sh`) or a command built in a
+      // variable wrote without asking when the check was a regex on the text.
+      const decision = await approveWrite("mcp__office__excel_set_cell_range", {
+        sheetId,
+        range: target,
+        source: file,
+        rows: rows.length,
+        columns: width,
+      });
+      if (decision !== "approve" && decision !== "approve_turn") {
+        return failure(
+          decision === "reject"
+            ? "The user rejected this workbook change. Do not retry it; ask what they would like instead."
+            : `Approval for this workbook change did not complete (${decision}); nothing was written.`,
+        );
+      }
       const rowsPerChunk = Math.max(1, Math.floor(WRITE_CHUNK_CELLS / width));
       // Formula errors (often an expected #N/A) don't stop the write: stopping
       // would leave a half-written table. They are listed once everything is in.
@@ -233,10 +250,10 @@ export const COMPUTE_TOOL_DESCRIPTION =
   "Use sandbox paths such as data.csv; Windows paths, cd into the project, PowerShell, network access, openpyxl, " +
   "pandas and numpy are unavailable. Output is truncated to 30000 characters per stream.";
 
-export function createComputeShell(call, { signal } = {}) {
+export function createComputeShell(call, { signal, approveWrite = async () => "approve" } = {}) {
   const bash = new Bash({
     python: true,
-    customCommands: workbookCommands(call),
+    customCommands: workbookCommands(call, approveWrite),
     executionLimits: {
       maxExecutionTimeMs: COMPUTE_TIMEOUT_MS,
       maxPythonTimeoutMs: 40_000,

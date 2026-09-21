@@ -49,3 +49,11 @@ test("approval timeout is distinct from user rejection", async () => {
   );
   assert.equal(decision, "timeout");
 });
+
+test("excel_bash is not gated by its text; csv-to-sheet asks when it writes", () => {
+  // A regex on the command missed saved scripts and built commands (audit B04).
+  assert.equal(
+    needsApproval("mcp__office__excel_bash", { command: "csv-to-sheet out.csv 1 A1 --force" }),
+    false,
+  );
+});

@@ -274,7 +274,7 @@ export function createOfficeBridgeMcp(
   bridge,
   host = null,
   paneKey = null,
-  { signal, revisionState = { value: undefined } } = {},
+  { signal, revisionState = { value: undefined }, approveWrite } = {},
 ) {
   // `paneKey` routes every call to the exact workbook pane this session
   // belongs to (so two open workbooks don't cross-talk).
@@ -867,7 +867,7 @@ export function createOfficeBridgeMcp(
     { command: z.string().min(1).describe("The bash command to run in the sandbox.") },
     async (args) => {
       try {
-        computeShell ??= createComputeShell(call, { signal });
+        computeShell ??= createComputeShell(call, { signal, approveWrite });
         const result = await computeShell(args);
         return asMcpResult(result, { isError: result.exitCode !== 0 });
       } catch (e) {

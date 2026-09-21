@@ -99,3 +99,33 @@ test("csv-to-sheet keeps lossy numbers as text and offers exact text on request"
     { value: "'42" },
   ]);
 });
+
+test("a write from a saved script still asks for approval at the moment it writes", async () => {
+  const writes = [];
+  const asked = [];
+  let decision = "reject";
+  const shell = createComputeShell(
+    async (name, args) => {
+      if (name === "excel_set_cell_range") writes.push(args.range);
+      return { success: true, commitStatus: "committed", writtenRange: args.range };
+    },
+    {
+      approveWrite: async (toolName, input) => {
+        asked.push(input.range);
+        return decision;
+      },
+    },
+  );
+  // The audit's bypass: save the write in one call, run the script in another.
+  await shell({
+    command: "printf 'a,b\n1,2\n' > t.csv && echo 'csv-to-sheet t.csv 1 A1 --force' > later.sh",
+  });
+  const rejected = await shell({ command: "bash later.sh" });
+  assert.deepEqual(asked, ["A1:B2"], "the script's write asked for approval");
+  assert.equal(writes.length, 0, "a rejected write never reaches Excel");
+  assert.match(rejected.stderr, /rejected this workbook change/);
+
+  decision = "approve";
+  await shell({ command: "bash later.sh" });
+  assert.deepEqual(writes, ["A1:B2"]);
+});

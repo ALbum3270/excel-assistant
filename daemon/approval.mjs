@@ -53,9 +53,9 @@ export function needsApproval(toolName, input) {
   if (toolName === "mcp__office__excel_workbook_history") {
     return Boolean(input?.action && input.action !== "list");
   }
-  if (toolName === "mcp__office__excel_bash") {
-    return /\bcsv-to-sheet\b/.test(String(input?.command ?? ""));
-  }
+  // excel_bash is not gated here: its one write path, csv-to-sheet, asks for
+  // approval itself at the moment it writes (see compute-tool.mjs).
+  if (toolName === "mcp__office__excel_bash") return false;
 
   const prefix = "mcp__thepexcel-excel__";
   if (!toolName.startsWith(prefix)) return false;

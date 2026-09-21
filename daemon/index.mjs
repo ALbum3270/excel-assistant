@@ -1688,11 +1688,20 @@ function denyWithOfficeMessage() {
 // approve-before-apply; here each workbook-changing call waits in canUseTool
 // for the user's decision, so the model still sees every real result.
 // ---------------------------------------------------------------------------
-async function permissionFor(key, session, host, toolName, input) {
+// The user's decision on one change, or "approve" when approval is off or an
+// evaluation is running. Shared by the permission hook and by the sandbox's
+// csv-to-sheet, which asks at the moment it writes.
+async function decideApproval(key, session, toolName, input) {
   // Evaluations run unattended even if the user turned approvals on in the pane.
-  if (approvalManager.isEnabled(key) && !evalObservers.has(key) && needsApproval(toolName, input)) {
-    const decision = await approvalManager.request(key, session, toolName, input);
-    if (decision === "approve_turn" && session) session.approveRestOfTurn = true;
+  if (!approvalManager.isEnabled(key) || evalObservers.has(key)) return "approve";
+  const decision = await approvalManager.request(key, session, toolName, input);
+  if (decision === "approve_turn" && session) session.approveRestOfTurn = true;
+  return decision;
+}
+
+async function permissionFor(key, session, host, toolName, input) {
+  if (needsApproval(toolName, input)) {
+    const decision = await decideApproval(key, session, toolName, input);
     if (decision === "reject") {
       return {
         behavior: "deny",
@@ -2069,6 +2078,7 @@ async function startSessionForFolder(
     officeMcp = createOfficeBridgeMcp(bridge, host, key, {
       signal: abortController.signal,
       revisionState: session.workbookRevision,
+      approveWrite: (toolName, input) => decideApproval(key, session, toolName, input),
     });
     if (host === "excel" && thepExcelGateway) {
       thepExcelMcp = thepExcelGateway.createSessionServer({
