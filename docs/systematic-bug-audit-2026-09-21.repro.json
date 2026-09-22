@@ -1,0 +1,161 @@
+{
+  "findings": 14,
+  "reproduced": 14,
+  "results": [
+    {
+      "id": "B01-partial-write-revision",
+      "reproduced": true,
+      "evidence": {
+        "cell": "partially changed",
+        "revisionAfterPartialFailure": 0,
+        "staleWriteRan": true
+      }
+    },
+    {
+      "id": "B02-backup-collision",
+      "reproduced": true,
+      "evidence": {
+        "differentWorkbooksShareFile": true,
+        "firstBackupContents": "workbook-B-original",
+        "reuseReturnsWrongWorkbook": true,
+        "sameSecondSaveReplacesPreviousBackup": true
+      }
+    },
+    {
+      "id": "B03-csv-type-loss",
+      "reproduced": true,
+      "evidence": {
+        "sourceStrings": [
+          "00123",
+          "9007199254740993",
+          "TRUE",
+          "=1+1"
+        ],
+        "writtenCells": [
+          {
+            "value": 123
+          },
+          {
+            "value": 9007199254740992
+          },
+          {
+            "value": true
+          },
+          {
+            "formula": "=1+1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "B04-script-approval-bypass",
+      "reproduced": true,
+      "evidence": {
+        "command": "bash later.sh",
+        "approval": false,
+        "writes": [
+          "excel_set_cell_range"
+        ]
+      }
+    },
+    {
+      "id": "B05-export-tool-result",
+      "reproduced": true,
+      "evidence": {
+        "inputKind": "tool_result",
+        "error": "Conversation archive contains an unsupported event"
+      }
+    },
+    {
+      "id": "B06-export-byte-budget",
+      "reproduced": true,
+      "evidence": {
+        "exportedEvents": 17,
+        "characters": 1701134,
+        "bytes": 5101142,
+        "uiImportByteLimit": 2000000
+      }
+    },
+    {
+      "id": "B07-recovery-persistence-breaks-result",
+      "reproduced": true,
+      "evidence": {
+        "workbookWrites": 1,
+        "attemptedCheckpointCommits": 2,
+        "resultMessages": 0
+      }
+    },
+    {
+      "id": "B08-repeat-budget-survives-state-change",
+      "reproduced": true,
+      "evidence": {
+        "dispatchCount": 3,
+        "stateNoLongerBlocked": true,
+        "fourthCall": "{\n  \"success\": false,\n  \"error\": \"This exact call has already failed 3 times: Excel is in cell-edit mode Sending it again fails the same way. Change the arguments or take a different approach.\"\n}"
+      }
+    },
+    {
+      "id": "B09-recovery-limit-after-data-load",
+      "reproduced": true,
+      "evidence": {
+        "cells": 1000000,
+        "limit": 20000,
+        "loadsBeforeRefusal": [
+          "address,rowCount,columnCount,isNullObject",
+          "address,rowCount,columnCount,values,formulas"
+        ]
+      }
+    },
+    {
+      "id": "B10-com-write-starts-after-stop",
+      "reproduced": true,
+      "evidence": {
+        "responseAtStop": "TOOL_CANCELLED",
+        "callsAfterStop": [
+          "excel_workbook",
+          "excel_range"
+        ]
+      }
+    },
+    {
+      "id": "B11-grouped-restore-splits-inverses",
+      "reproduced": true,
+      "evidence": {
+        "originalGroups": 1,
+        "inverseGroups": 2,
+        "inverseCallIds": [
+          "restore:one",
+          "restore:two"
+        ]
+      }
+    },
+    {
+      "id": "B12-copy-expanded-range-unguarded",
+      "reproduced": true,
+      "evidence": {
+        "allowOverwrite": false,
+        "uncheckedCell": "E2",
+        "before": "KEEP",
+        "after": 4
+      }
+    },
+    {
+      "id": "B13-failed-insert-creates-deletion-checkpoint",
+      "reproduced": true,
+      "evidence": {
+        "failedOperationCheckpoint": "checkpoint_created",
+        "inverseKind": "rows_absent",
+        "deletedExistingBlankRow": true
+      }
+    },
+    {
+      "id": "B14-pending-restart-defeats-stop",
+      "reproduced": true,
+      "evidence": {
+        "spawned": 3,
+        "afterExplicitStop": "starting",
+        "reason": "pending auto-restart is never cancelled"
+      }
+    }
+  ]
+}
