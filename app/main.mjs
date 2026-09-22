@@ -37,6 +37,19 @@ const MAX_RESTART = 3;
 // bite. See PR "crash-cap + restart backoff".
 const STABLE_AFTER_MS = 45_000;
 let stableTimer = null;
+// One pending automatic restart and one start in flight at most. A crash used
+// to schedule a restart that nothing could cancel, so Stop pressed in the next
+// second was undone, and a manual start in that second raced it for the ports.
+let restartTimer = null;
+let startInFlight = null;
+// Bumped by Stop, so a start that was still looking up its workspace when the
+// user stopped does not go on to spawn.
+let lifecycle = 0;
+
+function cancelPendingRestart() {
+  if (restartTimer) clearTimeout(restartTimer);
+  restartTimer = null;
+}
 
 // --------------------------------------------------------------------------
 // Daemon lifecycle
@@ -59,8 +72,19 @@ function openLogStream() {
   logStream.write(`\n=== ${new Date().toISOString()} app start ===\n`);
 }
 
-async function startDaemon() {
+function startDaemon() {
+  cancelPendingRestart();
+  if (daemonProcess) return Promise.resolve();
+  startInFlight ??= spawnDaemon().finally(() => {
+    startInFlight = null;
+  });
+  return startInFlight;
+}
+
+async function spawnDaemon() {
+  const generation = lifecycle;
   const workspace = await findInitialWorkspace();
+  if (generation !== lifecycle) return;
   currentWorkspace = workspace;
   daemonStatus = "starting";
   updateTray();
@@ -132,7 +156,10 @@ async function startDaemon() {
       if (restartAttempts < MAX_RESTART) {
         restartAttempts++;
         logStream?.write(`[app] auto-restarting (attempt ${restartAttempts}/${MAX_RESTART})\n`);
-        setTimeout(() => startDaemon(), 1000);
+        restartTimer = setTimeout(() => {
+          restartTimer = null;
+          if (daemonStatus !== "stopped") startDaemon();
+        }, 1000);
       } else {
         logStream?.write(`[app] giving up after ${MAX_RESTART} restart attempts\n`);
       }
@@ -142,13 +169,16 @@ async function startDaemon() {
 }
 
 function stopDaemon() {
-  if (daemonProcess) {
-    daemonStatus = "stopped";
-    daemonProcess.kill("SIGTERM");
-  }
+  // Also stops a restart that a crash scheduled but has not run yet.
+  cancelPendingRestart();
+  lifecycle += 1;
+  daemonStatus = "stopped";
+  daemonProcess?.kill("SIGTERM");
+  updateTray();
 }
 
 function restartDaemon() {
+  cancelPendingRestart();
   if (daemonProcess) {
     const proc = daemonProcess;
     daemonStatus = "starting";
