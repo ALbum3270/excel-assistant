@@ -11989,6 +11989,7 @@ function assertSnapshotWorkbookIdentity(snapshot, scope) {
 }
 async function restoreWorkbookRecoverySnapshot(args) {
   const { snapshot, scope, dependencies } = args;
+  const inverseCallId = args.toolCallId ?? `restore:${snapshot.id}`;
   assertSnapshotWorkbookIdentity(snapshot, scope);
   const snapshotKind = resolveSnapshotKind(snapshot);
   if (snapshotKind === "format_cells_state") {
@@ -12000,7 +12001,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
     const inverseSnapshot2 = await dependencies.appendFormatCellsSnapshot(
       {
         toolName: "restore_snapshot",
-        toolCallId: `restore:${snapshot.id}`,
+        toolCallId: inverseCallId,
         address: snapshot.address,
         changedCount: snapshot.changedCount,
         formatRangeState: currentState2,
@@ -12024,7 +12025,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
     const inverseSnapshot2 = await dependencies.appendModifyStructureSnapshot(
       {
         toolName: "restore_snapshot",
-        toolCallId: `restore:${snapshot.id}`,
+        toolCallId: inverseCallId,
         address: snapshot.address,
         changedCount: snapshot.changedCount,
         modifyStructureState: currentState2,
@@ -12048,7 +12049,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
     const inverseSnapshot2 = await dependencies.appendConditionalFormatSnapshot(
       {
         toolName: "restore_snapshot",
-        toolCallId: `restore:${snapshot.id}`,
+        toolCallId: inverseCallId,
         address: snapshot.address,
         changedCount: snapshot.changedCount,
         cellCount: snapshot.cellCount,
@@ -12073,7 +12074,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
     const inverseSnapshot2 = await dependencies.appendCommentThreadSnapshot(
       {
         toolName: "restore_snapshot",
-        toolCallId: `restore:${snapshot.id}`,
+        toolCallId: inverseCallId,
         address: snapshot.address,
         changedCount: snapshot.changedCount,
         commentThreadState: currentState2,
@@ -12097,7 +12098,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
     const inverseSnapshot2 = applied.state ? await dependencies.appendChartSnapshot(
       {
         toolName: "restore_snapshot",
-        toolCallId: `restore:${snapshot.id}`,
+        toolCallId: inverseCallId,
         // A restore can rename the chart, so the inverse must be stored at
         // the post-restore identity for the rollback backup to resolve.
         address: applied.address,
@@ -12125,7 +12126,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
   const inverseSnapshot = await dependencies.appendRangeSnapshot(
     {
       toolName: "restore_snapshot",
-      toolCallId: `restore:${snapshot.id}`,
+      toolCallId: inverseCallId,
       address: snapshot.address,
       changedCount: inverseChangedCount,
       beforeValues: currentState.values,
@@ -14273,7 +14274,7 @@ var WorkbookRecoveryLog = class {
     }
     return removed;
   }
-  async restore(snapshotId) {
+  async restore(snapshotId, options = {}) {
     await this.ensureLoaded();
     const snapshot = this.snapshots.find((item) => item.id === snapshotId);
     if (!snapshot) {
@@ -14286,6 +14287,7 @@ var WorkbookRecoveryLog = class {
     return restoreWorkbookRecoverySnapshot({
       snapshot,
       scope,
+      toolCallId: options.toolCallId,
       dependencies: {
         applySnapshot: this.dependencies.applySnapshot,
         applyFormatCellsSnapshot: this.dependencies.applyFormatCellsSnapshot,

@@ -794,11 +794,11 @@ async function restoreCustomState(state) {
   }
 }
 
-async function restoreCustomSnapshot(snapshot) {
+async function restoreCustomSnapshot(snapshot, toolCallId = `restore_${snapshot.id}`) {
   const inverseState = await restoreCustomState(snapshot.customState);
   const inverse = await appendCustomSnapshot({
     toolName: "restore_snapshot",
-    toolCallId: `restore_${snapshot.id}`,
+    toolCallId,
     address: snapshot.address,
     state: inverseState,
     restoredFromSnapshotId: snapshot.id,
@@ -1259,17 +1259,25 @@ export async function workbookHistory({ action = "list", snapshot_id: snapshotId
     case "restore": {
       const group = await resolveSnapshotGroup(snapshotId);
       const restored = [];
-      // Re-insert rows/columns/sheets before writing values back into them.
-      const ordered = [...group].sort(
-        (a, b) =>
-          Number(["modify_structure_state", "custom_state"].includes(b.snapshotKind)) -
-          Number(["modify_structure_state", "custom_state"].includes(a.snapshotKind)),
+      // Undoing a change puts rows, columns and sheets back before writing
+      // values into them. Undoing an undo runs the other way: the values go
+      // back into the cells first, then the structure is removed again —
+      // removing it first would write the values into shifted cells.
+      const structural = (item) => ["modify_structure_state", "custom_state"].includes(item.snapshotKind);
+      const undoingARestore = group.every((item) => item.restoredFromSnapshotId);
+      const ordered = [...group].sort((a, b) =>
+        undoingARestore
+          ? Number(structural(a)) - Number(structural(b))
+          : Number(structural(b)) - Number(structural(a)),
       );
+      // Every inverse of this restore shares one id, so the restore itself is
+      // one entry in the history and can be undone as a whole.
+      const restoreCallId = `restore:${group[0].toolCallId || group[0].id}:${Date.now().toString(36)}`;
       for (const snapshot of ordered) {
         restored.push(
           snapshot.snapshotKind === "custom_state"
-            ? await restoreCustomSnapshot(snapshot)
-            : await recoveryLog.restore(snapshot.id),
+            ? await restoreCustomSnapshot(snapshot, restoreCallId)
+            : await recoveryLog.restore(snapshot.id, { toolCallId: restoreCallId }),
         );
       }
       return {

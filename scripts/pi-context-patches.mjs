@@ -256,3 +256,45 @@ function expandTraversalAddresses(address: string, sheetName: string): string[] 
   }
   return source;
 }
+
+// Upstream names every inverse snapshot restore:<its own snapshot id>, so a
+// grouped restore (values + format + structure from one call) leaves inverses
+// that no longer group, and undoing that restore brings back only part of it.
+// Let the caller give one id to every inverse of one restore; without it the
+// behavior is upstream's.
+const unixNewlines = (text) => text.split(String.fromCharCode(13)).join("");
+
+export function patchRecoveryRestore(input) {
+  let source = unixNewlines(input);
+  source = replaceOnce(
+    source,
+    "restore args take the inverse call id",
+    "  dependencies: RestoreWorkbookRecoverySnapshotDependencies;\n}",
+    "  dependencies: RestoreWorkbookRecoverySnapshotDependencies;\n  /** One id for every inverse snapshot of one grouped restore. */\n  toolCallId?: string;\n}",
+  );
+  source = replaceOnce(
+    source,
+    "resolve the inverse call id",
+    "  const { snapshot, scope, dependencies } = args;",
+    "  const { snapshot, scope, dependencies } = args;\n  const inverseCallId = args.toolCallId ?? `restore:${snapshot.id}`;",
+  );
+  const perSnapshot = "toolCallId: `restore:${snapshot.id}`,";
+  const count = source.split(perSnapshot).length - 1;
+  if (count !== 6) throw new Error(`pi restore patch expected 6 inverse call ids, found ${count}`);
+  return source.split(perSnapshot).join("toolCallId: inverseCallId,");
+}
+
+export function patchRecoveryLogRestore(input) {
+  const source = replaceOnce(
+    unixNewlines(input),
+    "restore accepts the inverse call id",
+    "  async restore(snapshotId: string): Promise<RestoreWorkbookRecoverySnapshotResult> {",
+    "  async restore(snapshotId: string, options: { toolCallId?: string } = {}): Promise<RestoreWorkbookRecoverySnapshotResult> {",
+  );
+  return replaceOnce(
+    source,
+    "pass the inverse call id on",
+    "    return restoreWorkbookRecoverySnapshot({\n      snapshot,\n      scope,",
+    "    return restoreWorkbookRecoverySnapshot({\n      snapshot,\n      scope,\n      toolCallId: options.toolCallId,",
+  );
+}

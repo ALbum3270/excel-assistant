@@ -13,6 +13,8 @@ import { build } from "esbuild";
 import {
   patchChangeTracker,
   patchRecoveryFormatState,
+  patchRecoveryLogRestore,
+  patchRecoveryRestore,
   patchSelectionContext,
   patchTraceDependencies,
   patchWorkbookOverview,
@@ -24,6 +26,8 @@ const selectionFile = join(sourceRoot, "src", "context", "selection.ts");
 const changeTrackerFile = join(sourceRoot, "src", "context", "change-tracker.ts");
 const overviewFile = join(sourceRoot, "src", "tools", "get-workbook-overview.ts");
 const formatStateFile = join(sourceRoot, "src", "workbook", "recovery", "format-state.ts");
+const logRestoreFile = join(sourceRoot, "src", "workbook", "recovery", "log-restore.ts");
+const recoveryLogFile = join(sourceRoot, "src", "workbook", "recovery-log.ts");
 const traceFile = join(sourceRoot, "src", "tools", "trace-dependencies.ts");
 const outfile = join(projectRoot, "taskpane", "shared", "vendor", "pi-context.js");
 const licenseOutfile = join(projectRoot, "taskpane", "shared", "vendor", "pi-context.LICENSE");
@@ -56,6 +60,8 @@ const patchedChangeTracker = patchChangeTracker(await readFile(changeTrackerFile
 const patchedOverview = patchWorkbookOverview(await readFile(overviewFile, "utf8"));
 const patchedTrace = patchTraceDependencies(await readFile(traceFile, "utf8"));
 const patchedFormatState = patchRecoveryFormatState(await readFile(formatStateFile, "utf8"));
+const patchedLogRestore = patchRecoveryRestore(await readFile(logRestoreFile, "utf8"));
+const patchedRecoveryLog = patchRecoveryLogRestore(await readFile(recoveryLogFile, "utf8"));
 
 await build({
   absWorkingDir: sourceRoot,
@@ -162,6 +168,14 @@ await build({
     {
       name: "excel-assistant-pi-recovery",
       setup(builder) {
+        builder.onLoad({ filter: /log-restore\.ts$/ }, (args) => {
+          if (resolve(args.path) !== resolve(logRestoreFile)) return null;
+          return { contents: patchedLogRestore, loader: "ts", resolveDir: dirname(logRestoreFile) };
+        });
+        builder.onLoad({ filter: /recovery-log\.ts$/ }, (args) => {
+          if (resolve(args.path) !== resolve(recoveryLogFile)) return null;
+          return { contents: patchedRecoveryLog, loader: "ts", resolveDir: dirname(recoveryLogFile) };
+        });
         builder.onLoad({ filter: /format-state\.ts$/ }, (args) => {
           if (resolve(args.path) !== resolve(formatStateFile)) return null;
           return {
