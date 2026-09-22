@@ -678,6 +678,13 @@ async function removeConversation(key, host, sessionId) {
   });
 }
 
+// One byte budget for the file the pane writes and the file it will accept
+// back. Export used to trim by characters and import to refuse by bytes, so a
+// long Chinese conversation exported fine and could not be imported.
+const ARCHIVE_MAX_BYTES = 2_000_000;
+const ARCHIVE_EVENTS_BYTES = ARCHIVE_MAX_BYTES - 100_000; // title and header
+const utf8Bytes = (value) => Buffer.byteLength(JSON.stringify(value), "utf8");
+
 function portableTranscriptEvents(events) {
   if (!Array.isArray(events) || events.length > 500) {
     throw new Error("Conversation archive must contain at most 500 events");
@@ -687,12 +694,25 @@ function portableTranscriptEvents(events) {
       if (typeof event.text !== "string") throw new Error("Conversation archive has invalid text");
       return { kind: event.kind, text: event.text.slice(0, 100_000) };
     }
+    // A call and its result stay paired by id, so a replayed or imported
+    // conversation shows each change's receipt, not a bare argument list.
+    const id = typeof event?.id === "string" ? event.id.slice(0, 200) : null;
     if (event?.kind === "tool") {
       const input = event.input && typeof event.input === "object" ? event.input : {};
       return {
         kind: "tool",
+        id,
         name: typeof event.name === "string" ? event.name.slice(0, 200) : "",
         input: JSON.stringify(input).length <= 20_000 ? input : { truncated: true },
+      };
+    }
+    if (event?.kind === "tool_result") {
+      if (!id) throw new Error("Conversation archive has a tool result without its call id");
+      return {
+        kind: "tool_result",
+        id,
+        isError: Boolean(event.isError),
+        text: typeof event.text === "string" ? event.text.slice(0, 4_000) : "",
       };
     }
     throw new Error("Conversation archive contains an unsupported event");
@@ -707,10 +727,10 @@ async function exportConversation(key, host, sessionId) {
     : await readTranscript(sessionId, { maxEvents: 500 });
   const events = portableTranscriptEvents(transcript.events);
   const recent = [];
-  let size = 2;
+  let size = 2; // the array's brackets
   for (let index = events.length - 1; index >= 0; index -= 1) {
-    const nextSize = JSON.stringify(events[index]).length + 1;
-    if (size + nextSize > 1_800_000) break;
+    const nextSize = utf8Bytes(events[index]) + 1; // and its comma
+    if (size + nextSize > ARCHIVE_EVENTS_BYTES) break;
     recent.unshift(events[index]);
     size += nextSize;
   }
@@ -728,8 +748,7 @@ async function importConversation(key, host, archive) {
   if (!archive || archive.format !== "excel-assistant-conversation" || archive.version !== 1) {
     throw new Error("This is not an Excel Assistant conversation archive");
   }
-  const serialized = JSON.stringify(archive);
-  if (serialized.length > 2_000_000) throw new Error("Conversation archive exceeds 2 MB");
+  if (utf8Bytes(archive) > ARCHIVE_MAX_BYTES) throw new Error("Conversation archive exceeds 2 MB");
   const events = portableTranscriptEvents(archive.events);
   const sessionId = await importArchivedSession(host, documentKeyForPane(key), {
     title: archive.title,

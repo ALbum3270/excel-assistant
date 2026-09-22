@@ -503,7 +503,9 @@ function renderConversationHistory(history) {
         const safeTitle = (session.title || "conversation")
           .replace(/[\\/:*?"<>|]+/g, "-")
           .slice(0, 80);
-        const blob = new Blob([JSON.stringify(result.archive, null, 2)], {
+        // Compact, so the file is exactly the size the daemon budgeted for
+        // and can always be imported back; indentation added bytes it did not count.
+        const blob = new Blob([JSON.stringify(result.archive)], {
           type: "application/json",
         });
         const url = URL.createObjectURL(blob);
