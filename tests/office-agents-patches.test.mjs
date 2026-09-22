@@ -425,7 +425,11 @@ test("copyTo protects destination data unless overwrite is authorized", async ()
   const source = range("A1", [[1]]);
   const destination = range("B1:B2", [["occupied"], [""]]);
   installExcel({ A1: source, "B1:B2": destination });
-  await assert.rejects(api.copyTo(1, "A1", "B1:B2"), /Would overwrite.*B1/);
+  // A refusal writes nothing and says so, so it cannot advance the revision.
+  await assert.rejects(
+    api.copyTo(1, "A1", "B1:B2"),
+    (error) => /Would overwrite.*B1/.test(error.message) && error.commitStatus === "not_committed",
+  );
   assert.equal(destination.state.copies, 0);
   await api.copyTo(1, "A1", "B1:B2", true);
   assert.equal(destination.state.copies, 1);

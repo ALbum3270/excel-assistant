@@ -116,8 +116,11 @@ function throwOverwriteError(addresses) {
   if (addresses.length === 0) return;
   const unique = Array.from(new Set(addresses));
   const cellList = unique.length <= 10 ? unique.join(", ") : `${unique.slice(0, 10).join(", ")}...`;
-  throw new Error(
-    `Would overwrite ${unique.length} non-empty cell(s): ${cellList}. If the requested edit targets these cells, retry with allow_overwrite set to true; otherwise ask before overwriting.`
+  throw Object.assign(
+    new Error(
+      `Would overwrite ${unique.length} non-empty cell(s): ${cellList}. If the requested edit targets these cells, retry with allow_overwrite set to true; otherwise ask before overwriting.`
+    ),
+    { commitStatus: "not_committed" }
   );
 }
 function excelColorToHex(color) {

@@ -64,9 +64,15 @@ function throwOverwriteError(addresses: string[]): void {
   const cellList =
     unique.length <= 10 ? unique.join(", ") : \
       \`\${unique.slice(0, 10).join(", ")}...\`;
-  throw new Error(
-    \`Would overwrite \${unique.length} non-empty cell(s): \${cellList}. \` +
-      "If the requested edit targets these cells, retry with allow_overwrite set to true; otherwise ask before overwriting.",
+  // Refused before anything is written, so say so: without a commit status the
+  // pane reports "unknown" and the coordinator advances the revision as if the
+  // workbook might have changed (seen in the 2026-09-22 acceptance run).
+  throw Object.assign(
+    new Error(
+      \`Would overwrite \${unique.length} non-empty cell(s): \${cellList}. \` +
+        "If the requested edit targets these cells, retry with allow_overwrite set to true; otherwise ask before overwriting.",
+    ),
+    { commitStatus: "not_committed" },
   );
 }
 
