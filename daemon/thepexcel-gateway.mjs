@@ -223,13 +223,21 @@ export async function createThepExcelGateway(config, execution, { client: inject
                     definition.name === "excel_workbook" &&
                     String(args.action).toLowerCase() === "list";
                   if (!isUntargetedList) {
-                    const info = await callUpstream(
-                      "excel_workbook",
-                      { action: "info", workbook: workbookName },
-                      runSignal,
-                    );
+                    let info;
+                    try {
+                      info = await callUpstream(
+                        "excel_workbook",
+                        { action: "info", workbook: workbookName },
+                        runSignal,
+                      );
+                    } catch (error) {
+                      // MCP rejects immediately when its signal is aborted.
+                      // This request only read workbook identity; no write was
+                      // dispatched, so it must not consume a revision or lock.
+                      throw Object.assign(error, { commitStatus: "not_committed", executionSettled: true });
+                    }
                     stopIfCancelled(runSignal);
-                    if (info.isError) return info;
+                    if (info.isError) return { ...info, success: false, commitStatus: "not_committed" };
                     const actualPath = parseTextResult(info)?.path;
                     if (!actualPath || canonicalWorkbookId(actualPath) !== workbookId) {
                       throw Object.assign(

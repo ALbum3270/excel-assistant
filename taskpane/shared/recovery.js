@@ -147,7 +147,7 @@ async function writeCustomSnapshots(snapshots) {
   await recoverySettings.set(`${CUSTOM_RECOVERY_PREFIX}${workbookId}`, snapshots.slice(0, 120));
 }
 
-async function appendCustomSnapshot({ toolName, toolCallId, address, state, restoredFromSnapshotId }) {
+async function appendCustomSnapshot({ toolName, toolCallId, address, state, restoredFromSnapshotId, restoreOrder }) {
   const workbookId = await customWorkbookId();
   if (!workbookId) return null;
   const snapshot = {
@@ -161,6 +161,7 @@ async function appendCustomSnapshot({ toolName, toolCallId, address, state, rest
     snapshotKind: "custom_state",
     customState: state,
     ...(restoredFromSnapshotId ? { restoredFromSnapshotId } : {}),
+    ...(restoreOrder !== undefined ? { restoreOrder } : {}),
   };
   const snapshots = await readCustomSnapshots();
   snapshots.unshift(snapshot);
@@ -253,8 +254,9 @@ async function captureRange(context, target) {
   let rows = target.rows;
   let columns = target.columns;
   if (source) {
-    rows = Math.max(source.rowCount, baseRows);
-    columns = Math.max(source.columnCount, baseColumns);
+    // A single-cell source may be expanded by the matrix about to be written.
+    rows = Math.max(rows ?? source.rowCount, baseRows);
+    columns = Math.max(columns ?? source.columnCount, baseColumns);
   }
   if (rows && columns) range = range.getCell(0, 0).getResizedRange(rows - 1, columns - 1);
   range.load("address,rowCount,columnCount");
@@ -386,10 +388,10 @@ function recoveryPlan(name, args) {
           ? [
               // The fill covers copyToRange, expanded to the pattern if smaller;
               // sizing it by the pattern's own shape captured only its first block.
-              { capture: "range", target: bySheetId(args.copyToRange, { sizeFromAddress: args.range }) },
+              { capture: "range", target: bySheetId(args.copyToRange, { ...shape, sizeFromAddress: args.range }) },
               {
                 capture: "format",
-                target: bySheetId(args.copyToRange, { sizeFromAddress: args.range }),
+                target: bySheetId(args.copyToRange, { ...shape, sizeFromAddress: args.range }),
                 selection: CELL_FORMAT_PROPERTIES,
               },
             ]
@@ -794,7 +796,7 @@ async function restoreCustomState(state) {
   }
 }
 
-async function restoreCustomSnapshot(snapshot, toolCallId = `restore_${snapshot.id}`) {
+async function restoreCustomSnapshot(snapshot, toolCallId = `restore_${snapshot.id}`, restoreOrder) {
   const inverseState = await restoreCustomState(snapshot.customState);
   const inverse = await appendCustomSnapshot({
     toolName: "restore_snapshot",
@@ -802,6 +804,7 @@ async function restoreCustomSnapshot(snapshot, toolCallId = `restore_${snapshot.
     address: snapshot.address,
     state: inverseState,
     restoredFromSnapshotId: snapshot.id,
+    restoreOrder,
   });
   return {
     restoredSnapshotId: snapshot.id,
@@ -1259,25 +1262,29 @@ export async function workbookHistory({ action = "list", snapshot_id: snapshotId
     case "restore": {
       const group = await resolveSnapshotGroup(snapshotId);
       const restored = [];
-      // Undoing a change puts rows, columns and sheets back before writing
-      // values into them. Undoing an undo runs the other way: the values go
-      // back into the cells first, then the structure is removed again —
-      // removing it first would write the values into shifted cells.
+      // New inverse groups carry their exact application order, independent
+      // of timestamps, history pruning, or how many times they were restored.
+      // Keep the previous ordering for snapshots made before this metadata.
       const structural = (item) => ["modify_structure_state", "custom_state"].includes(item.snapshotKind);
       const undoingARestore = group.every((item) => item.restoredFromSnapshotId);
+      const hasOrder = group.every((item) => Number.isInteger(item.restoreOrder));
       const ordered = [...group].sort((a, b) =>
-        undoingARestore
-          ? Number(structural(a)) - Number(structural(b))
-          : Number(structural(b)) - Number(structural(a)),
+        hasOrder
+          ? a.restoreOrder - b.restoreOrder
+          : undoingARestore
+            ? Number(structural(a)) - Number(structural(b))
+            : Number(structural(b)) - Number(structural(a)),
       );
       // Every inverse of this restore shares one id, so the restore itself is
       // one entry in the history and can be undone as a whole.
       const restoreCallId = `restore:${group[0].toolCallId || group[0].id}:${Date.now().toString(36)}`;
-      for (const snapshot of ordered) {
+      for (const [index, snapshot] of ordered.entries()) {
+        // Invert the actual sequence on every restore, including custom state.
+        const restoreOrder = ordered.length - index - 1;
         restored.push(
           snapshot.snapshotKind === "custom_state"
-            ? await restoreCustomSnapshot(snapshot, restoreCallId)
-            : await recoveryLog.restore(snapshot.id, { toolCallId: restoreCallId }),
+            ? await restoreCustomSnapshot(snapshot, restoreCallId, restoreOrder)
+            : await recoveryLog.restore(snapshot.id, { toolCallId: restoreCallId, restoreOrder }),
         );
       }
       return {

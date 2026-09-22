@@ -2,8 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WorkbookRecoveryLog } from "../taskpane/shared/vendor/pi-recovery.js";
 
-function memoryLog() {
-  const store = new Map();
+function memoryLog(store = new Map()) {
   return new WorkbookRecoveryLog({
     settings: {
       get: async (key) => store.get(key) ?? null,
@@ -17,8 +16,9 @@ function memoryLog() {
   });
 }
 
-test("one grouped restore leaves inverses that group as one restore", async () => {
-  const log = memoryLog();
+test("grouped inverses keep their identity and application order after reloading storage", async () => {
+  const store = new Map();
+  const log = memoryLog(store);
   for (const address of ["Sheet1!A1", "Sheet1!B1"]) {
     await log.append({
       toolName: "write_cells",
@@ -33,11 +33,17 @@ test("one grouped restore leaves inverses that group as one restore", async () =
   assert.equal(originals.length, 2);
 
   const restoreCallId = "restore:call-1:x";
-  for (const snapshot of originals) await log.restore(snapshot.id, { toolCallId: restoreCallId });
+  for (const [index, snapshot] of originals.entries()) {
+    await log.restore(snapshot.id, { toolCallId: restoreCallId, restoreOrder: originals.length - index - 1 });
+  }
 
-  const inverses = (await log.listForCurrentWorkbook(10)).filter((item) => item.restoredFromSnapshotId);
+  const reloaded = memoryLog(store);
+  const inverses = (await reloaded.listForCurrentWorkbook(10)).filter((item) => item.restoredFromSnapshotId);
   assert.equal(inverses.length, 2);
   assert.deepEqual([...new Set(inverses.map((item) => item.toolCallId))], [restoreCallId]);
+  for (const [index, original] of originals.entries()) {
+    assert.equal(inverses.find((item) => item.restoredFromSnapshotId === original.id).restoreOrder, originals.length - index - 1);
+  }
 });
 
 test("without an id, restore keeps upstream's per-snapshot naming", async () => {

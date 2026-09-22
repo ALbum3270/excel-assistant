@@ -270,7 +270,7 @@ export function patchRecoveryRestore(input) {
     source,
     "restore args take the inverse call id",
     "  dependencies: RestoreWorkbookRecoverySnapshotDependencies;\n}",
-    "  dependencies: RestoreWorkbookRecoverySnapshotDependencies;\n  /** One id for every inverse snapshot of one grouped restore. */\n  toolCallId?: string;\n}",
+    "  dependencies: RestoreWorkbookRecoverySnapshotDependencies;\n  /** Shared group identity and inverse application order. */\n  toolCallId?: string;\n  restoreOrder?: number;\n}",
   );
   source = replaceOnce(
     source,
@@ -281,20 +281,42 @@ export function patchRecoveryRestore(input) {
   const perSnapshot = "toolCallId: `restore:${snapshot.id}`,";
   const count = source.split(perSnapshot).length - 1;
   if (count !== 6) throw new Error(`pi restore patch expected 6 inverse call ids, found ${count}`);
-  return source.split(perSnapshot).join("toolCallId: inverseCallId,");
+  return source.split(perSnapshot).join("toolCallId: inverseCallId,\n        restoreOrder: args.restoreOrder,");
 }
 
 export function patchRecoveryLogRestore(input) {
-  const source = replaceOnce(
+  let source = replaceOnce(
     unixNewlines(input),
     "restore accepts the inverse call id",
     "  async restore(snapshotId: string): Promise<RestoreWorkbookRecoverySnapshotResult> {",
-    "  async restore(snapshotId: string, options: { toolCallId?: string } = {}): Promise<RestoreWorkbookRecoverySnapshotResult> {",
+    "  async restore(snapshotId: string, options: { toolCallId?: string; restoreOrder?: number } = {}): Promise<RestoreWorkbookRecoverySnapshotResult> {",
   );
-  return replaceOnce(
+  source = replaceOnce(
     source,
     "pass the inverse call id on",
     "    return restoreWorkbookRecoverySnapshot({\n      snapshot,\n      scope,",
-    "    return restoreWorkbookRecoverySnapshot({\n      snapshot,\n      scope,\n      toolCallId: options.toolCallId,",
+    "    return restoreWorkbookRecoverySnapshot({\n      snapshot,\n      scope,\n      toolCallId: options.toolCallId,\n      restoreOrder: options.restoreOrder,",
+  );
+  // Snapshot plus the six append argument interfaces share this metadata.
+  const field = "  restoredFromSnapshotId?: string;";
+  if (source.split(field).length - 1 !== 7) throw new Error("Expected seven recovery metadata interfaces");
+  source = source.split(field).join(`${field}\n  restoreOrder?: number;`);
+  const append = "...(args.restoredFromSnapshotId !== undefined ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {}),";
+  if (source.split(append).length - 1 !== 6) throw new Error("Expected six recovery append paths");
+  return source.split(append).join(`${append}\n      ...(args.restoreOrder !== undefined ? { restoreOrder: args.restoreOrder } : {}),`);
+}
+
+export function patchRecoveryOrderCodec(input) {
+  let source = replaceOnce(
+    unixNewlines(input),
+    "persist inverse application order",
+    "  restoredFromSnapshotId: Type.Optional(Type.String()),",
+    "  restoredFromSnapshotId: Type.Optional(Type.String()),\n  restoreOrder: Type.Optional(Type.Integer({ minimum: 0 })),",
+  );
+  return replaceOnce(
+    source,
+    "reload inverse application order",
+    "  if (persisted.restoredFromSnapshotId !== undefined) {",
+    "  if (persisted.restoreOrder !== undefined) snapshot.restoreOrder = persisted.restoreOrder;\n  if (persisted.restoredFromSnapshotId !== undefined) {",
   );
 }

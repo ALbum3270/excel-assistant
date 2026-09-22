@@ -15,6 +15,7 @@ import {
   patchRecoveryFormatState,
   patchRecoveryLogRestore,
   patchRecoveryRestore,
+  patchRecoveryOrderCodec,
   patchSelectionContext,
   patchTraceDependencies,
   patchWorkbookOverview,
@@ -28,6 +29,7 @@ const overviewFile = join(sourceRoot, "src", "tools", "get-workbook-overview.ts"
 const formatStateFile = join(sourceRoot, "src", "workbook", "recovery", "format-state.ts");
 const logRestoreFile = join(sourceRoot, "src", "workbook", "recovery", "log-restore.ts");
 const recoveryLogFile = join(sourceRoot, "src", "workbook", "recovery-log.ts");
+const recoveryCodecFile = join(sourceRoot, "src", "workbook", "recovery", "log-codec.ts");
 const traceFile = join(sourceRoot, "src", "tools", "trace-dependencies.ts");
 const outfile = join(projectRoot, "taskpane", "shared", "vendor", "pi-context.js");
 const licenseOutfile = join(projectRoot, "taskpane", "shared", "vendor", "pi-context.LICENSE");
@@ -62,6 +64,7 @@ const patchedTrace = patchTraceDependencies(await readFile(traceFile, "utf8"));
 const patchedFormatState = patchRecoveryFormatState(await readFile(formatStateFile, "utf8"));
 const patchedLogRestore = patchRecoveryRestore(await readFile(logRestoreFile, "utf8"));
 const patchedRecoveryLog = patchRecoveryLogRestore(await readFile(recoveryLogFile, "utf8"));
+const patchedRecoveryCodec = patchRecoveryOrderCodec(await readFile(recoveryCodecFile, "utf8"));
 
 await build({
   absWorkingDir: sourceRoot,
@@ -168,6 +171,10 @@ await build({
     {
       name: "excel-assistant-pi-recovery",
       setup(builder) {
+        builder.onLoad({ filter: /log-codec\.ts$/ }, (args) => {
+          if (resolve(args.path) !== resolve(recoveryCodecFile)) return null;
+          return { contents: patchedRecoveryCodec, loader: "ts", resolveDir: dirname(recoveryCodecFile) };
+        });
         builder.onLoad({ filter: /log-restore\.ts$/ }, (args) => {
           if (resolve(args.path) !== resolve(logRestoreFile)) return null;
           return { contents: patchedLogRestore, loader: "ts", resolveDir: dirname(logRestoreFile) };

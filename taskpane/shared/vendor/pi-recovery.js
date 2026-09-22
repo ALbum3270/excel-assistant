@@ -11816,7 +11816,8 @@ var persistedSnapshotBase = {
   changedCount: typebox_exports.Optional(typebox_exports.Number({ minimum: 0 })),
   workbookId: typebox_exports.Optional(typebox_exports.String()),
   workbookLabel: typebox_exports.Optional(typebox_exports.String()),
-  restoredFromSnapshotId: typebox_exports.Optional(typebox_exports.String())
+  restoredFromSnapshotId: typebox_exports.Optional(typebox_exports.String()),
+  restoreOrder: typebox_exports.Optional(typebox_exports.Integer({ minimum: 0 }))
 };
 var optionalGrids = {
   beforeValues: typebox_exports.Optional(RecoveryGridSchema),
@@ -11889,6 +11890,7 @@ function toSnapshot(persisted) {
   };
   if (persisted.workbookId !== void 0) snapshot.workbookId = persisted.workbookId;
   if (persisted.workbookLabel !== void 0) snapshot.workbookLabel = persisted.workbookLabel;
+  if (persisted.restoreOrder !== void 0) snapshot.restoreOrder = persisted.restoreOrder;
   if (persisted.restoredFromSnapshotId !== void 0) {
     snapshot.restoredFromSnapshotId = persisted.restoredFromSnapshotId;
   }
@@ -12002,6 +12004,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
       {
         toolName: "restore_snapshot",
         toolCallId: inverseCallId,
+        restoreOrder: args.restoreOrder,
         address: snapshot.address,
         changedCount: snapshot.changedCount,
         formatRangeState: currentState2,
@@ -12026,6 +12029,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
       {
         toolName: "restore_snapshot",
         toolCallId: inverseCallId,
+        restoreOrder: args.restoreOrder,
         address: snapshot.address,
         changedCount: snapshot.changedCount,
         modifyStructureState: currentState2,
@@ -12050,6 +12054,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
       {
         toolName: "restore_snapshot",
         toolCallId: inverseCallId,
+        restoreOrder: args.restoreOrder,
         address: snapshot.address,
         changedCount: snapshot.changedCount,
         cellCount: snapshot.cellCount,
@@ -12075,6 +12080,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
       {
         toolName: "restore_snapshot",
         toolCallId: inverseCallId,
+        restoreOrder: args.restoreOrder,
         address: snapshot.address,
         changedCount: snapshot.changedCount,
         commentThreadState: currentState2,
@@ -12099,6 +12105,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
       {
         toolName: "restore_snapshot",
         toolCallId: inverseCallId,
+        restoreOrder: args.restoreOrder,
         // A restore can rename the chart, so the inverse must be stored at
         // the post-restore identity for the rollback backup to resolve.
         address: applied.address,
@@ -12127,6 +12134,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
     {
       toolName: "restore_snapshot",
       toolCallId: inverseCallId,
+      restoreOrder: args.restoreOrder,
       address: snapshot.address,
       changedCount: inverseChangedCount,
       beforeValues: currentState.values,
@@ -14083,7 +14091,8 @@ var WorkbookRecoveryLog = class {
       snapshotKind: "range_values",
       workbookId: scope.workbookId,
       workbookLabel: scope.workbookLabel,
-      ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {}
+      ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {},
+      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {}
     });
   }
   async appendFormatCellsWithContext(args, scopeOverride) {
@@ -14107,7 +14116,8 @@ var WorkbookRecoveryLog = class {
       formatRangeState,
       workbookId: scope.workbookId,
       workbookLabel: scope.workbookLabel,
-      ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {}
+      ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {},
+      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {}
     });
   }
   async appendModifyStructureWithContext(args, scopeOverride) {
@@ -14132,7 +14142,8 @@ var WorkbookRecoveryLog = class {
       modifyStructureState,
       workbookId: scope.workbookId,
       workbookLabel: scope.workbookLabel,
-      ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {}
+      ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {},
+      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {}
     });
   }
   async appendConditionalFormatWithContext(args, scopeOverride) {
@@ -14156,7 +14167,8 @@ var WorkbookRecoveryLog = class {
       conditionalFormatRules: rules,
       workbookId: scope.workbookId,
       workbookLabel: scope.workbookLabel,
-      ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {}
+      ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {},
+      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {}
     });
   }
   async appendCommentThreadWithContext(args, scopeOverride) {
@@ -14177,7 +14189,8 @@ var WorkbookRecoveryLog = class {
       commentThreadState: cloneRecoveryCommentThreadState(args.commentThreadState),
       workbookId: scope.workbookId,
       workbookLabel: scope.workbookLabel,
-      ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {}
+      ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {},
+      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {}
     });
   }
   async appendChartWithContext(args, scopeOverride) {
@@ -14198,7 +14211,8 @@ var WorkbookRecoveryLog = class {
       chartState: cloneRecoveryChartState(args.chartState),
       workbookId: scope.workbookId,
       workbookLabel: scope.workbookLabel,
-      ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {}
+      ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {},
+      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {}
     });
   }
   async append(args) {
@@ -14288,6 +14302,7 @@ var WorkbookRecoveryLog = class {
       snapshot,
       scope,
       toolCallId: options.toolCallId,
+      restoreOrder: options.restoreOrder,
       dependencies: {
         applySnapshot: this.dependencies.applySnapshot,
         applyFormatCellsSnapshot: this.dependencies.applyFormatCellsSnapshot,
