@@ -261,10 +261,12 @@ export default {
   "approvalMode.auto.hint": "直接执行，每一步都留恢复点可撤销",
   "usage.title": "用量",
   "usage.turns": "本次运行 {{count}} 轮",
-  "usage.window": "模型上下文窗口 {{window}} tokens；下面是累计用量，不是当前占用。",
-  "usage.cumulative": "下面是本次运行的累计用量。",
+  "usage.window":
+    "模型上下文窗口 {{window}} tokens。下面是本次运行的累计用量，不是当前占用；切换对话后重新计数。",
+  "usage.cumulative": "下面是本次运行的累计用量，切换对话后重新计数。",
   "usage.cost": "花费（SDK 估算）",
   "usage.notReported": "未报告",
+  "usage.costNoTable": "无法估算花费：当前模型不在 SDK 的价目表内，实际费用以服务商账单为准。",
 
   "presets.title": "快捷指令",
   "presets.manage": "管理快捷指令",

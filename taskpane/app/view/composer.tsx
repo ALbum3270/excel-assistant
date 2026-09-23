@@ -214,8 +214,16 @@ function UsagePill() {
           <ContextCacheUsage />
         </ContextContentBody>
         <ContextContentFooter>
-          <span className="text-muted-foreground">{t("usage.cost")}</span>
-          <span>{usage.priced ? `$${usage.cost.toFixed(4)}` : t("usage.notReported")}</span>
+          {usage.costGuessed ? (
+            // Showing a figure the SDK priced off the wrong table would read as
+            // a bill; say why there isn't one instead.
+            <span className="text-muted-foreground">{t("usage.costNoTable")}</span>
+          ) : (
+            <>
+              <span className="text-muted-foreground">{t("usage.cost")}</span>
+              <span>{usage.priced ? `$${usage.cost.toFixed(4)}` : t("usage.notReported")}</span>
+            </>
+          )}
         </ContextContentFooter>
       </ContextContent>
     </Context>

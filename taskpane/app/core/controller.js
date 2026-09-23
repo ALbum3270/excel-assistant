@@ -59,6 +59,7 @@ function emptyUsage() {
     cacheCreate: 0,
     cost: 0,
     priced: false,
+    costGuessed: false,
     contextWindow: 0,
     last: null,
   };
@@ -93,6 +94,13 @@ export function addTurnUsage(previous, usage, cost, modelUsage) {
   // value is correct; summing each turn would count earlier turns repeatedly.
   next.cost = Number(cost || 0);
   next.priced = next.cost > 0;
+  // The SDK prices in USD from its own table. A model it has no row for —
+  // anything served by an Anthropic-compatible endpoint, say — is charged at
+  // the default tier's rate instead ("costBasis": "unknown"), which is neither
+  // the right amount nor, for most providers, the right currency. The field is
+  // absent on older builds and before the first priced request; treat that as
+  // a real price. See ModelUsage in the SDK's sdk.d.ts.
+  next.costGuessed = models.some((item) => item.costBasis === "unknown");
   return next;
 }
 

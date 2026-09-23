@@ -12,6 +12,24 @@ const IMPORT_T = [
 ];
 const text = (word) => [`>${word}<`, `>{translate("${word}")}<`];
 
+// Without a `modelId` there is no price table, so upstream formats `undefined ??
+// 0` and every row reads "$0.00" next to a real token count. The pane never
+// passes a model id — the one cost figure it shows is the SDK's own, in the
+// footer — so print the tokens alone instead of an invented zero.
+const noZeroCost = (name) => [
+  `  const ${name}CostText = new Intl.NumberFormat("en-US", {
+    currency: "USD",
+    style: "currency",
+  }).format(${name}Cost ?? 0);`,
+  `  const ${name}CostText =
+    ${name}Cost === undefined
+      ? undefined
+      : new Intl.NumberFormat("en-US", {
+          currency: "USD",
+          style: "currency",
+        }).format(${name}Cost);`,
+];
+
 const EDITS = {
   "context.tsx": [
     IMPORT_T,
@@ -20,6 +38,10 @@ const EDITS = {
     text("Output"),
     text("Reasoning"),
     text("Cache"),
+    noZeroCost("input"),
+    noZeroCost("output"),
+    noZeroCost("reasoning"),
+    noZeroCost("cache"),
   ],
   "prompt-input.tsx": [
     IMPORT_T,

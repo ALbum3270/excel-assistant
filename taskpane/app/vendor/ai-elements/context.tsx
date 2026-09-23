@@ -274,10 +274,13 @@ export const ContextInputUsage = ({
         usage: { input: inputTokens, output: 0 },
       }).costUSD?.totalUSD
     : undefined;
-  const inputCostText = new Intl.NumberFormat("en-US", {
-    currency: "USD",
-    style: "currency",
-  }).format(inputCost ?? 0);
+  const inputCostText =
+    inputCost === undefined
+      ? undefined
+      : new Intl.NumberFormat("en-US", {
+          currency: "USD",
+          style: "currency",
+        }).format(inputCost);
 
   return (
     <div
@@ -314,10 +317,13 @@ export const ContextOutputUsage = ({
         usage: { input: 0, output: outputTokens },
       }).costUSD?.totalUSD
     : undefined;
-  const outputCostText = new Intl.NumberFormat("en-US", {
-    currency: "USD",
-    style: "currency",
-  }).format(outputCost ?? 0);
+  const outputCostText =
+    outputCost === undefined
+      ? undefined
+      : new Intl.NumberFormat("en-US", {
+          currency: "USD",
+          style: "currency",
+        }).format(outputCost);
 
   return (
     <div
@@ -354,10 +360,13 @@ export const ContextReasoningUsage = ({
         usage: { reasoningTokens },
       }).costUSD?.totalUSD
     : undefined;
-  const reasoningCostText = new Intl.NumberFormat("en-US", {
-    currency: "USD",
-    style: "currency",
-  }).format(reasoningCost ?? 0);
+  const reasoningCostText =
+    reasoningCost === undefined
+      ? undefined
+      : new Intl.NumberFormat("en-US", {
+          currency: "USD",
+          style: "currency",
+        }).format(reasoningCost);
 
   return (
     <div
@@ -394,10 +403,13 @@ export const ContextCacheUsage = ({
         usage: { cacheReads: cacheTokens, input: 0, output: 0 },
       }).costUSD?.totalUSD
     : undefined;
-  const cacheCostText = new Intl.NumberFormat("en-US", {
-    currency: "USD",
-    style: "currency",
-  }).format(cacheCost ?? 0);
+  const cacheCostText =
+    cacheCost === undefined
+      ? undefined
+      : new Intl.NumberFormat("en-US", {
+          currency: "USD",
+          style: "currency",
+        }).format(cacheCost);
 
   return (
     <div

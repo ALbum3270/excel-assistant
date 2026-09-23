@@ -256,6 +256,33 @@ test("session cost is read, not summed, across turns", () => {
   assert.equal(usage.contextWindow, 128000);
 });
 
+test("a cost the SDK guessed at the default rate is not reported as a price", () => {
+  const empty = { turns: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, cost: 0 };
+  const turn = (basis) =>
+    addTurnUsage(empty, { input_tokens: 10, output_tokens: 5 }, 0.14, {
+      m: { inputTokens: 10, outputTokens: 5, contextWindow: 200000, ...basis },
+    });
+
+  // A model the SDK has no price row for: it charges the default tier's rate,
+  // so the figure is neither the right amount nor, usually, the right currency.
+  assert.equal(turn({ costBasis: "unknown" }).costGuessed, true);
+
+  // List and contracted prices are real estimates.
+  assert.equal(turn({ costBasis: "list" }).costGuessed, false);
+  assert.equal(turn({ costBasis: "managed" }).costGuessed, false);
+
+  // Older SDK builds, and the first request for a model, omit the field.
+  assert.equal(turn({}).costGuessed, false);
+
+  // One unpriced model in a run is enough to withhold the total.
+  const mixed = addTurnUsage(empty, { input_tokens: 10, output_tokens: 5 }, 0.14, {
+    main: { inputTokens: 10, outputTokens: 5, costBasis: "list", contextWindow: 200000 },
+    sub: { inputTokens: 4, outputTokens: 1, costBasis: "unknown", contextWindow: 200000 },
+  });
+  assert.equal(mixed.costGuessed, true);
+  assert.equal(mixed.cost, 0.14, "the SDK figure is still carried, just not shown as a price");
+});
+
 test("auto-context bounds text and shares an unfinished overview read", async () => {
   const overview = deferred();
   let overviewCalls = 0;

@@ -278,10 +278,12 @@ export default {
   "usage.turns_one": "{{count}} turn in this run",
   "usage.turns_other": "{{count}} turns in this run",
   "usage.window":
-    "Model context window {{window}} tokens; below are running totals, not current occupancy.",
-  "usage.cumulative": "Running totals for this agent run.",
+    "Model context window {{window}} tokens. Below are totals for this run, not how full the window is; they start over when you switch conversations.",
+  "usage.cumulative": "Totals for this run; they start over when you switch conversations.",
   "usage.cost": "Cost (SDK estimate)",
   "usage.notReported": "Not reported",
+  "usage.costNoTable":
+    "No cost estimate: this model is not in the SDK's price table, and what it charges is billed by your provider.",
 
   "presets.title": "Presets",
   "presets.manage": "Manage presets",
