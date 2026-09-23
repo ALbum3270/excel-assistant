@@ -15,3 +15,5 @@ examples/*/CLAUDE.md
 # Local-only scratch (also gitignored).
 PORT_TO_OFFICE_ADDINS.md
 AGENTS.md
+# Vendored AI Elements / shadcn-ui copies — kept byte-identical to upstream (plus patches).
+taskpane/app/vendor/

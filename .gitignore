@@ -29,3 +29,4 @@ __pycache__/
 
 # Office lock/owner temp files (~$foo.docx)
 ~$*
+taskpane/app/dist/

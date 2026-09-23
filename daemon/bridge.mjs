@@ -199,7 +199,9 @@ export function createBridge({
     name,
     args,
     key = null,
-    { signal, expectedRevision = args?.expected_revision } = {},
+    // origin "pane": the pane asked for this itself (its restore button), so it
+    // runs the call without showing it as a tool card in the chat.
+    { signal, expectedRevision = args?.expected_revision, origin } = {},
   ) {
     const workbookId = workbookIdFor(key);
     const write =
@@ -215,7 +217,7 @@ export function createBridge({
             new Error("The pane changed workbooks before dispatch; read its current context."),
             { commitStatus: "not_committed" },
           );
-        return dispatchTaskpaneTool(name, toolArgs, key, { ...context, workbookId });
+        return dispatchTaskpaneTool(name, toolArgs, key, { ...context, workbookId, origin });
       },
     );
     return {
@@ -231,7 +233,7 @@ export function createBridge({
     name,
     args,
     key,
-    { signal, revision, opId, workbookId, write },
+    { signal, revision, opId, workbookId, write, origin },
   ) {
     const ws = paneWs(key);
     if (!ws) {
@@ -280,7 +282,14 @@ export function createBridge({
       if (signal?.aborted) onAbort();
     });
     ownerWs.send(
-      JSON.stringify({ type: "tool_call", id, name, args, workbook_revision: revision }),
+      JSON.stringify({
+        type: "tool_call",
+        id,
+        name,
+        args,
+        workbook_revision: revision,
+        ...(origin ? { origin } : {}),
+      }),
     );
     return await promise;
   }

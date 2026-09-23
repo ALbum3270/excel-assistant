@@ -42,7 +42,7 @@ if (existsSync(ENV_FILE)) {
 // Draftspect deliberately uses 47833/47834. Another local Office add-in
 // on this machine may bind 47823/47824, so a distinct pair avoids a port
 // clash when both run at once. Keep WS_PORT = HTTP_PORT - 1 (the taskpane
-// derives nothing; the WS port is referenced explicitly in taskpane.js
+// derives nothing; the WS port is referenced explicitly in taskpane/app/core/bridge.js
 // and the index.html CSP — change all three together).
 const WS_PORT = 47833;
 const HTTP_PORT = 47834;
@@ -111,11 +111,8 @@ const MIME = {
 const taskpaneDir = join(PROJECT_ROOT, "taskpane");
 // Office.js served locally so the pane works when appsforoffice.microsoft.com is unreachable.
 const officeJsDir = join(PROJECT_ROOT, "node_modules", "@microsoft", "office-js", "dist");
-// Browser ES modules the pane imports straight from node_modules.
-const NPM_MODULES = {
-  "/npm/marked.esm.js": join(PROJECT_ROOT, "node_modules", "marked", "lib", "marked.esm.js"),
-  "/npm/purify.es.mjs": join(PROJECT_ROOT, "node_modules", "dompurify", "dist", "purify.es.mjs"),
-};
+// The pane is a bundle built by scripts/build-pane.mjs (npm run build:pane).
+const PANE_BUNDLE = join(taskpaneDir, "app", "dist", "pane.js");
 
 // A branded, actionable error page. Office renders whatever the manifest's
 // SourceLocation returns inside the task pane, so a bare "Not found" (the
@@ -202,12 +199,6 @@ const http = createServer(async (req, res) => {
       return;
     }
 
-    if (NPM_MODULES[urlPath]) {
-      res.writeHead(200, { "Content-Type": MIME[".js"] });
-      res.end(await readFile(NPM_MODULES[urlPath]));
-      return;
-    }
-
     const isOfficeJs = urlPath.startsWith("/office-js/");
     const baseDir = isOfficeJs ? officeJsDir : taskpaneDir;
     const relPath = isOfficeJs
@@ -234,7 +225,17 @@ const http = createServer(async (req, res) => {
       // fresh URL, forcing a re-fetch. (The handler strips the query string
       // before resolving the file, so `?v=` doesn't affect routing.)
       let html = await readFile(fsPath, "utf8");
-      html = html.replace(/(\/shared\/(?:taskpane\.js|styles\.css))"/g, `$1?v=${BRIDGE_TOKEN}"`);
+      if (!isOfficeJs && html.includes("/app/dist/pane.js") && !existsSync(PANE_BUNDLE)) {
+        sendError(
+          req,
+          res,
+          503,
+          "The task pane has not been built yet. Run <code>npm run build:pane</code> in the Excel Assistant folder, then reopen this panel.",
+          urlPath,
+        );
+        return;
+      }
+      html = html.replace(/(\/app\/dist\/pane\.(?:js|css))"/g, `$1?v=${BRIDGE_TOKEN}"`);
       res.writeHead(200, { "Content-Type": mime });
       res.end(html);
     } else {
@@ -817,7 +818,10 @@ bridge = createBridge({
   extraHandlers: {
     workbook_history: async (msg, reply, key) => {
       try {
-        const result = await bridge.callTaskpaneTool("excel_workbook_history", msg.args ?? {}, key);
+        // origin "pane": the pane's own undo button, not an assistant action.
+        const result = await bridge.callTaskpaneTool("excel_workbook_history", msg.args ?? {}, key, {
+          origin: "pane",
+        });
         reply({ type: "workbook_history_result", ok: true, result, request_id: msg.request_id });
       } catch (error) {
         reply({

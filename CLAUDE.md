@@ -20,6 +20,7 @@
   - `office-agents-excel-api.js`：hewliyang/office-agents，锁定 95fb654。由 `scripts/vendor-office-agents.mjs` 加补丁生成。
   - `pi-context.js`、`pi-recovery.js`：tmustier/pi-for-excel，锁定 fd6c9e3。由 `scripts/vendor-pi-context.mjs` 加补丁生成。
   - `recovery.js` 是 Pi 恢复日志的胶水：IndexedDB 存储、工作簿身份、各写工具的快照计划。
+  - 界面在 `taskpane/app/`：`core/` 是不依赖 DOM 的逻辑（桥接、工具执行、状态），`view/` 是 React 界面，`vendor/` 是 vercel/ai-elements（锁定 6a9d5b1）和 shadcn/ui 组件的原样复制，由 `scripts/vendor-ai-elements.mjs` 生成，补丁在 `scripts/ai-elements-patches.mjs`。`npm run build:pane` 打包到 `taskpane/app/dist/`（已被 git 忽略）。
 - **计算沙箱**（`daemon/compute-tool.mjs`）：基于 just-bash 的 `excel_bash`，内置 `sheet-to-csv` 和 `csv-to-sheet`。只有 Python 标准库，没有网络，也碰不到本地文件。
 - **COM 高级工具**：ThepExcelMCP，经 `agent.config.json` 配置，提供 Power Query、数据透视、数据模型等。
 - **托盘**（`app/`）：Electron 程序，负责启动 daemon 并注册加载项。
@@ -60,10 +61,12 @@
 npm run dev                  # 只启动 daemon（调试用）
 npm start                    # 启动 Electron 托盘（daemon + 加载项注册）
 npm test                     # Node 测试
+npm run build:pane           # 打包任务窗格（start/dev 前自动执行）
+npm run vendor:ai-elements   # 重新复制 AI Elements 组件
 npm run vendor:office-agents # 重建 office-agents 打包
 npm run vendor:pi-context    # 重建 pi-context.js 和 pi-recovery.js
 python -X utf8 evals/run_spreadsheetbench.py --dataset <.../spreadsheetbench_verified_400> --run <name> --model haiku --ids <...>
 ```
 
 - 评测要求 Excel 空闲、电脑不休眠，结果写入 `evals/runs/`（已被 git 忽略）。
-- 修改前端代码后，要在 Excel 里重新加载任务窗格才会生效。
+- 修改前端代码后，要运行 `npm run build:pane`，再在 Excel 里重新加载任务窗格才会生效。
