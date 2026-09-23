@@ -8,7 +8,11 @@ function memoryLog(store = new Map()) {
       get: async (key) => store.get(key) ?? null,
       set: async (key, value) => void store.set(key, value),
     },
-    getWorkbookContext: async () => ({ workbookId: "url_sha256:book", workbookName: "Book.xlsx", source: "document.url" }),
+    getWorkbookContext: async () => ({
+      workbookId: "url_sha256:book",
+      workbookName: "Book.xlsx",
+      source: "document.url",
+    }),
     getDocumentInstance: () => ({ read: () => "doc-1", ensure: async () => "doc-1" }),
     // Restore writes the saved values and reports what was there, which becomes
     // the inverse snapshot.
@@ -34,15 +38,23 @@ test("grouped inverses keep their identity and application order after reloading
 
   const restoreCallId = "restore:call-1:x";
   for (const [index, snapshot] of originals.entries()) {
-    await log.restore(snapshot.id, { toolCallId: restoreCallId, restoreOrder: originals.length - index - 1 });
+    await log.restore(snapshot.id, {
+      toolCallId: restoreCallId,
+      restoreOrder: originals.length - index - 1,
+    });
   }
 
   const reloaded = memoryLog(store);
-  const inverses = (await reloaded.listForCurrentWorkbook(10)).filter((item) => item.restoredFromSnapshotId);
+  const inverses = (await reloaded.listForCurrentWorkbook(10)).filter(
+    (item) => item.restoredFromSnapshotId,
+  );
   assert.equal(inverses.length, 2);
   assert.deepEqual([...new Set(inverses.map((item) => item.toolCallId))], [restoreCallId]);
   for (const [index, original] of originals.entries()) {
-    assert.equal(inverses.find((item) => item.restoredFromSnapshotId === original.id).restoreOrder, originals.length - index - 1);
+    assert.equal(
+      inverses.find((item) => item.restoredFromSnapshotId === original.id).restoreOrder,
+      originals.length - index - 1,
+    );
   }
 });
 
@@ -58,6 +70,8 @@ test("without an id, restore keeps upstream's per-snapshot naming", async () => 
   });
   const [snapshot] = await log.listForCurrentWorkbook(10);
   await log.restore(snapshot.id);
-  const [inverse] = (await log.listForCurrentWorkbook(10)).filter((item) => item.restoredFromSnapshotId);
+  const [inverse] = (await log.listForCurrentWorkbook(10)).filter(
+    (item) => item.restoredFromSnapshotId,
+  );
   assert.equal(inverse.toolCallId, `restore:${snapshot.id}`);
 });

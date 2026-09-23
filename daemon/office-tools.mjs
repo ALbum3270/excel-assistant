@@ -409,7 +409,8 @@ export function createOfficeBridgeMcp(
     };
     try {
       const result = await body();
-      if (failed(result)) remember(String(result.error ?? "the call reported success: false."), result.code);
+      if (failed(result))
+        remember(String(result.error ?? "the call reported success: false."), result.code);
       else repeatedFailures.delete(key);
       return asMcpResult(result);
     } catch (e) {
@@ -540,31 +541,32 @@ export function createOfficeBridgeMcp(
       color: z.string().optional(),
     })
     .optional();
-  const cellInput = z.object({
-    value: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
-    formula: z
-      .string()
-      .startsWith("=", "Formula must start with '='.")
-      .optional()
-      .describe("Formula starting with '=', e.g. '=SUM(B2:B5)'."),
-    note: z.string().optional(),
-    cellStyles: z
-      .object({
-        fontWeight: z.enum(["normal", "bold"]).optional(),
-        fontStyle: z.enum(["normal", "italic"]).optional(),
-        fontLine: z.enum(["none", "underline", "line-through"]).optional(),
-        fontSize: z.number().optional(),
-        fontFamily: z.string().optional(),
-        fontColor: z.string().optional(),
-        backgroundColor: z.string().optional(),
-        horizontalAlignment: z.enum(["left", "center", "right"]).optional(),
-        numberFormat: z.string().optional(),
-      })
-      .optional(),
-    borderStyles: z
-      .object({ top: borderSide, bottom: borderSide, left: borderSide, right: borderSide })
-      .optional(),
-  })
+  const cellInput = z
+    .object({
+      value: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
+      formula: z
+        .string()
+        .startsWith("=", "Formula must start with '='.")
+        .optional()
+        .describe("Formula starting with '=', e.g. '=SUM(B2:B5)'."),
+      note: z.string().optional(),
+      cellStyles: z
+        .object({
+          fontWeight: z.enum(["normal", "bold"]).optional(),
+          fontStyle: z.enum(["normal", "italic"]).optional(),
+          fontLine: z.enum(["none", "underline", "line-through"]).optional(),
+          fontSize: z.number().optional(),
+          fontFamily: z.string().optional(),
+          fontColor: z.string().optional(),
+          backgroundColor: z.string().optional(),
+          horizontalAlignment: z.enum(["left", "center", "right"]).optional(),
+          numberFormat: z.string().optional(),
+        })
+        .optional(),
+      borderStyles: z
+        .object({ top: borderSide, bottom: borderSide, left: borderSide, right: borderSide })
+        .optional(),
+    })
     // Pass unknown keys through to toCellInput, which names them; stripping
     // them here is how an address-keyed object turned into one empty cell.
     .passthrough();
@@ -734,7 +736,11 @@ export function createOfficeBridgeMcp(
     "WRITE. Write values, formulas, and formatting to cells. Accepts 2D matrices, a single cell, or a 1D list (a row, or a column when range is one column wide). A formula pattern smaller than range is filled across it with relative-reference translation. Otherwise cells must match a multi-cell range exactly — a larger or smaller block is refused — so to write the data's own shape, give only its top-left cell as range. Computed formula values and errors come back for verification. OVERWRITE PROTECTION: use allow_overwrite=true immediately when the user's requested edit targets existing cells; ask only when the overwrite is outside the requested scope. Use copyToRange to expand larger patterns.",
     {
       sheetId,
-      range: z.string().describe("A single top-left cell (the data sets the shape), or a range that cells matches exactly."),
+      range: z
+        .string()
+        .describe(
+          "A single top-left cell (the data sets the shape), or a range that cells matches exactly.",
+        ),
       cells: cellPayload,
       copyToRange: z
         .string()

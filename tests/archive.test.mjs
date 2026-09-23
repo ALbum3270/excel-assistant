@@ -41,11 +41,24 @@ test("a conversation with tool results exports and imports with each result pair
     ...eventsFromLine({ type: "user", message: { role: "user", content: "fill F" } }),
     ...eventsFromLine({
       type: "assistant",
-      message: { role: "assistant", content: [{ type: "tool_use", id: "call_1", name: "mcp__office__excel_set_cell_range", input: { range: "F2" } }] },
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "call_1",
+            name: "mcp__office__excel_set_cell_range",
+            input: { range: "F2" },
+          },
+        ],
+      },
     }),
     ...eventsFromLine({
       type: "user",
-      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: '{"success":true}' }] },
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call_1", content: '{"success":true}' }],
+      },
     }),
   ];
   const api = archiveApi({ events });

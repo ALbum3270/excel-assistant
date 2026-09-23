@@ -18,17 +18,17 @@
 
 ## 二、对比对象（源码已核实）
 
-| 项目 | 形态 | Star / 最近推送 / 许可 | 与我们的关系 |
-| --- | --- | --- | --- |
-| tmustier/pi-for-excel | Office.js 侧边栏智能体 | 427 / 2026-09-17 / MIT | 最成熟的同类，已移植其上下文模块 |
-| hewliyang/office-agents | Office.js 智能体与 Excel API | 578 / 2026-05-12 / README 声明 MIT | Excel API 层已打包移植 |
-| pawarbi/fabric-rlm-core | Python 工作区 + openpyxl（文件） | 2 / 2026-09-18 / MIT | 榜单上唯一的开源方案 |
-| cmarathe1/MS-Excel-AI-plugin | Office.js + 本地 sidecar | 1 / 2026-06-11 / MIT | 变更集：预览、批准、撤销、自动回滚 |
-| getcellm/cellm | 单元格里的 AI 函数（.NET） | 951 / 2026-09-07 / 许可未声明 | 另一类功能：`=PROMPT()` |
-| ThepExcel/ThepExcelMCP | COM MCP | 13 / 2026-08-16 / MIT | 已接入 |
-| LeonardHope/Draftspect | Claude Code 办公插件 | 27 / 2026-05-22 / MIT | 本项目的基础 |
-| CrispStrobe/ExcelLLMAddin | Office.js：二十多个单元格 AI 函数加一个简单智能体 | 0 / 2026-07-16 / AGPL-3.0 | 单元格 AI 函数最完整（批量、流式、缓存、重试、用量统计）；借鉴设计，自己实现，不复制代码 |
-| iOfficeAI/OfficeCLI | 无需 Office 的文件命令行工具 | 30.8k / Apache-2.0 | 处理文件，不操作打开着的 Excel，暂不需要 |
+| 项目                         | 形态                                              | Star / 最近推送 / 许可             | 与我们的关系                                                                             |
+| ---------------------------- | ------------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------- |
+| tmustier/pi-for-excel        | Office.js 侧边栏智能体                            | 427 / 2026-09-17 / MIT             | 最成熟的同类，已移植其上下文模块                                                         |
+| hewliyang/office-agents      | Office.js 智能体与 Excel API                      | 578 / 2026-05-12 / README 声明 MIT | Excel API 层已打包移植                                                                   |
+| pawarbi/fabric-rlm-core      | Python 工作区 + openpyxl（文件）                  | 2 / 2026-09-18 / MIT               | 榜单上唯一的开源方案                                                                     |
+| cmarathe1/MS-Excel-AI-plugin | Office.js + 本地 sidecar                          | 1 / 2026-06-11 / MIT               | 变更集：预览、批准、撤销、自动回滚                                                       |
+| getcellm/cellm               | 单元格里的 AI 函数（.NET）                        | 951 / 2026-09-07 / 许可未声明      | 另一类功能：`=PROMPT()`                                                                  |
+| ThepExcel/ThepExcelMCP       | COM MCP                                           | 13 / 2026-08-16 / MIT              | 已接入                                                                                   |
+| LeonardHope/Draftspect       | Claude Code 办公插件                              | 27 / 2026-05-22 / MIT              | 本项目的基础                                                                             |
+| CrispStrobe/ExcelLLMAddin    | Office.js：二十多个单元格 AI 函数加一个简单智能体 | 0 / 2026-07-16 / AGPL-3.0          | 单元格 AI 函数最完整（批量、流式、缓存、重试、用量统计）；借鉴设计，自己实现，不复制代码 |
+| iOfficeAI/OfficeCLI          | 无需 Office 的文件命令行工具                      | 30.8k / Apache-2.0                 | 处理文件，不操作打开着的 Excel，暂不需要                                                 |
 
 ## 三、我们已经领先或持平的地方
 
@@ -43,21 +43,20 @@
 
 本表是开源能力移植清单。用户确认的 P0/P1/P2 十二项任务及剩余工作统一记录在 [priority-roadmap.md](priority-roadmap.md)，不能以本表若干项“已完成”代表十二项任务全部完成。
 
-| 优先级 | 差距 | 谁做得更好（源码位置） | 计划 |
-| --- | --- | --- | --- |
-| 已完成 | 解题规程：先复述目标区域、变换和输出类型；大范围写入先建完整矩阵，并断言尺寸与目标一致；写后抽查首尾单元格；列出反模式（把宏或说明文字写进单元格、用占位符凑数、差一行） | fabric-rlm `fabric_rlm/skills/excel_modify.md`（MIT），带它上榜的核心配方 | 已改写进系统提示词（87ae843） |
-| 部分完成 | 撤销与恢复点：值、公式、格式、排序、清空、行列尺寸、插删行列、增删和改名工作表 | Pi `src/workbook/recovery-log.ts` + `recovery/*` | 原有路径已在真实 Excel 中验证（第三十七、三十九、四十一节）。新增表格、筛选、隐藏/冻结和部分图表恢复点，尚待真实 Excel 验收；透视表、批注和 COM 写入仍不完整 |
-| 不做 | 写后发现新出现的错误值就自动回滚 | MS-Excel-AI-plugin `sidecar/src/changeset/manager.ts` | `#N/A` 等错误常是预期结果，自动回滚会撤掉正确写入；改为在回执中报告 `formulaErrors`，由模型判断，需要时用恢复点撤销 |
-| 已完成 | 公式解释、依赖追踪 | Pi `explain-formula.ts`、`trace-dependencies.ts` | 已移植并在真实 Excel 中验证；修复了区域引用只追踪左上角的上游问题（优化分析第四十节） |
-| 已完成 | 写入前预览和审批（可选，默认关闭） | MS-Excel-AI-plugin 的变更集、ExcelLLMAddin 的先批准再执行 | 通过 SDK `canUseTool` 逐次审批，模型每步拿到真实结果（优化分析第四十二节）；侧边栏已有恢复点列表与恢复操作，仍可通过 `excel_workbook_history` 查看 |
-| P2 | 单元格 AI 函数（分类、抽取、拆字段、翻译、`MAP` 批量等） | ExcelLLMAddin `officejs/src/functions/functions.ts`、`core/tasks.ts`；cellm | 需要在 manifest 里加自定义函数；另一类功能，按需求决定 |
-| 待定 | 执行原始 Office.js 的万能工具 | Pi `execute_office_js`、office-agents `eval-officejs` | 会绕过覆盖保护和回执；若有恢复点兜底可再考虑 |
-| 待定 | 沙箱 Python 缺 pandas/openpyxl | Pi 用 Pyodide（需从 CDN 下载约 15MB）；fabric-rlm 用本机 Python | 目前靠 CSV 加标准库已能完成，先不动 |
+| 优先级   | 差距                                                                                                                                                                     | 谁做得更好（源码位置）                                                      | 计划                                                                                                                                                         |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 已完成   | 解题规程：先复述目标区域、变换和输出类型；大范围写入先建完整矩阵，并断言尺寸与目标一致；写后抽查首尾单元格；列出反模式（把宏或说明文字写进单元格、用占位符凑数、差一行） | fabric-rlm `fabric_rlm/skills/excel_modify.md`（MIT），带它上榜的核心配方   | 已改写进系统提示词（87ae843）                                                                                                                                |
+| 部分完成 | 撤销与恢复点：值、公式、格式、排序、清空、行列尺寸、插删行列、增删和改名工作表                                                                                           | Pi `src/workbook/recovery-log.ts` + `recovery/*`                            | 原有路径已在真实 Excel 中验证（第三十七、三十九、四十一节）。新增表格、筛选、隐藏/冻结和部分图表恢复点，尚待真实 Excel 验收；透视表、批注和 COM 写入仍不完整 |
+| 不做     | 写后发现新出现的错误值就自动回滚                                                                                                                                         | MS-Excel-AI-plugin `sidecar/src/changeset/manager.ts`                       | `#N/A` 等错误常是预期结果，自动回滚会撤掉正确写入；改为在回执中报告 `formulaErrors`，由模型判断，需要时用恢复点撤销                                          |
+| 已完成   | 公式解释、依赖追踪                                                                                                                                                       | Pi `explain-formula.ts`、`trace-dependencies.ts`                            | 已移植并在真实 Excel 中验证；修复了区域引用只追踪左上角的上游问题（优化分析第四十节）                                                                        |
+| 已完成   | 写入前预览和审批（可选，默认关闭）                                                                                                                                       | MS-Excel-AI-plugin 的变更集、ExcelLLMAddin 的先批准再执行                   | 通过 SDK `canUseTool` 逐次审批，模型每步拿到真实结果（优化分析第四十二节）；侧边栏已有恢复点列表与恢复操作，仍可通过 `excel_workbook_history` 查看           |
+| P2       | 单元格 AI 函数（分类、抽取、拆字段、翻译、`MAP` 批量等）                                                                                                                 | ExcelLLMAddin `officejs/src/functions/functions.ts`、`core/tasks.ts`；cellm | 需要在 manifest 里加自定义函数；另一类功能，按需求决定                                                                                                       |
+| 待定     | 执行原始 Office.js 的万能工具                                                                                                                                            | Pi `execute_office_js`、office-agents `eval-officejs`                       | 会绕过覆盖保护和回执；若有恢复点兜底可再考虑                                                                                                                 |
+| 待定     | 沙箱 Python 缺 pandas/openpyxl                                                                                                                                           | Pi 用 Pyodide（需从 CDN 下载约 15MB）；fabric-rlm 用本机 Python             | 目前靠 CSV 加标准库已能完成，先不动                                                                                                                          |
 
 ## 五、不移植的及原因
 
 许可证只约束原样复制代码，不约束思路和做法。所有来源（包括 AGPL 项目）都可以参考后自行实现；只有原样复制代码时，才受对方许可证约束。
-
 
 - DealGlass Tetra：闭源。
 - OfficeCLI、Bread_Excel_Agent：处理文件，不操作打开着的 Excel，与本产品形态不同。

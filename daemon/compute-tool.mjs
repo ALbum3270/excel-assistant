@@ -36,7 +36,8 @@ function columnLetters(index) {
 function parseCell(a1) {
   const match = /^([A-Z]+)(\d+)$/i.exec(a1);
   if (!match) return null;
-  const col = [...match[1].toUpperCase()].reduce((acc, c) => acc * 26 + c.charCodeAt(0) - 64, 0) - 1;
+  const col =
+    [...match[1].toUpperCase()].reduce((acc, c) => acc * 26 + c.charCodeAt(0) - 64, 0) - 1;
   return { col, row: Number(match[2]) - 1 };
 }
 
@@ -70,7 +71,9 @@ function workbookCommands(call, approveWrite) {
     const [sheetArg, second, third] = args;
     const sheetId = Number.parseInt(sheetArg, 10);
     if (!Number.isInteger(sheetId)) {
-      return failure("Usage: sheet-to-csv <sheetId> [range] [file]  (sheetId from mcp__office__excel_get_workbook_metadata or the [Auto-context] overview)");
+      return failure(
+        "Usage: sheet-to-csv <sheetId> [range] [file]  (sheetId from mcp__office__excel_get_workbook_metadata or the [Auto-context] overview)",
+      );
     }
     let range = second && /^[A-Z]+\d+(:[A-Z]+\d+)?$/i.test(second) ? second : undefined;
     const outFile = range ? third : second;
@@ -91,12 +94,16 @@ function workbookCommands(call, approveWrite) {
       let sheetName = "";
       while (next) {
         // includeHeaders keeps each page's first row; nothing here is treated as a header.
-        const page = await call("excel_get_range_as_csv", {
-          sheetId,
-          range: next,
-          includeHeaders: true,
-          maxRows: CSV_PAGE_ROWS,
-        }, { signal: ctx.signal });
+        const page = await call(
+          "excel_get_range_as_csv",
+          {
+            sheetId,
+            range: next,
+            includeHeaders: true,
+            maxRows: CSV_PAGE_ROWS,
+          },
+          { signal: ctx.signal },
+        );
         // A page of one blank cell serializes to "" and is still a row, so keep
         // pages by their row count, not by whether their text is empty.
         if (page.rowCount > 0) pages.push(page.csv ?? "");
@@ -129,7 +136,9 @@ function workbookCommands(call, approveWrite) {
     const sheetId = Number.parseInt(sheetArg, 10);
     const start = parseCell(startArg ?? "");
     if (!file || !Number.isInteger(sheetId) || !start) {
-      return failure("Usage: csv-to-sheet <file> <sheetId> [startCell] [--force] [--text] [--no-formulas]");
+      return failure(
+        "Usage: csv-to-sheet <file> <sheetId> [startCell] [--force] [--text] [--no-formulas]",
+      );
     }
     const committed = [];
     try {
@@ -145,14 +154,17 @@ function workbookCommands(call, approveWrite) {
       const rows = parsed.data;
       if (rows.length === 0) return failure("CSV file is empty");
       const width = rows.reduce((maximum, row) => Math.max(maximum, row.length), 0);
-      if (width < 1 || width > EXCEL_MAX_COLUMNS) return failure(`CSV width ${width} is outside Excel's limits`);
+      if (width < 1 || width > EXCEL_MAX_COLUMNS)
+        return failure(`CSV width ${width} is outside Excel's limits`);
       if (start.row + rows.length > EXCEL_MAX_ROWS || start.col + width > EXCEL_MAX_COLUMNS) {
         return failure(
           `CSV target from ${startArg} with ${rows.length} rows x ${width} columns is outside Excel's limits`,
         );
       }
       const cells = rows.map((row) =>
-        Array.from({ length: width }, (_, i) => cellInput(row[i] ?? "", { text: exactText, formulas })),
+        Array.from({ length: width }, (_, i) =>
+          cellInput(row[i] ?? "", { text: exactText, formulas }),
+        ),
       );
       const target = `${columnLetters(start.col)}${start.row + 1}:${columnLetters(start.col + width - 1)}${start.row + rows.length}`;
       if (!force) {
@@ -161,13 +173,20 @@ function workbookCommands(call, approveWrite) {
         let pending = [target];
         let occupied = [];
         while (pending.length > 0 && occupied.length === 0) {
-          const existing = await call("excel_get_cell_ranges", {
-            sheetId,
-            ranges: pending,
-            includeStyles: false,
-            cellLimit: 5,
-          }, { signal: ctx.signal });
-          occupied = Object.keys({ ...existing?.worksheet?.cells, ...existing?.worksheet?.formulas });
+          const existing = await call(
+            "excel_get_cell_ranges",
+            {
+              sheetId,
+              ranges: pending,
+              includeStyles: false,
+              cellLimit: 5,
+            },
+            { signal: ctx.signal },
+          );
+          occupied = Object.keys({
+            ...existing?.worksheet?.cells,
+            ...existing?.worksheet?.formulas,
+          });
           pending = existing?.remainingRanges ?? [];
         }
         if (occupied.length > 0) {
@@ -202,12 +221,16 @@ function workbookCommands(call, approveWrite) {
         const chunk = cells.slice(offset, offset + rowsPerChunk);
         const top = start.row + offset + 1;
         const range = `${columnLetters(start.col)}${top}:${columnLetters(start.col + width - 1)}${top + chunk.length - 1}`;
-        const result = await call("excel_set_cell_range", {
-          sheetId,
-          range,
-          cells: chunk,
-          allow_overwrite: true,
-        }, { signal: ctx.signal });
+        const result = await call(
+          "excel_set_cell_range",
+          {
+            sheetId,
+            range,
+            cells: chunk,
+            allow_overwrite: true,
+          },
+          { signal: ctx.signal },
+        );
         if (result?.commitStatus !== "committed") {
           throw new Error(
             `Write to ${range} did not confirm commit (status: ${result?.commitStatus ?? "unknown"}). ` +
@@ -219,7 +242,10 @@ function workbookCommands(call, approveWrite) {
       }
       const errorNote = formulaErrors.length
         ? `Formula errors in ${formulaErrors.length} cell(s): ` +
-          formulaErrors.slice(0, 10).map((item) => `${item.address}=${item.value}`).join(", ") +
+          formulaErrors
+            .slice(0, 10)
+            .map((item) => `${item.address}=${item.value}`)
+            .join(", ") +
           (formulaErrors.length > 10 ? ", ..." : "") +
           ". Check whether they are expected (e.g. #N/A for no match) before reporting.\n"
         : "";

@@ -125,7 +125,11 @@ test("write errors expose a recovery checkpoint to the model", async () => {
     recovery: { status: "checkpoint_created", snapshotIds: ["before-write"] },
   });
   const server = createOfficeBridgeMcp(
-    { async callTaskpaneTool() { throw error; } },
+    {
+      async callTaskpaneTool() {
+        throw error;
+      },
+    },
     "excel",
     "test-pane",
   );
@@ -136,7 +140,10 @@ test("write errors expose a recovery checkpoint to the model", async () => {
   const payload = JSON.parse(result.content[0].text);
   assert.equal(result.isError, true);
   assert.equal(payload.commitStatus, "unknown");
-  assert.deepEqual(payload.recovery, { status: "checkpoint_created", snapshotIds: ["before-write"] });
+  assert.deepEqual(payload.recovery, {
+    status: "checkpoint_created",
+    snapshotIds: ["before-write"],
+  });
 });
 
 test("range reads accept a model-supplied bracketed string", async () => {
@@ -195,7 +202,10 @@ test("set-cell refuses ambiguous payloads and never repeats plain values", async
   assert.equal(spill.isError, true);
   assert.match(spill.content[0].text, /3x1 but range J3:L3 is 1x3/);
   assert.deepEqual(calls, [
-    { name: "excel_set_cell_range", args: { sheetId: 1, range: "A1", cells: [[{ value: "Total" }]] } },
+    {
+      name: "excel_set_cell_range",
+      args: { sheetId: 1, range: "A1", cells: [[{ value: "Total" }]] },
+    },
   ]);
 });
 
@@ -232,8 +242,13 @@ test("fill-formula sends one formula and a translated fill range", async () => {
 });
 
 test("write receipts keep a bounded sample of formula results and errors", async () => {
-  const formulaResults = Object.fromEntries(Array.from({ length: 4999 }, (_, i) => [`F${i + 2}`, i]));
-  const formulaErrors = Array.from({ length: 60 }, (_, i) => ({ address: `F${i + 2}`, value: "#N/A" }));
+  const formulaResults = Object.fromEntries(
+    Array.from({ length: 4999 }, (_, i) => [`F${i + 2}`, i]),
+  );
+  const formulaErrors = Array.from({ length: 60 }, (_, i) => ({
+    address: `F${i + 2}`,
+    value: "#N/A",
+  }));
   const server = createOfficeBridgeMcp(
     {
       async callTaskpaneTool() {
@@ -360,7 +375,11 @@ test("a formula refused before dispatch counts toward the repeat budget", async 
   );
   const handler = server.instance._registeredTools.excel_fill_formula.handler;
   // The unbalanced formula a flash run resent three times in task 42354.
-  const call = { sheetId: 1, range: "D2:D9", formula: "=IF(ISERROR(A2),\"\",IF(NOT(ISNUMBER(A2)),A2,\"\")" };
+  const call = {
+    sheetId: 1,
+    range: "D2:D9",
+    formula: '=IF(ISERROR(A2),"",IF(NOT(ISNUMBER(A2)),A2,"")',
+  };
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const result = await handler({ ...call });
@@ -374,7 +393,12 @@ test("a formula refused before dispatch counts toward the repeat budget", async 
 test("a data block smaller than its range is refused, not written in part", async () => {
   const calls = [];
   const server = createOfficeBridgeMcp(
-    { async callTaskpaneTool(name, args) { calls.push(args); return { success: true, commitStatus: "committed" }; } },
+    {
+      async callTaskpaneTool(name, args) {
+        calls.push(args);
+        return { success: true, commitStatus: "committed" };
+      },
+    },
     "excel",
     "test-pane",
   );
@@ -396,7 +420,12 @@ test("a data block smaller than its range is refused, not written in part", asyn
 test("cells keyed by address are refused instead of becoming one empty cell", async () => {
   const calls = [];
   const server = createOfficeBridgeMcp(
-    { async callTaskpaneTool(name, args) { calls.push(args); return { success: true, commitStatus: "committed" }; } },
+    {
+      async callTaskpaneTool(name, args) {
+        calls.push(args);
+        return { success: true, commitStatus: "committed" };
+      },
+    },
     "excel",
     "test-pane",
   );
@@ -441,7 +470,11 @@ test("the repeat budget ignores transient failures and starts over each turn", a
   editing = false;
   const after = await handler({ ...call });
   assert.doesNotMatch(after.content[0].text, /already failed/);
-  assert.equal(dispatches, 4, "the fourth call reaches Excel once the cell is no longer being edited");
+  assert.equal(
+    dispatches,
+    4,
+    "the fourth call reaches Excel once the cell is no longer being edited",
+  );
 });
 
 test("formula preflight ignores parentheses inside quoted sheet names and structured references", async () => {

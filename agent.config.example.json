@@ -3,12 +3,7 @@
     "thepexcel-excel": {
       "type": "stdio",
       "command": "uv",
-      "args": [
-        "run",
-        "--directory",
-        "C:\\path\\to\\ThepExcelMCP",
-        "thepexcel-mcp"
-      ],
+      "args": ["run", "--directory", "C:\\path\\to\\ThepExcelMCP", "thepexcel-mcp"],
       "env": {
         "THEPEXCEL_MCP_AUTOLAUNCH": "0"
       }
@@ -29,18 +24,8 @@
     "financial-analysis:lbo-model",
     "financial-analysis:comps-analysis"
   ],
-  "builtinTools": [
-    "Read",
-    "Glob",
-    "Grep",
-    "Skill",
-    "ToolSearch",
-    "WebSearch",
-    "WebFetch"
-  ],
-  "settingSources": [
-    "project"
-  ],
+  "builtinTools": ["Read", "Glob", "Grep", "Skill", "ToolSearch", "WebSearch", "WebFetch"],
+  "settingSources": ["project"],
   "inheritUserMcpServers": false,
   "env": {
     "ENABLE_TOOL_SEARCH": "true"

@@ -29,7 +29,14 @@ const THEPEXCEL_READ_ACTIONS = new Map(
     excel_table: ["list", "read"],
     excel_powerquery: ["list", "get", "analyze", "analyze_raw", "get_parameter", "list_parameters"],
     excel_pivot: ["list", "read"],
-    excel_datamodel: ["info", "list_tables", "list_relationships", "list_measures", "cube_value", "cube_member"],
+    excel_datamodel: [
+      "info",
+      "list_tables",
+      "list_relationships",
+      "list_measures",
+      "cube_value",
+      "cube_member",
+    ],
     excel_name: ["list", "get"],
     excel_chart: ["list", "export_image"],
     excel_screenshot: ["range", "sheet", "chart"],
@@ -60,7 +67,9 @@ export function needsApproval(toolName, input) {
   const prefix = "mcp__thepexcel-excel__";
   if (!toolName.startsWith(prefix)) return false;
   const readActions = THEPEXCEL_READ_ACTIONS.get(toolName.slice(prefix.length));
-  const action = String(input?.action ?? "").trim().toLowerCase();
+  const action = String(input?.action ?? "")
+    .trim()
+    .toLowerCase();
   return !readActions?.has(action);
 }
 

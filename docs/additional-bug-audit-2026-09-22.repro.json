@@ -54,12 +54,7 @@
         "allowOverwrite": false,
         "actualAssignment": {
           "address": "A1:B1",
-          "matrix": [
-            [
-              7,
-              "=1+1"
-            ]
-          ]
+          "matrix": [[7, "=1+1"]]
         },
         "consequence": "B1 is sent to Range.formulas as a formula expression"
       }
@@ -68,15 +63,8 @@
       "id": "N05-table-without-headers-undo-leaves-extra-row",
       "reproduced": true,
       "evidence": {
-        "original": [
-          "A",
-          "B"
-        ],
-        "afterUndo": [
-          "A",
-          "B",
-          "B"
-        ],
+        "original": ["A", "B"],
+        "afterUndo": ["A", "B", "B"],
         "tableExists": false,
         "capturedRange": "Sheet1!A1:A2"
       }

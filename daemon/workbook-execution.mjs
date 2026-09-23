@@ -141,9 +141,9 @@ export function createWorkbookExecution() {
               write,
             });
             if (write && didCommit(result)) {
-            state.revision = pending;
-            state.lastWrite = toolName;
-          }
+              state.revision = pending;
+              state.lastWrite = toolName;
+            }
             this.settled(workbookId, opId);
             return { result, revision: state.revision, uncertain: Boolean(state.blocked) };
           } catch (error) {

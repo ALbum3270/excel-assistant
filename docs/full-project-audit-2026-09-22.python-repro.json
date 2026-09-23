@@ -7,9 +7,7 @@
       "evidence": {
         "diff": {
           "unauthorized_cells": 0,
-          "sheets_removed": [
-            "SourceData"
-          ],
+          "sheets_removed": ["SourceData"],
           "sheets_added": [],
           "samples": []
         },

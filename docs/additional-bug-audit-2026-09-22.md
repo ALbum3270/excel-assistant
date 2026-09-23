@@ -23,14 +23,14 @@
 
 这里 P1 表示应在下一轮完整评测前修复的数据正确性问题；P2 表示随后修复的交互状态问题。优先级不代表所有输入都会触发。
 
-| 编号 | 优先级 | 问题 | 最小触发条件 |
-| --- | --- | --- | --- |
-| N04 | P1，优先处理 | 只改样式的单元格被重新写入公式接口 | 同批次其他格写值，原格保存以 `=` 开头的文本 |
-| N05 | P1，优先处理 | 无表头建表后撤销残留一行数据 | `has_headers:false`，随后恢复创建表格的恢复点 |
-| N01 | P1 | 工作表名中的 `!` 导致读回地址、使用区域错误 | 例如读取 `Sales!2026` 的 D5 |
-| N02 | P1 | CSV 分页丢失末尾单行空白页 | 单列 20,001 行，最后一行为空 |
-| N03 | P1 | CSV 未转义独立回车符，单元格被拆成多行 | 一个文本单元格包含 `\r`，不包含 `\n` |
-| N06 | P2 | 已显示失败，仍自动执行下一条排队指令 | `subtype:"success"` 且 `is_error:true` |
+| 编号 | 优先级       | 问题                                        | 最小触发条件                                  |
+| ---- | ------------ | ------------------------------------------- | --------------------------------------------- |
+| N04  | P1，优先处理 | 只改样式的单元格被重新写入公式接口          | 同批次其他格写值，原格保存以 `=` 开头的文本   |
+| N05  | P1，优先处理 | 无表头建表后撤销残留一行数据                | `has_headers:false`，随后恢复创建表格的恢复点 |
+| N01  | P1           | 工作表名中的 `!` 导致读回地址、使用区域错误 | 例如读取 `Sales!2026` 的 D5                   |
+| N02  | P1           | CSV 分页丢失末尾单行空白页                  | 单列 20,001 行，最后一行为空                  |
+| N03  | P1           | CSV 未转义独立回车符，单元格被拆成多行      | 一个文本单元格包含 `\r`，不包含 `\n`          |
+| N06  | P2           | 已显示失败，仍自动执行下一条排队指令        | `subtype:"success"` 且 `is_error:true`        |
 
 ## N04：样式修改隐式重写了原有数据
 
@@ -39,9 +39,9 @@
 原状态：A1 为空，B1 是文本 `=1+1`，例如在常规格式单元格中用前导单引号录入。请求：
 
 ```js
-setCellRange(1, "A1:B1", [
-  [{ value: 7 }, { cellStyles: { fontWeight: "bold" } }]
-], { allowOverwrite: false });
+setCellRange(1, "A1:B1", [[{ value: 7 }, { cellStyles: { fontWeight: "bold" } }]], {
+  allowOverwrite: false,
+});
 ```
 
 预期只写 A1，B1 只加粗。实际覆盖检查确实跳过 B1，但矩阵构造把 B1 原值填回，然后执行整个区域的 `range.formulas = [[7, "=1+1"]]`。
@@ -56,15 +56,15 @@ setCellRange(1, "A1:B1", [
 
 位置：[tools-excel.js](../taskpane/shared/tools-excel.js) 242–250 行；[recovery.js](../taskpane/shared/recovery.js) 589–612、624–633、735–741 行。
 
-`toolExcelCreateTable()` 直接调用 `tables.add(address, false)`。此时 Excel 会自动生成表头并把数据下移一行，这是该参数的正式语义。[Microsoft TableCollection.add 文档](https://learn.microsoft.com/en-us/javascript/api/excel/excel.tablecollection?view=excel-js-preview#excel-excel-tablecollection-add-member(1))
+`toolExcelCreateTable()` 直接调用 `tables.add(address, false)`。此时 Excel 会自动生成表头并把数据下移一行，这是该参数的正式语义。[Microsoft TableCollection.add 文档](<https://learn.microsoft.com/en-us/javascript/api/excel/excel.tablecollection?view=excel-js-preview#excel-excel-tablecollection-add-member(1)>)
 
 但恢复准备只保存输入地址，撤销结构时只是 `convertToRange()`，随后只写回输入区域的原值。
 
-| 步骤 | 单列内容 |
-| --- | --- |
-| 原始 A1:A2，A3 为空 | A、B、空 |
-| 对 A1:A2 无表头建表 | Column1、A、B |
-| 转回普通区域并恢复 A1:A2 | **A、B、B** |
+| 步骤                     | 单列内容      |
+| ------------------------ | ------------- |
+| 原始 A1:A2，A3 为空      | A、B、空      |
+| 对 A1:A2 无表头建表      | Column1、A、B |
+| 转回普通区域并恢复 A1:A2 | **A、B、B**   |
 
 新增表头带来的位移没有被撤销，A3 的 B 残留。上一轮修复的组内恢复顺序不能补齐这次漏掉的范围。
 

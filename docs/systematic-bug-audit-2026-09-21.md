@@ -28,22 +28,22 @@ node scripts/diagnostics/audit-2026-09-21.mjs --save
 
 14 项已全部修复，每项都有回归测试。复现脚本 `scripts/diagnostics/audit-2026-09-21.mjs` 保留原样，它复现的是 `335364b` 上**修复前**的行为，是这些问题存在过的证据；它从源码切片执行，部分切片锚点已随修复改名，不再用作现行代码的检验。现行检验以下表的测试为准。标"旧代码失败"的测试已确认在修复前的代码上失败；其余测试依赖修复时新增的代码结构，无法在旧代码上运行，旧行为的证据来自上面的复现脚本。
 
-| 编号 | 提交 | 回归测试 | 旧代码失败 |
-| --- | --- | --- | --- |
-| B01 | d794f22 | `tests/pi-context.test.mjs`：a write that fails part-way still consumes its revision | 是 |
-| B02 | 845afec | `tests/com-backup.test.mjs`：same name in different folders / same millisecond | 是 |
-| B03 | 845afec | `tests/compute-tool.test.mjs`：keeps lossy numbers as text… | 是 |
-| B04 | 47a3e1a | `tests/compute-tool.test.mjs`：a write from a saved script still asks… | 是 |
-| B05 | 3b68c10 | `tests/archive.test.mjs`：exports and imports with each result paired | 否（新结构） |
-| B06 | 3b68c10 | `tests/archive.test.mjs`：long Chinese conversation fits the import limit | 否（新结构） |
-| B07 | 845afec | `tests/taskpane.test.mjs`：a backup that cannot be saved does not swallow… | 是 |
-| B08 | 6be6bcd | `tests/office-tools.test.mjs`：ignores transient failures / starts over each turn | 是 |
-| B09 | d794f22 | 由 `captureRange()` 结构保证：先只加载尺寸、判限后再加载数据 | 否（未单测） |
-| B10 | bb47d32 | `tests/thepexcel-gateway.test.mjs`：stopped while it waits… never starts | 是（撤掉修复验证） |
-| B11 | 02198f6 | `tests/recovery-restore.test.mjs`：one grouped restore leaves inverses that group | 是 |
-| B12 | d794f22 | `tests/office-agents-patches.test.mjs`：checked against the range it expands to | 是 |
-| B13 | 845afec | `tests/taskpane.test.mjs`：失败分支向恢复点传递失败信息；结构恢复收到后不发布逆操作 | 部分（结构函数本身未单测） |
-| B14 | c7b1136 | `tests/app-lifecycle.test.mjs`：Stop cancels a pending restart 等 3 条 | 否（新结构） |
+| 编号 | 提交    | 回归测试                                                                             | 旧代码失败                 |
+| ---- | ------- | ------------------------------------------------------------------------------------ | -------------------------- |
+| B01  | d794f22 | `tests/pi-context.test.mjs`：a write that fails part-way still consumes its revision | 是                         |
+| B02  | 845afec | `tests/com-backup.test.mjs`：same name in different folders / same millisecond       | 是                         |
+| B03  | 845afec | `tests/compute-tool.test.mjs`：keeps lossy numbers as text…                          | 是                         |
+| B04  | 47a3e1a | `tests/compute-tool.test.mjs`：a write from a saved script still asks…               | 是                         |
+| B05  | 3b68c10 | `tests/archive.test.mjs`：exports and imports with each result paired                | 否（新结构）               |
+| B06  | 3b68c10 | `tests/archive.test.mjs`：long Chinese conversation fits the import limit            | 否（新结构）               |
+| B07  | 845afec | `tests/taskpane.test.mjs`：a backup that cannot be saved does not swallow…           | 是                         |
+| B08  | 6be6bcd | `tests/office-tools.test.mjs`：ignores transient failures / starts over each turn    | 是                         |
+| B09  | d794f22 | 由 `captureRange()` 结构保证：先只加载尺寸、判限后再加载数据                         | 否（未单测）               |
+| B10  | bb47d32 | `tests/thepexcel-gateway.test.mjs`：stopped while it waits… never starts             | 是（撤掉修复验证）         |
+| B11  | 02198f6 | `tests/recovery-restore.test.mjs`：one grouped restore leaves inverses that group    | 是                         |
+| B12  | d794f22 | `tests/office-agents-patches.test.mjs`：checked against the range it expands to      | 是                         |
+| B13  | 845afec | `tests/taskpane.test.mjs`：失败分支向恢复点传递失败信息；结构恢复收到后不发布逆操作  | 部分（结构函数本身未单测） |
+| B14  | c7b1136 | `tests/app-lifecycle.test.mjs`：Stop cancels a pending restart 等 3 条               | 否（新结构）               |
 
 修复中顺带处理：`copyToRange` 的格式快照原先按公式模式本身的尺寸截取，只覆盖填充区的第一块（随 B12 修复）；Excel 把 `3-4` 解析成日期等输入转换已在临时 Excel 实例中核实（随 B03）。
 
@@ -51,22 +51,22 @@ node scripts/diagnostics/audit-2026-09-21.mjs --save
 
 ## 已确认问题总表
 
-| 编号 | 优先级 | 问题 | 可观察后果 |
-| --- | --- | --- | --- |
-| B01 | P0 | 部分写入失败但已结束时，revision 不增长 | 已改变工作簿仍接受旧 revision 的写入 |
-| B02 | P0 | COM 备份文件名冲突并覆盖 | 不同工作簿/同秒不同版本共用一个备份，旧备份丢失 |
-| B03 | P0 | CSV 回写强制推断类型，缺少保真路径 | 前导零、长整数、文本布尔值和等号文本被改变 |
-| B12 | P0 | 复制自动扩展后的范围未做覆盖检查 | `allow_overwrite=false` 仍覆盖未检查的已有数据 |
-| B13 | P0 | 结构操作失败后仍产生可执行的反向恢复点 | 恢复一次失败操作可能删除原有空行、移动其他数据 |
-| B04 | P1 | 沙箱审批只扫描最外层命令文本 | 执行已保存脚本可绕过当前写入审批 |
-| B05 | P1 | 回放事件与导出格式不兼容 | 含工具结果的对话导出直接报错 |
-| B07 | P1 | 恢复持久化异常逃出工具错误处理 | Excel 已修改，但没有任何 `tool_result`，最终超时 |
-| B08 | P1 | 重复失败预算永久绑定同一会话参数 | 环境已恢复、重新读取后，合法调用仍被拒绝 |
-| B09 | P1 | 恢复数据在限制检查之前已全量加载 | 大区域写入仍会在恢复准备阶段发生巨量读取 |
-| B10 | P1 | COM 预检查等待期间取消，之后仍发起写入 | Stop 已返回，尚未发出的写操作随后开始 |
-| B11 | P1 | 分组恢复产生互不相关的反向恢复点 | 一次操作的“撤销恢复”被拆成多个独立操作 |
-| B14 | P1 | 自动重启定时器未被手动启停取消 | 停止后再次自启动，或启动多个 daemon 竞争端口 |
-| B06 | P2 | 导出按字符限量，导入按字节拒绝 | 系统导出的较长中文对话无法从界面重新导入 |
+| 编号 | 优先级 | 问题                                    | 可观察后果                                       |
+| ---- | ------ | --------------------------------------- | ------------------------------------------------ |
+| B01  | P0     | 部分写入失败但已结束时，revision 不增长 | 已改变工作簿仍接受旧 revision 的写入             |
+| B02  | P0     | COM 备份文件名冲突并覆盖                | 不同工作簿/同秒不同版本共用一个备份，旧备份丢失  |
+| B03  | P0     | CSV 回写强制推断类型，缺少保真路径      | 前导零、长整数、文本布尔值和等号文本被改变       |
+| B12  | P0     | 复制自动扩展后的范围未做覆盖检查        | `allow_overwrite=false` 仍覆盖未检查的已有数据   |
+| B13  | P0     | 结构操作失败后仍产生可执行的反向恢复点  | 恢复一次失败操作可能删除原有空行、移动其他数据   |
+| B04  | P1     | 沙箱审批只扫描最外层命令文本            | 执行已保存脚本可绕过当前写入审批                 |
+| B05  | P1     | 回放事件与导出格式不兼容                | 含工具结果的对话导出直接报错                     |
+| B07  | P1     | 恢复持久化异常逃出工具错误处理          | Excel 已修改，但没有任何 `tool_result`，最终超时 |
+| B08  | P1     | 重复失败预算永久绑定同一会话参数        | 环境已恢复、重新读取后，合法调用仍被拒绝         |
+| B09  | P1     | 恢复数据在限制检查之前已全量加载        | 大区域写入仍会在恢复准备阶段发生巨量读取         |
+| B10  | P1     | COM 预检查等待期间取消，之后仍发起写入  | Stop 已返回，尚未发出的写操作随后开始            |
+| B11  | P1     | 分组恢复产生互不相关的反向恢复点        | 一次操作的“撤销恢复”被拆成多个独立操作           |
+| B14  | P1     | 自动重启定时器未被手动启停取消          | 停止后再次自启动，或启动多个 daemon 竞争端口     |
+| B06  | P2     | 导出按字符限量，导入按字节拒绝          | 系统导出的较长中文对话无法从界面重新导入         |
 
 ## P0：数据正确性与恢复安全
 
@@ -98,12 +98,12 @@ node scripts/diagnostics/audit-2026-09-21.mjs --save
 
 实际沙箱命令 `sheet-to-csv ... && csv-to-sheet ... --force` 在数据未加工时即产生：
 
-| 源文本 | 传给写工具的内容 |
-| --- | --- |
-| `00123` | 数字 `123` |
+| 源文本             | 传给写工具的内容        |
+| ------------------ | ----------------------- |
+| `00123`            | 数字 `123`              |
 | `9007199254740993` | 数字 `9007199254740992` |
-| `TRUE` | 布尔 `true` |
-| `=1+1`（原为文本） | 公式 `=1+1` |
+| `TRUE`             | 布尔 `true`             |
+| `=1+1`（原为文本） | 公式 `=1+1`             |
 
 应修正：保留现有便捷推断的同时，提供明确的类型/文本保真方式；工作表导出后原样回写应有可用的保真路径。公式输出和文本输出应由调用者明确区分，不能只靠内容猜测。不要把模型提示词当成类型系统。
 
@@ -113,7 +113,7 @@ node scripts/diagnostics/audit-2026-09-21.mjs --save
 
 触发：源为 `A1:B2`，目标只写 `D1`，D1 为空而 E2 有旧数据。代码只检查 D1，随后 `copyFrom` 自动扩展到 D1:E2。因此 `allow_overwrite=false` 也能覆盖 E2。
 
-Microsoft 明确规定目标小于源时会自动扩展；这不是凭空假设的宿主行为。[Range.copyFrom 文档](https://learn.microsoft.com/en-us/javascript/api/excel/excel.range?view=excel-js-preview#excel-excel-range-copyfrom-member(1))。
+Microsoft 明确规定目标小于源时会自动扩展；这不是凭空假设的宿主行为。[Range.copyFrom 文档](<https://learn.microsoft.com/en-us/javascript/api/excel/excel.range?view=excel-js-preview#excel-excel-range-copyfrom-member(1)>)。
 
 复现使用实际覆盖检查和 `copyTo()`，以符合该文档的复制桩模拟 Office：E2 从 KEEP 变成 4，工具返回成功。该复现没有声称跑过真实 Excel。
 

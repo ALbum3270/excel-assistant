@@ -1,6 +1,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { patchOfficeAgentsExcelApi } from "../scripts/office-agents-patches.mjs";
 
 let api;
@@ -37,10 +38,15 @@ function range(address, initialValues, initialFormulas = initialValues) {
         getResizedRange(rowsDown, columnsRight) {
           const [, letters, row] = /^([A-Z]+)(\d+)/.exec(address);
           const index = [...letters].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
-          const letter = (n) => (n > 0 ? letter(Math.floor((n - 1) / 26)) + String.fromCharCode(65 + ((n - 1) % 26)) : "");
+          const letter = (n) =>
+            n > 0
+              ? letter(Math.floor((n - 1) / 26)) + String.fromCharCode(65 + ((n - 1) % 26))
+              : "";
           const end = `${letter(index + columnsRight)}${Number(row) + rowsDown}`;
-          const key = rowsDown === 0 && columnsRight === 0 ? `${letters}${row}` : `${letters}${row}:${end}`;
-          const result = typeof currentRanges === "function" ? currentRanges(key) : currentRanges[key];
+          const key =
+            rowsDown === 0 && columnsRight === 0 ? `${letters}${row}` : `${letters}${row}:${end}`;
+          const result =
+            typeof currentRanges === "function" ? currentRanges(key) : currentRanges[key];
           assert.ok(result, `Unexpected resized range: ${key}`);
           return result;
         },
@@ -126,22 +132,33 @@ function installExcel(ranges, { usedAddress = "A1:A3" } = {}) {
   };
 }
 
-test("patches match the pinned upstream source and reject already-patched input", async () => {
-  const upstream = await readFile(
-    new URL("../../_sdks/office-agents/packages/excel/src/lib/excel/api.ts", import.meta.url),
-    "utf8",
-  );
-  const patched = patchOfficeAgentsExcelApi(upstream);
-  assert.match(patched, /function throwOverwriteError/);
-  assert.match(patched, /scanRange:/);
-  assert.match(patched, /allowOverwrite = false/);
-  assert.throws(() => patchOfficeAgentsExcelApi(patched), /expected exactly one match/);
+test("the vendored copy names the pinned upstream commit", async () => {
   const generated = await readFile(
     new URL("../taskpane/shared/vendor/office-agents-excel-api.js", import.meta.url),
     "utf8",
   );
   assert.match(generated, /office-agents @ 95fb654491a9d394dc85ea2b8c93dee2ca4546b9/);
 });
+
+// The upstream checkout lives next to this repo (see scripts/vendor-office-agents.mjs)
+// and is not part of it, so CI and fresh clones skip this one.
+const upstreamApi = new URL(
+  "../../_sdks/office-agents/packages/excel/src/lib/excel/api.ts",
+  import.meta.url,
+);
+
+test(
+  "patches match the pinned upstream source and reject already-patched input",
+  { skip: existsSync(upstreamApi) ? false : "no _sdks/office-agents checkout" },
+  async () => {
+    const upstream = await readFile(upstreamApi, "utf8");
+    const patched = patchOfficeAgentsExcelApi(upstream);
+    assert.match(patched, /function throwOverwriteError/);
+    assert.match(patched, /scanRange:/);
+    assert.match(patched, /allowOverwrite = false/);
+    assert.throws(() => patchOfficeAgentsExcelApi(patched), /expected exactly one match/);
+  },
+);
 
 test("getCellRanges reports truncation within one range", async () => {
   installExcel({
@@ -449,9 +466,15 @@ test("copy protection permits source cells inside a larger destination", async (
 
 test("a copy is checked against the range it expands to, not the one it was given", async () => {
   // Range.copyFrom expands D1 to D1:E2 for a 2x2 source; E2 must be protected.
-  const source = range("A1:B2", [[1, 2], [3, 4]]);
+  const source = range("A1:B2", [
+    [1, 2],
+    [3, 4],
+  ]);
   const given = range("D1", [[""]]);
-  const expanded = range("D1:E2", [["", ""], ["", "KEEP"]]);
+  const expanded = range("D1:E2", [
+    ["", ""],
+    ["", "KEEP"],
+  ]);
   installExcel({ "A1:B2": source, D1: given, "D1:E2": expanded });
   await assert.rejects(api.copyTo(1, "A1:B2", "D1"), /Would overwrite.*E2/);
   assert.equal(expanded.state.copies, 0);

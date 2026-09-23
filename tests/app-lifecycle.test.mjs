@@ -54,10 +54,15 @@ function lifecycle({ workspace = async () => null, deferExit = false } = {}) {
     },
   };
   vm.createContext(sandbox);
-  vm.runInContext(slice("let restartTimer = null;", "async function findInitialWorkspace"), sandbox);
   vm.runInContext(
-    slice("function startDaemon() {", "// --------------------------------------------------------------------------\n// IPC:") +
-      "\nglobalThis.api = { startDaemon, stopDaemon, restartDaemon };",
+    slice("let restartTimer = null;", "async function findInitialWorkspace"),
+    sandbox,
+  );
+  vm.runInContext(
+    slice(
+      "function startDaemon() {",
+      "// --------------------------------------------------------------------------\n// IPC:",
+    ) + "\nglobalThis.api = { startDaemon, stopDaemon, restartDaemon };",
     sandbox,
   );
   const fire = async (ms) => {

@@ -819,9 +819,14 @@ bridge = createBridge({
     workbook_history: async (msg, reply, key) => {
       try {
         // origin "pane": the pane's own undo button, not an assistant action.
-        const result = await bridge.callTaskpaneTool("excel_workbook_history", msg.args ?? {}, key, {
-          origin: "pane",
-        });
+        const result = await bridge.callTaskpaneTool(
+          "excel_workbook_history",
+          msg.args ?? {},
+          key,
+          {
+            origin: "pane",
+          },
+        );
         reply({ type: "workbook_history_result", ok: true, result, request_id: msg.request_id });
       } catch (error) {
         reply({
@@ -1206,11 +1211,12 @@ for (const method of ["sendAssistantEvent", "sendAssistantText"]) {
         observer.sessionId = payload.session_id ?? null;
       } else if (payload.event === "turn_complete" && !payload.interrupted)
         observer.finish({
-          status: payload.subtype === "success" && !payload.is_error
-            ? "completed"
-            : payload.subtype === "success"
-              ? "error"
-              : payload.subtype || "error",
+          status:
+            payload.subtype === "success" && !payload.is_error
+              ? "completed"
+              : payload.subtype === "success"
+                ? "error"
+                : payload.subtype || "error",
           error: payload.error,
           usage: payload.usage,
           numTurns: payload.num_turns,
@@ -1518,7 +1524,10 @@ async function hashTree(paths) {
       entries = await readdir(path, { withFileTypes: true });
     } catch {
       try {
-        hash.update(label).update("\0").update(await readFile(path));
+        hash
+          .update(label)
+          .update("\0")
+          .update(await readFile(path));
       } catch {
         hash.update(label).update("\0<missing>");
       }
@@ -1576,7 +1585,9 @@ const SESSION_COMPATIBILITY_KEY = createHash("sha256")
       builtinTools: agentConfig.builtinTools,
       disallowedTools: agentConfig.disallowedTools,
       settingSources: agentConfig.settingSources,
-      env: Object.fromEntries(Object.entries(agentConfig.env ?? {}).sort(([a], [b]) => a.localeCompare(b))),
+      env: Object.fromEntries(
+        Object.entries(agentConfig.env ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+      ),
     }),
   )
   .digest("hex");
@@ -1936,7 +1947,8 @@ async function saveProviderSettings(settings) {
   const baseUrl = String(settings.base_url ?? "").trim();
   if (baseUrl) {
     const parsed = new URL(baseUrl);
-    if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error("Provider URL must use HTTP or HTTPS");
+    if (!["http:", "https:"].includes(parsed.protocol))
+      throw new Error("Provider URL must use HTTP or HTTPS");
   }
   let lines = [];
   try {

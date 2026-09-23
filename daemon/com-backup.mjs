@@ -19,8 +19,7 @@ const lastBackup = new Map();
 
 export function comBackupRoot() {
   return (
-    process.env.EXCEL_COM_BACKUP_DIR ||
-    join(homedir(), ".claude", "office-addins", "com-backups")
+    process.env.EXCEL_COM_BACKUP_DIR || join(homedir(), ".claude", "office-addins", "com-backups")
   );
 }
 
@@ -32,7 +31,10 @@ export function comBackupEnabled() {
 // used to share a folder, so each could prune or replace the other's copies.
 // The readable name is for people; the path digest is what keeps them apart.
 function folderName(workbookPath) {
-  const readable = basename(workbookPath).replace(/[^\p{L}\p{N}._-]+/gu, "_").slice(0, 60) || "workbook";
+  const readable =
+    basename(workbookPath)
+      .replace(/[^\p{L}\p{N}._-]+/gu, "_")
+      .slice(0, 60) || "workbook";
   const digest = createHash("sha256").update(workbookPath.toLowerCase()).digest("hex").slice(0, 12);
   return `${readable}-${digest}`;
 }
@@ -67,7 +69,10 @@ async function exists(file) {
 
 async function pruneOlder(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
-  const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name).sort();
+  const files = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .sort();
   for (const name of files.slice(0, Math.max(0, files.length - KEEP_PER_WORKBOOK))) {
     await unlink(join(directory, name)).catch(() => {});
   }

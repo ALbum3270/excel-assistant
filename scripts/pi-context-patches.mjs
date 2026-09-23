@@ -124,15 +124,15 @@ export async function readSelectionContext(expectedAddress?: string): Promise<Se
   source = replaceOnce(
     source,
     "bounded selected formula list",
-    "**Selected formulas:** ${selFormulas.join(\", \")}",
-    "**Selected formulas:** ${selFormulas.slice(0, 20).map((formula) => formula.length > 180 ? formula.slice(0, 177) + \"...\" : formula).join(\", \")}${selFormulas.length > 20 ? `, ... (+${selFormulas.length - 20} more)` : \"\"}",
+    '**Selected formulas:** ${selFormulas.join(", ")}',
+    '**Selected formulas:** ${selFormulas.slice(0, 20).map((formula) => formula.length > 180 ? formula.slice(0, 177) + "..." : formula).join(", ")}${selFormulas.length > 20 ? `, ... (+${selFormulas.length - 20} more)` : ""}',
   );
 
   source = replaceOnce(
     source,
     "bounded nearby error list",
-    "errors.map((e) => `${e.address}=${e.error}`).join(\", \")",
-    "errors.slice(0, 20).map((e) => `${e.address}=${e.error}`).join(\", \")}${errors.length > 20 ? `, ... (+${errors.length - 20} more)` : \"\"",
+    'errors.map((e) => `${e.address}=${e.error}`).join(", ")',
+    'errors.slice(0, 20).map((e) => `${e.address}=${e.error}`).join(", ")}${errors.length > 20 ? `, ... (+${errors.length - 20} more)` : ""',
   );
 
   return source;
@@ -281,7 +281,9 @@ export function patchRecoveryRestore(input) {
   const perSnapshot = "toolCallId: `restore:${snapshot.id}`,";
   const count = source.split(perSnapshot).length - 1;
   if (count !== 6) throw new Error(`pi restore patch expected 6 inverse call ids, found ${count}`);
-  return source.split(perSnapshot).join("toolCallId: inverseCallId,\n        restoreOrder: args.restoreOrder,");
+  return source
+    .split(perSnapshot)
+    .join("toolCallId: inverseCallId,\n        restoreOrder: args.restoreOrder,");
 }
 
 export function patchRecoveryLogRestore(input) {
@@ -299,11 +301,17 @@ export function patchRecoveryLogRestore(input) {
   );
   // Snapshot plus the six append argument interfaces share this metadata.
   const field = "  restoredFromSnapshotId?: string;";
-  if (source.split(field).length - 1 !== 7) throw new Error("Expected seven recovery metadata interfaces");
+  if (source.split(field).length - 1 !== 7)
+    throw new Error("Expected seven recovery metadata interfaces");
   source = source.split(field).join(`${field}\n  restoreOrder?: number;`);
-  const append = "...(args.restoredFromSnapshotId !== undefined ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {}),";
+  const append =
+    "...(args.restoredFromSnapshotId !== undefined ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {}),";
   if (source.split(append).length - 1 !== 6) throw new Error("Expected six recovery append paths");
-  return source.split(append).join(`${append}\n      ...(args.restoreOrder !== undefined ? { restoreOrder: args.restoreOrder } : {}),`);
+  return source
+    .split(append)
+    .join(
+      `${append}\n      ...(args.restoreOrder !== undefined ? { restoreOrder: args.restoreOrder } : {}),`,
+    );
 }
 
 export function patchRecoveryOrderCodec(input) {

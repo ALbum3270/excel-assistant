@@ -173,7 +173,11 @@ await build({
       setup(builder) {
         builder.onLoad({ filter: /log-codec\.ts$/ }, (args) => {
           if (resolve(args.path) !== resolve(recoveryCodecFile)) return null;
-          return { contents: patchedRecoveryCodec, loader: "ts", resolveDir: dirname(recoveryCodecFile) };
+          return {
+            contents: patchedRecoveryCodec,
+            loader: "ts",
+            resolveDir: dirname(recoveryCodecFile),
+          };
         });
         builder.onLoad({ filter: /log-restore\.ts$/ }, (args) => {
           if (resolve(args.path) !== resolve(logRestoreFile)) return null;
@@ -181,7 +185,11 @@ await build({
         });
         builder.onLoad({ filter: /recovery-log\.ts$/ }, (args) => {
           if (resolve(args.path) !== resolve(recoveryLogFile)) return null;
-          return { contents: patchedRecoveryLog, loader: "ts", resolveDir: dirname(recoveryLogFile) };
+          return {
+            contents: patchedRecoveryLog,
+            loader: "ts",
+            resolveDir: dirname(recoveryLogFile),
+          };
         });
         builder.onLoad({ filter: /format-state\.ts$/ }, (args) => {
           if (resolve(args.path) !== resolve(formatStateFile)) return null;

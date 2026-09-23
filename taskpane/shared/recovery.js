@@ -77,7 +77,9 @@ function documentTokenIdentity() {
       const existing = settings?.get(DOCUMENT_TOKEN_KEY);
       if (existing) return existing;
       if (!settings) return null;
-      const token = globalThis.crypto?.randomUUID?.() ?? `doc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+      const token =
+        globalThis.crypto?.randomUUID?.() ??
+        `doc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
       settings.set(DOCUMENT_TOKEN_KEY, token);
       await new Promise((resolve) => settings.saveAsync(() => resolve()));
       return token;
@@ -159,7 +161,14 @@ async function writeCustomSnapshots(snapshots) {
   await recoverySettings.set(`${CUSTOM_RECOVERY_PREFIX}${workbookId}`, snapshots.slice(0, 120));
 }
 
-async function appendCustomSnapshot({ toolName, toolCallId, address, state, restoredFromSnapshotId, restoreOrder }) {
+async function appendCustomSnapshot({
+  toolName,
+  toolCallId,
+  address,
+  state,
+  restoredFromSnapshotId,
+  restoreOrder,
+}) {
   const workbookId = await customWorkbookId();
   if (!workbookId) return null;
   const snapshot = {
@@ -227,7 +236,9 @@ async function resolveWorksheet(context, { sheetId, sheet, address }) {
   await context.sync();
 
   if (requestedName) {
-    const match = worksheets.items.find((item) => item.name.toLocaleLowerCase() === requestedName.toLocaleLowerCase());
+    const match = worksheets.items.find(
+      (item) => item.name.toLocaleLowerCase() === requestedName.toLocaleLowerCase(),
+    );
     if (!match) throw new Error(`Worksheet '${requestedName}' not found.`);
     return { worksheet: match, a1: parsed.a1 };
   }
@@ -311,12 +322,20 @@ function cellwiseAddress(address) {
   const { sheetName, a1 } = splitSheetAddress(address);
   const match = /^\$?([A-Z]+)\$?(\d+)(?::\$?([A-Z]+)\$?(\d+))?$/i.exec(a1 ?? "");
   if (!match) return null;
-  const column = (label) => [...label.toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
-  const letters = (n) => (n > 0 ? letters(Math.floor((n - 1) / 26)) + String.fromCharCode(65 + ((n - 1) % 26)) : "");
-  const [c1, r1, c2, r2] = [column(match[1]), Number(match[2]), column(match[3] ?? match[1]), Number(match[4] ?? match[2])];
+  const column = (label) =>
+    [...label.toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
+  const letters = (n) =>
+    n > 0 ? letters(Math.floor((n - 1) / 26)) + String.fromCharCode(65 + ((n - 1) % 26)) : "";
+  const [c1, r1, c2, r2] = [
+    column(match[1]),
+    Number(match[2]),
+    column(match[3] ?? match[1]),
+    Number(match[4] ?? match[2]),
+  ];
   if ((c2 - c1 + 1) * (r2 - r1 + 1) > MAX_CELLWISE_FORMAT_CELLS) return null;
   const cells = [];
-  for (let r = r1; r <= r2; r += 1) for (let c = c1; c <= c2; c += 1) cells.push(`${letters(c)}${r}`);
+  for (let r = r1; r <= r2; r += 1)
+    for (let c = c1; c <= c2; c += 1) cells.push(`${letters(c)}${r}`);
   return `${sheetName ? `'${sheetName.replaceAll("'", "''")}'!` : ""}${cells.join(",")}`;
 }
 
@@ -358,7 +377,12 @@ async function captureCommentSnapshot(target, offset) {
     await context.sync();
     return cell.address;
   });
-  return { kind: "comment", address, state: await captureCommentThreadState(address), cellCount: 1 };
+  return {
+    kind: "comment",
+    address,
+    state: await captureCommentThreadState(address),
+    cellCount: 1,
+  };
 }
 
 function matrixShape(cells) {
@@ -400,7 +424,10 @@ function recoveryPlan(name, args) {
           ? [
               // The fill covers copyToRange, expanded to the pattern if smaller;
               // sizing it by the pattern's own shape captured only its first block.
-              { capture: "range", target: bySheetId(args.copyToRange, { ...shape, sizeFromAddress: args.range }) },
+              {
+                capture: "range",
+                target: bySheetId(args.copyToRange, { ...shape, sizeFromAddress: args.range }),
+              },
               {
                 capture: "format",
                 target: bySheetId(args.copyToRange, { ...shape, sizeFromAddress: args.range }),
@@ -410,7 +437,11 @@ function recoveryPlan(name, args) {
           : []),
       ];
       if (args.cells?.some((row) => row.some((cell) => cell?.cellStyles || cell?.borderStyles))) {
-        plans.push({ capture: "format", target: bySheetId(args.range, shape), selection: CELL_FORMAT_PROPERTIES });
+        plans.push({
+          capture: "format",
+          target: bySheetId(args.range, shape),
+          selection: CELL_FORMAT_PROPERTIES,
+        });
       }
       if (args.resizeWidth || args.resizeHeight) {
         plans.push({
@@ -439,7 +470,13 @@ function recoveryPlan(name, args) {
       return [
         ...(clearType !== "formats" ? [{ capture: "range", target: bySheetId(args.range) }] : []),
         ...(clearType !== "contents"
-          ? [{ capture: "format", target: bySheetId(args.range), selection: CELL_FORMAT_PROPERTIES }]
+          ? [
+              {
+                capture: "format",
+                target: bySheetId(args.range),
+                selection: CELL_FORMAT_PROPERTIES,
+              },
+            ]
           : []),
       ];
     }
@@ -456,21 +493,29 @@ function recoveryPlan(name, args) {
         },
       ];
     case "excel_set_format":
-      return [{ capture: "format", target: bySheetName(args.address), selection: formatSelectionFromArgs(args) }];
+      return [
+        {
+          capture: "format",
+          target: bySheetName(args.address),
+          selection: formatSelectionFromArgs(args),
+        },
+      ];
     case "excel_sort_range":
       return [
         { capture: "range", target: bySheetName(args.address) },
         { capture: "format", target: bySheetName(args.address), selection: CELL_FORMAT_PROPERTIES },
       ];
     case "excel_resize_range":
-      return [{
-        capture: "format",
-        target: bySheetId(args.range, { useUsedRange: !args.range }),
-        selection: {
-          ...(args.width !== undefined ? { columnWidth: true } : {}),
-          ...(args.height !== undefined ? { rowHeight: true } : {}),
+      return [
+        {
+          capture: "format",
+          target: bySheetId(args.range, { useUsedRange: !args.range }),
+          selection: {
+            ...(args.width !== undefined ? { columnWidth: true } : {}),
+            ...(args.height !== undefined ? { rowHeight: true } : {}),
+          },
         },
-      }];
+      ];
     default:
       return [];
   }
@@ -506,7 +551,10 @@ async function captureDimensionState(args) {
     const hidden = [];
     for (let offset = 0; offset < span.count; offset += 1) {
       const position = span.position + offset;
-      const address = span.kind === "rows" ? `${position}:${position}` : `${columnLetters(position)}:${columnLetters(position)}`;
+      const address =
+        span.kind === "rows"
+          ? `${position}:${position}`
+          : `${columnLetters(position)}:${columnLetters(position)}`;
       const range = worksheet.getRange(address);
       range.load(span.kind === "rows" ? "rowHidden" : "columnHidden");
       hidden.push(range);
@@ -603,12 +651,16 @@ async function prepareCustomRecovery(name, args, toolCallId) {
     try {
       tableValues = await captureRangeSnapshot(target);
     } catch (error) {
-      limitations.push(`Original cell values were not captured: ${error?.message ?? String(error)}`);
+      limitations.push(
+        `Original cell values were not captured: ${error?.message ?? String(error)}`,
+      );
     }
     try {
       tableFormat = await captureFormatSnapshot(target);
     } catch (error) {
-      limitations.push(`Original cell formatting was not captured: ${error?.message ?? String(error)}`);
+      limitations.push(
+        `Original cell formatting was not captured: ${error?.message ?? String(error)}`,
+      );
     }
   } else if (name === "excel_autofilter") {
     captured = await captureAutoFilterState({ address: args.address, sheet: args.sheet });
@@ -618,7 +670,8 @@ async function prepareCustomRecovery(name, args, toolCallId) {
     let checkpoint = captured;
     if (name === "excel_create_table") {
       const tableName = result?.table;
-      if (!tableName) return { status: "not_available", reason: "The created table name was unavailable." };
+      if (!tableName)
+        return { status: "not_available", reason: "The created table name was unavailable." };
       checkpoint = {
         address: result?.range ?? args.address,
         state: {
@@ -632,40 +685,50 @@ async function prepareCustomRecovery(name, args, toolCallId) {
         },
       };
     }
-    if (!checkpoint) return { status: "not_available", reason: "The previous workbook state was unavailable." };
+    if (!checkpoint)
+      return { status: "not_available", reason: "The previous workbook state was unavailable." };
     const snapshot = await appendCustomSnapshot({
       toolName: name,
       toolCallId,
       address: checkpoint.address,
       state: checkpoint.state,
     });
-    if (!snapshot) return { status: "not_available", reason: "The recovery log did not accept the checkpoint." };
+    if (!snapshot)
+      return { status: "not_available", reason: "The recovery log did not accept the checkpoint." };
     const snapshots = [snapshot];
     if (tableValues) {
       try {
-        snapshots.push(await recoveryLog.append({
-          toolName: "write_cells",
-          toolCallId,
-          address: tableValues.address,
-          changedCount: tableValues.cellCount,
-          beforeValues: tableValues.beforeValues,
-          beforeFormulas: tableValues.beforeFormulas,
-        }));
+        snapshots.push(
+          await recoveryLog.append({
+            toolName: "write_cells",
+            toolCallId,
+            address: tableValues.address,
+            changedCount: tableValues.cellCount,
+            beforeValues: tableValues.beforeValues,
+            beforeFormulas: tableValues.beforeFormulas,
+          }),
+        );
       } catch (error) {
-        limitations.push(`Original cell values could not be saved: ${error?.message ?? String(error)}`);
+        limitations.push(
+          `Original cell values could not be saved: ${error?.message ?? String(error)}`,
+        );
       }
     }
     if (tableFormat) {
       try {
-        snapshots.push(await recoveryLog.appendFormatCells({
-          toolName: "format_cells",
-          toolCallId,
-          address: tableFormat.address,
-          changedCount: tableFormat.cellCount,
-          formatRangeState: tableFormat.state,
-        }));
+        snapshots.push(
+          await recoveryLog.appendFormatCells({
+            toolName: "format_cells",
+            toolCallId,
+            address: tableFormat.address,
+            changedCount: tableFormat.cellCount,
+            formatRangeState: tableFormat.state,
+          }),
+        );
       } catch (error) {
-        limitations.push(`Original cell formatting could not be saved: ${error?.message ?? String(error)}`);
+        limitations.push(
+          `Original cell formatting could not be saved: ${error?.message ?? String(error)}`,
+        );
       }
     }
     const saved = snapshots.filter(Boolean);
@@ -687,9 +750,10 @@ async function restoreCustomState(state) {
         const ranges = [];
         for (let offset = 0; offset < state.hidden.length; offset += 1) {
           const position = state.position + offset;
-          const address = state.dimension === "rows"
-            ? `${position}:${position}`
-            : `${columnLetters(position)}:${columnLetters(position)}`;
+          const address =
+            state.dimension === "rows"
+              ? `${position}:${position}`
+              : `${columnLetters(position)}:${columnLetters(position)}`;
           const range = worksheet.getRange(address);
           range.load(state.dimension === "rows" ? "rowHidden" : "columnHidden");
           ranges.push(range);
@@ -800,7 +864,9 @@ async function restoreCustomState(state) {
         body.load("rowCount,columnCount");
         await context.sync();
         if (body.rowCount !== state.expectedRowCount || state.index + state.count > body.rowCount) {
-          throw new Error("The table row layout changed, so the appended rows cannot be removed safely.");
+          throw new Error(
+            "The table row layout changed, so the appended rows cannot be removed safely.",
+          );
         }
         const removed = body
           .getCell(state.index, 0)
@@ -813,7 +879,14 @@ async function restoreCustomState(state) {
           table.rows.getItemAt(state.index + offset).delete();
         }
         await context.sync();
-        return { kind: "table_rows_missing", table: state.table, index: state.index, values, formulas, count: state.count };
+        return {
+          kind: "table_rows_missing",
+          table: state.table,
+          index: state.index,
+          values,
+          formulas,
+          count: state.count,
+        };
       });
     case "table_rows_missing":
       await Excel.run(async (context) => {
@@ -841,7 +914,11 @@ async function restoreCustomState(state) {
   }
 }
 
-async function restoreCustomSnapshot(snapshot, toolCallId = `restore_${snapshot.id}`, restoreOrder) {
+async function restoreCustomSnapshot(
+  snapshot,
+  toolCallId = `restore_${snapshot.id}`,
+  restoreOrder,
+) {
   const inverseState = await restoreCustomState(snapshot.customState);
   const inverse = await appendCustomSnapshot({
     toolName: "restore_snapshot",
@@ -888,9 +965,11 @@ async function prepareChartRecovery(args, toolCallId) {
   let before = null;
   let failure = null;
   if (args.objectType !== "chart") {
-    failure = "PivotTables are not included in automatic recovery yet; delete the PivotTable to undo it.";
+    failure =
+      "PivotTables are not included in automatic recovery yet; delete the PivotTable to undo it.";
   } else if (args.operation === "delete") {
-    failure = "A deleted chart cannot be restored automatically; re-create it with excel_modify_object.";
+    failure =
+      "A deleted chart cannot be restored automatically; re-create it with excel_modify_object.";
   } else if (args.operation === "update") {
     try {
       const identity = await resolveChartIdentity(args.sheetId, args.id);
@@ -899,7 +978,9 @@ async function prepareChartRecovery(args, toolCallId) {
         state: await captureChartPresentState(identity.name, identity.sheetName),
       };
       if (args.properties?.source) {
-        limitations.push("The chart's previous data source is not part of the checkpoint; only its type, title, legend, name and position are restored.");
+        limitations.push(
+          "The chart's previous data source is not part of the checkpoint; only its type, title, legend, name and position are restored.",
+        );
       }
     } catch (error) {
       failure = `Chart backup capture failed: ${error?.message ?? String(error)}`;
@@ -960,9 +1041,17 @@ function structureSpan(args) {
     const start = Number.parseInt(args.reference, 10) + after;
     return { kind: "rows", position: start, count, address: `${start}:${start + count - 1}` };
   }
-  const letters = (n) => (n > 0 ? letters(Math.floor((n - 1) / 26)) + String.fromCharCode(65 + ((n - 1) % 26)) : "");
-  const start = [...String(args.reference).toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) + after;
-  return { kind: "columns", position: start, count, address: `${letters(start)}:${letters(start + count - 1)}` };
+  const letters = (n) =>
+    n > 0 ? letters(Math.floor((n - 1) / 26)) + String.fromCharCode(65 + ((n - 1) % 26)) : "";
+  const start =
+    [...String(args.reference).toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) +
+    after;
+  return {
+    kind: "columns",
+    position: start,
+    count,
+    address: `${letters(start)}:${letters(start + count - 1)}`,
+  };
 }
 
 async function prepareStructureCheckpoint(name, args) {
@@ -972,7 +1061,9 @@ async function prepareStructureCheckpoint(name, args) {
   }
   if (workbookEdit && args.operation === "duplicate") {
     // Pi refuses to delete a sheet that holds data, and a copy always does.
-    throw new Error("A duplicated sheet has no checkpoint; undo it by deleting the copy, which is checkpointed.");
+    throw new Error(
+      "A duplicated sheet has no checkpoint; undo it by deleting the copy, which is checkpointed.",
+    );
   }
   if (workbookEdit && !["create", "delete", "rename"].includes(args.operation)) {
     throw new Error(`Sheet ${args.operation} is not included in automatic recovery yet.`);
@@ -989,22 +1080,49 @@ async function prepareStructureCheckpoint(name, args) {
     if (!workbookEdit) {
       const span = structureSpan(args);
       if (args.operation === "insert") {
-        return { address: `${worksheet.name}!${span.address}`, state: { kind: `${span.kind}_absent`, ...sheet, position: span.position, count: span.count } };
+        return {
+          address: `${worksheet.name}!${span.address}`,
+          state: {
+            kind: `${span.kind}_absent`,
+            ...sheet,
+            position: span.position,
+            count: span.count,
+          },
+        };
       }
-      const data = await captureValueDataRange(context, worksheet.getRange(span.address), MAX_RECOVERY_CELLS);
-      if (data.status === "too_large") throw new Error("The deleted data exceeds the recovery size limit.");
+      const data = await captureValueDataRange(
+        context,
+        worksheet.getRange(span.address),
+        MAX_RECOVERY_CELLS,
+      );
+      if (data.status === "too_large")
+        throw new Error("The deleted data exceeds the recovery size limit.");
       return {
         address: `${worksheet.name}!${span.address}`,
-        state: { kind: `${span.kind}_present`, ...sheet, position: span.position, count: span.count, ...(data.dataRange ? { dataRange: data.dataRange } : {}) },
+        state: {
+          kind: `${span.kind}_present`,
+          ...sheet,
+          position: span.position,
+          count: span.count,
+          ...(data.dataRange ? { dataRange: data.dataRange } : {}),
+        },
       };
     }
     if (args.operation === "delete") {
-      if (!isRecoverySheetVisibility(worksheet.visibility)) throw new Error("This sheet's visibility can't be restored.");
+      if (!isRecoverySheetVisibility(worksheet.visibility))
+        throw new Error("This sheet's visibility can't be restored.");
       const data = await captureSheetValueDataRange(context, worksheet, MAX_RECOVERY_CELLS);
-      if (data.status === "too_large") throw new Error("The deleted sheet exceeds the recovery size limit.");
+      if (data.status === "too_large")
+        throw new Error("The deleted sheet exceeds the recovery size limit.");
       return {
         address: worksheet.name,
-        state: { kind: "sheet_present", ...sheet, position: worksheet.position, visibility: worksheet.visibility, ...(data.dataRange ? { dataRange: data.dataRange } : {}) },
+        state: {
+          kind: "sheet_present",
+          ...sheet,
+          position: worksheet.position,
+          visibility: worksheet.visibility,
+          ...(data.dataRange ? { dataRange: data.dataRange } : {}),
+        },
       };
     }
     return { renameOf: worksheet.name };
@@ -1016,7 +1134,10 @@ async function newSheetAbsentState(newSheetId) {
     const { worksheet } = await resolveWorksheet(context, { sheetId: newSheetId });
     worksheet.load("id,name");
     await context.sync();
-    return { address: worksheet.name, state: { kind: "sheet_absent", sheetId: worksheet.id, sheetName: worksheet.name } };
+    return {
+      address: worksheet.name,
+      state: { kind: "sheet_absent", sheetId: worksheet.id, sheetName: worksheet.name },
+    };
   });
 }
 
@@ -1031,19 +1152,28 @@ async function prepareStructureRecovery(name, args, toolCallId) {
   try {
     prepared = await prepareStructureCheckpoint(name, args);
     if (prepared.renameOf) {
-      const state = await captureModifyStructureState({ kind: "sheet_name", sheetRef: prepared.renameOf });
+      const state = await captureModifyStructureState({
+        kind: "sheet_name",
+        sheetRef: prepared.renameOf,
+      });
       prepared = state ? { address: prepared.renameOf, state } : null;
     }
     if (name === "excel_modify_sheet_structure" && args.operation === "delete") {
       try {
         sheetValues = await captureRangeSnapshot({ sheetId: args.sheetId, useUsedRange: true });
       } catch (error) {
-        limitations.push(`The sheet-wide formula snapshot failed: ${error?.message ?? String(error)}`);
+        limitations.push(
+          `The sheet-wide formula snapshot failed: ${error?.message ?? String(error)}`,
+        );
       }
-      limitations.push("Formulas on other worksheets that referenced the deleted rows or columns are not restored.");
+      limitations.push(
+        "Formulas on other worksheets that referenced the deleted rows or columns are not restored.",
+      );
     }
     if (name === "excel_modify_workbook_structure" && args.operation === "delete") {
-      limitations.push("Formulas on other worksheets that referenced the deleted sheet are not restored.");
+      limitations.push(
+        "Formulas on other worksheets that referenced the deleted sheet are not restored.",
+      );
     }
   } catch (error) {
     failure = error?.message ?? String(error);
@@ -1073,9 +1203,11 @@ async function prepareStructureRecovery(name, args, toolCallId) {
       if (!checkpoint?.state) {
         return {
           status: "not_available",
-          reason: failure ?? (prepared?.after
-            ? "The new sheet ID was unavailable after the operation failed."
-            : "The sheet structure state could not be captured."),
+          reason:
+            failure ??
+            (prepared?.after
+              ? "The new sheet ID was unavailable after the operation failed."
+              : "The sheet structure state could not be captured."),
         };
       }
       const valuesSnapshot = sheetValues
@@ -1152,7 +1284,10 @@ async function recordMutationDiff(toolCallId, captures) {
     const { sheetName, a1 } = splitSheetAddress(capture.address);
     const start = /^\$?([A-Z]+)\$?(\d+)/i.exec(a1 ?? "");
     if (!start) continue;
-    const firstColumn = [...start[1].toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
+    const firstColumn = [...start[1].toUpperCase()].reduce(
+      (n, c) => n * 26 + c.charCodeAt(0) - 64,
+      0,
+    );
     const firstRow = Number(start[2]);
     for (let r = 0; r < capture.beforeValues.length; r += 1) {
       for (let c = 0; c < (capture.beforeValues[r]?.length ?? 0); c += 1) {
@@ -1228,30 +1363,31 @@ export async function prepareMutationRecovery(name, args, toolCallId) {
     const snapshots = [];
     for (const capture of captures) {
       try {
-        const snapshot = capture.kind === "comment"
-          ? await recoveryLog.appendCommentThread({
-              toolName: "comments",
-              toolCallId,
-              address: capture.address,
-              changedCount: 1,
-              commentThreadState: capture.state,
-            })
-          : capture.kind === "format"
-          ? await recoveryLog.appendFormatCells({
-              toolName: "format_cells",
-              toolCallId,
-              address: capture.address,
-              changedCount: capture.cellCount,
-              formatRangeState: capture.state,
-            })
-          : await recoveryLog.append({
-              toolName: "write_cells",
-              toolCallId,
-              address: capture.address,
-              changedCount: result?.cellsCommitted ?? capture.cellCount,
-              beforeValues: capture.beforeValues,
-              beforeFormulas: capture.beforeFormulas,
-            });
+        const snapshot =
+          capture.kind === "comment"
+            ? await recoveryLog.appendCommentThread({
+                toolName: "comments",
+                toolCallId,
+                address: capture.address,
+                changedCount: 1,
+                commentThreadState: capture.state,
+              })
+            : capture.kind === "format"
+              ? await recoveryLog.appendFormatCells({
+                  toolName: "format_cells",
+                  toolCallId,
+                  address: capture.address,
+                  changedCount: capture.cellCount,
+                  formatRangeState: capture.state,
+                })
+              : await recoveryLog.append({
+                  toolName: "write_cells",
+                  toolCallId,
+                  address: capture.address,
+                  changedCount: result?.cellsCommitted ?? capture.cellCount,
+                  beforeValues: capture.beforeValues,
+                  beforeFormulas: capture.beforeFormulas,
+                });
         if (snapshot) snapshots.push(snapshot);
       } catch (error) {
         failures.push(error?.message ?? String(error));
@@ -1263,7 +1399,8 @@ export async function prepareMutationRecovery(name, args, toolCallId) {
     if (snapshots.length === 0) {
       return {
         status: "not_available",
-        reason: failures[0] ?? "This operation does not yet support an automatic recovery checkpoint.",
+        reason:
+          failures[0] ?? "This operation does not yet support an automatic recovery checkpoint.",
       };
     }
     return {
@@ -1318,7 +1455,11 @@ async function allSnapshots() {
   return snapshots.sort((a, b) => Number(b.at ?? 0) - Number(a.at ?? 0));
 }
 
-export async function workbookHistory({ action = "list", snapshot_id: snapshotId, limit = 20 } = {}) {
+export async function workbookHistory({
+  action = "list",
+  snapshot_id: snapshotId,
+  limit = 20,
+} = {}) {
   switch (action) {
     case "list":
       return {
@@ -1334,7 +1475,8 @@ export async function workbookHistory({ action = "list", snapshot_id: snapshotId
       // New inverse groups carry their exact application order, independent
       // of timestamps, history pruning, or how many times they were restored.
       // Keep the previous ordering for snapshots made before this metadata.
-      const structural = (item) => ["modify_structure_state", "custom_state"].includes(item.snapshotKind);
+      const structural = (item) =>
+        ["modify_structure_state", "custom_state"].includes(item.snapshotKind);
       const undoingARestore = group.every((item) => item.restoredFromSnapshotId);
       const hasOrder = group.every((item) => Number.isInteger(item.restoreOrder));
       const ordered = [...group].sort((a, b) =>
@@ -1380,7 +1522,11 @@ export async function workbookHistory({ action = "list", snapshot_id: snapshotId
             : recoveryLog.delete(snapshot.id),
         ),
       );
-      return { success: deleted.every(Boolean), action, snapshotIds: group.map((snapshot) => snapshot.id) };
+      return {
+        success: deleted.every(Boolean),
+        action,
+        snapshotIds: group.map((snapshot) => snapshot.id),
+      };
     }
     case "clear": {
       const piRemoved = await recoveryLog.clearForCurrentWorkbook();

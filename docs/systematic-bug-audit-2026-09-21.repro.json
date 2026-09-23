@@ -25,12 +25,7 @@
       "id": "B03-csv-type-loss",
       "reproduced": true,
       "evidence": {
-        "sourceStrings": [
-          "00123",
-          "9007199254740993",
-          "TRUE",
-          "=1+1"
-        ],
+        "sourceStrings": ["00123", "9007199254740993", "TRUE", "=1+1"],
         "writtenCells": [
           {
             "value": 123
@@ -53,9 +48,7 @@
       "evidence": {
         "command": "bash later.sh",
         "approval": false,
-        "writes": [
-          "excel_set_cell_range"
-        ]
+        "writes": ["excel_set_cell_range"]
       }
     },
     {
@@ -111,10 +104,7 @@
       "reproduced": true,
       "evidence": {
         "responseAtStop": "TOOL_CANCELLED",
-        "callsAfterStop": [
-          "excel_workbook",
-          "excel_range"
-        ]
+        "callsAfterStop": ["excel_workbook", "excel_range"]
       }
     },
     {
@@ -123,10 +113,7 @@
       "evidence": {
         "originalGroups": 1,
         "inverseGroups": 2,
-        "inverseCallIds": [
-          "restore:one",
-          "restore:two"
-        ]
+        "inverseCallIds": ["restore:one", "restore:two"]
       }
     },
     {

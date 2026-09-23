@@ -17,3 +17,9 @@ PORT_TO_OFFICE_ADDINS.md
 AGENTS.md
 # Vendored AI Elements / shadcn-ui copies — kept byte-identical to upstream (plus patches).
 taskpane/app/vendor/
+
+# The other vendored copies, written by scripts/vendor-*.mjs and marked
+# "do not edit by hand": reformatting them would make the committed file
+# differ from what re-running the vendor script produces.
+taskpane/shared/vendor/
+daemon/vendor/

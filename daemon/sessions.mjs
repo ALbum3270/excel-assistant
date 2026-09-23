@@ -307,7 +307,11 @@ export async function deleteSession(host, documentKey, sessionId) {
   return deleted;
 }
 
-export async function importArchivedSession(host, documentKey, { title, events, truncated = false }) {
+export async function importArchivedSession(
+  host,
+  documentKey,
+  { title, events, truncated = false },
+) {
   const h = normalizeHost(host);
   const key = documentStorageKey(documentKey);
   if (!h || !key || !Array.isArray(events)) return null;
@@ -323,7 +327,10 @@ export async function importArchivedSession(host, documentKey, { title, events, 
     conversation.sessions.push({
       session_id: sessionId,
       cwd: null,
-      title: typeof title === "string" && title.trim() ? title.trim().slice(0, 120) : "Imported conversation",
+      title:
+        typeof title === "string" && title.trim()
+          ? title.trim().slice(0, 120)
+          : "Imported conversation",
       compatibility_key: null,
       archive_events: events,
       archive_truncated: Boolean(truncated),

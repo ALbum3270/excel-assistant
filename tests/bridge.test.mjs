@@ -69,7 +69,9 @@ test("user message carries its submit-time selection snapshot", async () => {
     const first = await bridge.nextUserMessage("excel\0book.xlsx");
     assert.deepEqual(first.context.selection, { address: "Sheet1!B2", text: "new" });
 
-    client.send(JSON.stringify({ type: "user_message", text: "without selection", selection: null }));
+    client.send(
+      JSON.stringify({ type: "user_message", text: "without selection", selection: null }),
+    );
     const second = await bridge.nextUserMessage("excel\0book.xlsx");
     assert.equal(second.context.selection, null);
   } finally {
@@ -131,28 +133,44 @@ test("structured taskpane errors preserve code and commit state", async () => {
     client = new WebSocket(`ws://127.0.0.1:${bridge.address().port}`);
     await once(client, "open");
     const welcome = once(client, "message");
-    client.send(JSON.stringify({ type: "hello", token: "test-token", host: "excel", active_doc: "book.xlsx" }));
+    client.send(
+      JSON.stringify({
+        type: "hello",
+        token: "test-token",
+        host: "excel",
+        active_doc: "book.xlsx",
+      }),
+    );
     await welcome;
     const message = once(client, "message");
-    const pending = bridge.callTaskpaneTool("excel_clear_cell_range", { range: "A1" }, "excel\0book.xlsx");
+    const pending = bridge.callTaskpaneTool(
+      "excel_clear_cell_range",
+      { range: "A1" },
+      "excel\0book.xlsx",
+    );
     const [raw] = await message;
     const call = JSON.parse(raw.toString());
-    client.send(JSON.stringify({
-      type: "tool_result",
-      id: call.id,
-      ok: false,
-      error: {
-        message: "write rejected",
-        code: "OVERWRITE_BLOCKED",
-        commitStatus: "not_committed",
-        recovery: { status: "checkpoint_created", snapshotIds: ["before-write"] },
-      },
-    }));
+    client.send(
+      JSON.stringify({
+        type: "tool_result",
+        id: call.id,
+        ok: false,
+        error: {
+          message: "write rejected",
+          code: "OVERWRITE_BLOCKED",
+          commitStatus: "not_committed",
+          recovery: { status: "checkpoint_created", snapshotIds: ["before-write"] },
+        },
+      }),
+    );
     await assert.rejects(pending, (error) => {
       assert.equal(error.message, "write rejected");
       assert.equal(error.code, "OVERWRITE_BLOCKED");
       assert.equal(error.commitStatus, "not_committed");
-      assert.deepEqual(error.recovery, { status: "checkpoint_created", snapshotIds: ["before-write"] });
+      assert.deepEqual(error.recovery, {
+        status: "checkpoint_created",
+        snapshotIds: ["before-write"],
+      });
       return true;
     });
   } finally {

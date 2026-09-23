@@ -59,7 +59,8 @@ export async function toolExcelSetFrozenPanes({ sheetId, operation, dimension, c
       location.load("isNullObject,rowCount,columnCount");
       await context.sync();
       const rows = dimension === "rows" ? count : location.isNullObject ? 0 : location.rowCount;
-      const columns = dimension === "columns" ? count : location.isNullObject ? 0 : location.columnCount;
+      const columns =
+        dimension === "columns" ? count : location.isNullObject ? 0 : location.columnCount;
       if (rows && columns) {
         const letters = (value) =>
           value > 0

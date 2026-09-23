@@ -340,9 +340,7 @@ function buildMenu() {
     { label: "Open Microsoft Excel", click: () => shell.openExternal("ms-excel:") },
     { type: "separator" },
     {
-      label: addinInstalled
-        ? "Reinstall add-in in Excel"
-        : "Install add-in in Excel…",
+      label: addinInstalled ? "Reinstall add-in in Excel" : "Install add-in in Excel…",
       click: () => runInstall({ interactive: true }),
     },
     ...(addinInstalled

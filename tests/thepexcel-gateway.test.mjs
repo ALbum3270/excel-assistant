@@ -37,7 +37,10 @@ test("a COM write stopped while it waits on the workbook check never starts", as
   };
   const gateway = await createThepExcelGateway(null, createWorkbookExecution(), { client });
   const stop = new AbortController();
-  const server = gateway.createSessionServer({ workbookPath: "C:/Books/A.xlsx", signal: stop.signal });
+  const server = gateway.createSessionServer({
+    workbookPath: "C:/Books/A.xlsx",
+    signal: stop.signal,
+  });
   const handler = server.instance._registeredTools.excel_range.handler;
 
   const pending = handler({ action: "write", workbook: "A.xlsx" });

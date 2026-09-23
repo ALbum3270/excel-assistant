@@ -7,11 +7,7 @@
       "fixed": true,
       "evidence": {
         "bridgeCalls": 3,
-        "dispatches": [
-          "='Plan (draft'!A1",
-          "='Plan )'!A1",
-          "=Table1[Cost (USD]"
-        ]
+        "dispatches": ["='Plan (draft'!A1", "='Plan )'!A1", "=Table1[Cost (USD]"]
       }
     },
     {
@@ -32,10 +28,7 @@
         "restarted": 1,
         "turnInFlight": true,
         "queued": [],
-        "dispatched": [
-          "first task",
-          "next task"
-        ],
+        "dispatched": ["first task", "next task"],
         "N06FixedInNewPane": true
       }
     },
@@ -64,14 +57,8 @@
       "id": "F05-history-truncation-splits-one-restore",
       "fixed": true,
       "evidence": {
-        "snapshotsStillStored": [
-          "group-structure",
-          "group-values"
-        ],
-        "actuallyRestored": [
-          "group-structure",
-          "group-values"
-        ],
+        "snapshotsStillStored": ["group-structure", "group-values"],
+        "actuallyRestored": ["group-structure", "group-values"],
         "reportedCommitStatus": "committed"
       }
     },
@@ -82,24 +69,15 @@
         "expectedRows": 2,
         "expectedColumns": 2,
         "actual": {
-          "columns": [
-            "D",
-            "E"
-          ],
+          "columns": ["D", "E"],
           "rows": [
             {
               "number": 5,
-              "cells": [
-                "a,b",
-                "c"
-              ]
+              "cells": ["a,b", "c"]
             },
             {
               "number": 6,
-              "cells": [
-                "line1\nline2",
-                "d"
-              ]
+              "cells": ["line1\nline2", "d"]
             }
           ],
           "hiddenRows": 0,

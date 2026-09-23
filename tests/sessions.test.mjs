@@ -127,21 +127,26 @@ test("new chat preserves prior sessions for listing, activation, and deletion", 
 });
 
 test("imported conversation remains a workbook-scoped read-only archive", async () => {
-  await withFakeHome(async ({ importArchivedSession, getSessionId, getSessionRecord, listSessions }) => {
-    const events = [{ kind: "user", text: "Explain A1" }, { kind: "assistant", text: "Done" }];
-    const id = await importArchivedSession("excel", "book-a", {
-      title: "Imported notes",
-      events,
-      truncated: true,
-    });
-    assert.match(id, /^archive_/);
-    assert.equal(await getSessionId("excel", "book-a"), null);
-    assert.equal((await listSessions("excel", "book-b")).sessions.length, 0);
-    const record = await getSessionRecord("excel", "book-a", id);
-    assert.equal(record.compatibility_key, null);
-    assert.equal(record.archive_truncated, true);
-    assert.deepEqual(record.archive_events, events);
-  });
+  await withFakeHome(
+    async ({ importArchivedSession, getSessionId, getSessionRecord, listSessions }) => {
+      const events = [
+        { kind: "user", text: "Explain A1" },
+        { kind: "assistant", text: "Done" },
+      ];
+      const id = await importArchivedSession("excel", "book-a", {
+        title: "Imported notes",
+        events,
+        truncated: true,
+      });
+      assert.match(id, /^archive_/);
+      assert.equal(await getSessionId("excel", "book-a"), null);
+      assert.equal((await listSessions("excel", "book-b")).sessions.length, 0);
+      const record = await getSessionRecord("excel", "book-a", id);
+      assert.equal(record.compatibility_key, null);
+      assert.equal(record.archive_truncated, true);
+      assert.deepEqual(record.archive_events, events);
+    },
+  );
 });
 
 test("normalizeHost: a bad host is a no-op / null", async () => {

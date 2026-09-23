@@ -80,16 +80,24 @@ test("a write the pane refuses does not consume a revision", async () => {
   assert.equal(first.revision, 1);
 
   // The overwrite guard reports its refusal in the result; nothing was written.
-  const refused = await execution.run(path, { write: true, expectedRevision: 1, toolName: "write" }, async () => ({
-    success: false,
-    error: "Would overwrite 5 non-empty cell(s)",
-  }));
+  const refused = await execution.run(
+    path,
+    { write: true, expectedRevision: 1, toolName: "write" },
+    async () => ({
+      success: false,
+      error: "Would overwrite 5 non-empty cell(s)",
+    }),
+  );
   assert.equal(refused.revision, 1);
 
   // So the caller's expectation is still current and the next write runs.
-  const second = await execution.run(path, { write: true, expectedRevision: 1, toolName: "write" }, async () => ({
-    success: true,
-  }));
+  const second = await execution.run(
+    path,
+    { write: true, expectedRevision: 1, toolName: "write" },
+    async () => ({
+      success: true,
+    }),
+  );
   assert.equal(second.revision, 2);
 });
 
@@ -315,7 +323,11 @@ test("a stale write says what changed the workbook", async () => {
     success: true,
   }));
   await assert.rejects(
-    execution.run(path, { write: true, expectedRevision: 0, toolName: "excel_set_cell_range" }, async () => "never"),
+    execution.run(
+      path,
+      { write: true, expectedRevision: 0, toolName: "excel_set_cell_range" },
+      async () => "never",
+    ),
     (error) => /restore from the panel's backups/.test(error.message),
   );
 });

@@ -234,10 +234,14 @@ export async function createThepExcelGateway(config, execution, { client: inject
                       // MCP rejects immediately when its signal is aborted.
                       // This request only read workbook identity; no write was
                       // dispatched, so it must not consume a revision or lock.
-                      throw Object.assign(error, { commitStatus: "not_committed", executionSettled: true });
+                      throw Object.assign(error, {
+                        commitStatus: "not_committed",
+                        executionSettled: true,
+                      });
                     }
                     stopIfCancelled(runSignal);
-                    if (info.isError) return { ...info, success: false, commitStatus: "not_committed" };
+                    if (info.isError)
+                      return { ...info, success: false, commitStatus: "not_committed" };
                     const actualPath = parseTextResult(info)?.path;
                     if (!actualPath || canonicalWorkbookId(actualPath) !== workbookId) {
                       throw Object.assign(
@@ -266,7 +270,11 @@ export async function createThepExcelGateway(config, execution, { client: inject
                   // Once dispatched, a COM write cannot be interrupted, so the
                   // last cancellation check is here, right before it.
                   stopIfCancelled(runSignal);
-                  const result = await callUpstream(definition.name, args, write ? undefined : runSignal);
+                  const result = await callUpstream(
+                    definition.name,
+                    args,
+                    write ? undefined : runSignal,
+                  );
                   if (backup) result.comBackup = backup;
                   if (write && isUpstreamTimeout(result)) {
                     throw Object.assign(

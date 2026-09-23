@@ -72,7 +72,11 @@ test("workbooks with the same name in different folders keep separate backups", 
   const a = await backupWorkbookFile(join(left, "Budget.xlsx"), { now: at });
   const b = await backupWorkbookFile(join(right, "Budget.xlsx"), { now: at });
   assert.notEqual(a.file, b.file);
-  assert.equal(await readFile(a.file, "utf8"), "left", "the first backup is not replaced by the second workbook");
+  assert.equal(
+    await readFile(a.file, "utf8"),
+    "left",
+    "the first backup is not replaced by the second workbook",
+  );
   assert.equal(await readFile(b.file, "utf8"), "right");
 });
 
