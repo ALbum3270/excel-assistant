@@ -14,7 +14,8 @@ test("csv-to-sheet writes parsed values through the workbook bridge", async () =
   });
 
   const result = await shell({
-    command: "printf 'Name,Amount\\nAlice,12.5\\nBob,7\\n' > out.csv && csv-to-sheet out.csv 1 F2 --force",
+    command:
+      "printf 'Name,Amount\\nAlice,12.5\\nBob,7\\n' > out.csv && csv-to-sheet out.csv 1 F2 --force",
   });
 
   assert.equal(result.exitCode, 0);
@@ -128,4 +129,33 @@ test("a write from a saved script still asks for approval at the moment it write
   decision = "approve";
   await shell({ command: "bash later.sh" });
   assert.deepEqual(writes, ["A1:B2"]);
+});
+
+test("sheet-to-csv keeps a trailing page that is one blank cell", async () => {
+  // Additional audit N02: the last page is a single empty cell, which
+  // serializes to "", and must still count as a row on the way back in.
+  const writes = [];
+  const shell = createComputeShell(async (name, args) => {
+    if (name === "excel_get_range_as_csv") {
+      return args.range === "A1:A3"
+        ? {
+            csv: "row\nrow",
+            rowCount: 2,
+            columnCount: 1,
+            sheetName: "S",
+            hasMore: true,
+            nextRange: "A3:A3",
+          }
+        : { csv: "", rowCount: 1, columnCount: 1, sheetName: "S", hasMore: false, nextRange: null };
+    }
+    writes.push(args);
+    return { success: true, commitStatus: "committed", writtenRange: args.range };
+  });
+  const result = await shell({
+    command: "sheet-to-csv 1 A1:A3 data.csv && csv-to-sheet data.csv 1 B1 --force --text",
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.match(result.stdout, /Exported 3 rows/);
+  assert.equal(writes[0].range, "B1:B3");
+  assert.equal(writes[0].cells.length, 3);
 });

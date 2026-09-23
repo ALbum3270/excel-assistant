@@ -1,0 +1,95 @@
+{
+  "findings": 6,
+  "reproduced": 6,
+  "results": [
+    {
+      "id": "N01-sheet-name-exclamation-mislabels-read",
+      "reproduced": true,
+      "evidence": {
+        "requested": "D5",
+        "returnedCells": {
+          "A1": 42
+        },
+        "returnedDimension": "2026'"
+      }
+    },
+    {
+      "id": "N02-final-blank-csv-page-dropped",
+      "reproduced": true,
+      "evidence": {
+        "inputRows": 20001,
+        "writtenRows": 20000,
+        "finalWrittenRange": "B18001:B20000",
+        "stdout": "Exported 20001 rows x 1 columns from \"Sheet1\"!A1:A20001 to data.csv\nCommitted 20000 rows x 1 columns to sheet 1 at B1:B20000 in 10 committed chunk(s)\n"
+      }
+    },
+    {
+      "id": "N03-carriage-return-not-escaped-in-csv",
+      "reproduced": true,
+      "evidence": {
+        "original": "alpha\rbeta",
+        "exported": "alpha\rbeta",
+        "writtenRange": "B1:B2",
+        "writtenCells": [
+          [
+            {
+              "value": "'alpha"
+            }
+          ],
+          [
+            {
+              "value": "'beta"
+            }
+          ]
+        ],
+        "stdout": "Exported 1 rows x 1 columns from \"Sheet1\"!A1 to data.csv\nCommitted 2 rows x 1 columns to sheet 1 at B1:B2 in 1 committed chunk(s)\n"
+      }
+    },
+    {
+      "id": "N04-style-only-cell-rewritten-as-formula",
+      "reproduced": true,
+      "evidence": {
+        "beforeB1": "text =1+1",
+        "requestedB1Change": "bold only",
+        "allowOverwrite": false,
+        "actualAssignment": {
+          "address": "A1:B1",
+          "matrix": [
+            [
+              7,
+              "=1+1"
+            ]
+          ]
+        },
+        "consequence": "B1 is sent to Range.formulas as a formula expression"
+      }
+    },
+    {
+      "id": "N05-table-without-headers-undo-leaves-extra-row",
+      "reproduced": true,
+      "evidence": {
+        "original": [
+          "A",
+          "B"
+        ],
+        "afterUndo": [
+          "A",
+          "B",
+          "B"
+        ],
+        "tableExists": false,
+        "capturedRange": "Sheet1!A1:A2"
+      }
+    },
+    {
+      "id": "N06-error-turn-still-drains-queue",
+      "reproduced": true,
+      "evidence": {
+        "is_error": true,
+        "subtype": "success",
+        "displayedError": "provider ended task with an error",
+        "drainQueue": true
+      }
+    }
+  ]
+}

@@ -78,6 +78,10 @@ function columnIndexToLetter(index) {
 function cellAddress(rowIndex, colIndex) {
   return `${columnIndexToLetter(colIndex)}${rowIndex + 1}`;
 }
+function rangePart(address) {
+  const bang = address.lastIndexOf("!");
+  return bang >= 0 ? address.slice(bang + 1) : address;
+}
 function parseRangeAddress(address) {
   const clean = address.split("!").pop()?.split(":")[0] || "A1";
   const match = clean.match(/([A-Z]+)(\d+)/);
@@ -228,7 +232,7 @@ async function getCellRanges(sheetId, ranges, options = {}) {
     const usedRange = sheet.getUsedRangeOrNullObject();
     usedRange.load("address");
     await context.sync();
-    const dimension = usedRange.isNullObject ? "A1" : usedRange.address.split("!")[1] || "A1";
+    const dimension = usedRange.isNullObject ? "A1" : rangePart(usedRange.address) || "A1";
     const cells = {};
     const formulas = {};
     const styles = {};
@@ -242,7 +246,7 @@ async function getCellRanges(sheetId, ranges, options = {}) {
       const range = sheet.getRange(rangeAddr);
       range.load("values,formulas,address,rowCount,columnCount");
       await context.sync();
-      const startAddress = range.address.split("!")[1]?.split(":")[0] || "A1";
+      const startAddress = rangePart(range.address).split(":")[0] || "A1";
       const startMatch = startAddress.match(/([A-Z]+)(\d+)/);
       const startCol = startMatch ? startMatch[1].split("").reduce((acc, c) => acc * 26 + c.charCodeAt(0) - 64, 0) - 1 : 0;
       const startRow = startMatch ? Number.parseInt(startMatch[2], 10) - 1 : 0;
@@ -344,7 +348,7 @@ async function getRangeAsCsv(sheetId, rangeAddr, options = {}) {
       const row = preview.values[r].map((v) => {
         if (v === null || v === void 0) return "";
         const str = String(v);
-        if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+        if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
           return `"${str.replace(/"/g, '""')}"`;
         }
         return str;
@@ -606,30 +610,51 @@ async function setCellRange(sheetId, rangeAddr, cells, options = {}) {
     }
     const writeMatrix = [];
     const formulas = [];
+    const writes = [];
     let hasDataWrites = false;
+    let hasStyleOnlyCells = false;
     let hasFormulas = false;
     for (let r = 0; r < cells.length; r++) {
       writeMatrix[r] = [];
       formulas[r] = [];
+      writes[r] = [];
       for (let c = 0; c < cells[r].length; c++) {
         const cell = cells[r][c];
         if (cell.formula !== void 0) {
           writeMatrix[r][c] = cell.formula;
           formulas[r][c] = cell.formula;
+          writes[r][c] = true;
           hasDataWrites = true;
           hasFormulas = true;
         } else if (Object.prototype.hasOwnProperty.call(cell, "value")) {
           writeMatrix[r][c] = cell.value ?? null;
           formulas[r][c] = null;
+          writes[r][c] = true;
           hasDataWrites = true;
         } else {
-          const existingFormula = range.formulas[r][c];
-          writeMatrix[r][c] = typeof existingFormula === "string" && existingFormula.startsWith("=") ? existingFormula : range.values[r][c];
+          writeMatrix[r][c] = null;
           formulas[r][c] = null;
+          writes[r][c] = false;
+          hasStyleOnlyCells = true;
         }
       }
     }
-    if (hasDataWrites) range.formulas = writeMatrix;
+    if (hasDataWrites && !hasStyleOnlyCells) {
+      range.formulas = writeMatrix;
+    } else if (hasDataWrites) {
+      for (let r = 0; r < cells.length; r++) {
+        let c = 0;
+        while (c < cells[r].length) {
+          if (!writes[r][c]) {
+            c++;
+            continue;
+          }
+          const start = c;
+          while (c < cells[r].length && writes[r][c]) c++;
+          range.getCell(r, start).getResizedRange(0, c - start - 1).formulas = [writeMatrix[r].slice(start, c)];
+        }
+      }
+    }
     for (let r = 0; r < cells.length; r++) {
       for (let c = 0; c < cells[r].length; c++) {
         const cell = cells[r][c];
@@ -763,7 +788,7 @@ async function setCellRange(sheetId, rangeAddr, cells, options = {}) {
     return {
       success: true,
       commitStatus: "committed",
-      writtenRange: verificationRange.address.split("!")[1] || verificationRange.address,
+      writtenRange: rangePart(verificationRange.address),
       cellsWritten: cells.flat().length,
       cellsCommitted: verificationRange.values.length * (verificationRange.values[0]?.length ?? 0),
       ...Object.keys(formulaResults).length > 0 && { formulaResults },
@@ -1060,7 +1085,7 @@ async function getWorkbookMetadata() {
       }))
     );
     const activeSheetStableId = stableIdMap.get(activeSheet.id) || await getStableSheetId(activeSheet.id);
-    const rangeAddress = selectedAddress ? selectedAddress.includes("!") ? selectedAddress.split("!")[1] : selectedAddress : null;
+    const rangeAddress = selectedAddress ? selectedAddress.includes("!") ? rangePart(selectedAddress) : selectedAddress : null;
     console.log("[getWorkbookMetadata] activeSheet.id:", activeSheet.id);
     console.log("[getWorkbookMetadata] activeSheet.name:", activeSheet.name);
     console.log(

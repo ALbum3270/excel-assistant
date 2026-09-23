@@ -273,37 +273,62 @@ function excelColorToHex(
     } else {
       range.values = values;
     }`,
-    `    const writeMatrix: unknown[][] = [];
+    `    // A cell that only gets a style keeps its content untouched. Writing its
+    // current content back is not a no-op: Range.formulas returns a plain
+    // value for a non-formula cell, so text such as "=1+1" would be parsed as
+    // a formula. Only cells with a value or formula are written, in same-row
+    // runs, which is also exactly the set the overwrite check looked at.
+    const writeMatrix: unknown[][] = [];
     const formulas: (string | null)[][] = [];
+    const writes: boolean[][] = [];
     let hasDataWrites = false;
+    let hasStyleOnlyCells = false;
     let hasFormulas = false;
 
     for (let r = 0; r < cells.length; r++) {
       writeMatrix[r] = [];
       formulas[r] = [];
+      writes[r] = [];
       for (let c = 0; c < cells[r].length; c++) {
         const cell = cells[r][c];
         if (cell.formula !== undefined) {
           writeMatrix[r][c] = cell.formula;
           formulas[r][c] = cell.formula;
+          writes[r][c] = true;
           hasDataWrites = true;
           hasFormulas = true;
         } else if (Object.prototype.hasOwnProperty.call(cell, "value")) {
           writeMatrix[r][c] = cell.value ?? null;
           formulas[r][c] = null;
+          writes[r][c] = true;
           hasDataWrites = true;
         } else {
-          const existingFormula = range.formulas[r][c];
-          writeMatrix[r][c] =
-            typeof existingFormula === "string" && existingFormula.startsWith("=")
-              ? existingFormula
-              : range.values[r][c];
+          writeMatrix[r][c] = null;
           formulas[r][c] = null;
+          writes[r][c] = false;
+          hasStyleOnlyCells = true;
         }
       }
     }
 
-    if (hasDataWrites) range.formulas = writeMatrix;`,
+    if (hasDataWrites && !hasStyleOnlyCells) {
+      range.formulas = writeMatrix;
+    } else if (hasDataWrites) {
+      for (let r = 0; r < cells.length; r++) {
+        let c = 0;
+        while (c < cells[r].length) {
+          if (!writes[r][c]) {
+            c++;
+            continue;
+          }
+          const start = c;
+          while (c < cells[r].length && writes[r][c]) c++;
+          range
+            .getCell(r, start)
+            .getResizedRange(0, c - start - 1).formulas = [writeMatrix[r].slice(start, c)];
+        }
+      }
+    }`,
   );
 
   source = replaceOnce(
@@ -365,7 +390,7 @@ function excelColorToHex(
     return {
       success: true,
       commitStatus: "committed",
-      writtenRange: verificationRange.address.split("!")[1] || verificationRange.address,
+      writtenRange: rangePart(verificationRange.address),
       cellsWritten: cells.flat().length,
       cellsCommitted: verificationRange.values.length * (verificationRange.values[0]?.length ?? 0),
       ...(Object.keys(formulaResults).length > 0 && { formulaResults }),
@@ -593,7 +618,7 @@ export async function copyTo(
       : selectedRange.address;`,
     `    const rangeAddress = selectedAddress
       ? selectedAddress.includes("!")
-        ? selectedAddress.split("!")[1]
+        ? rangePart(selectedAddress)
         : selectedAddress
       : null;`,
   );
@@ -605,6 +630,41 @@ export async function copyTo(
       selectedRange.address,
     );`,
     `    console.log("[getWorkbookMetadata] selectedRange.address:", selectedAddress);`,
+  );
+  // A sheet may be named "Sales!2026" (Excel forbids \ / ? * [ ] : in sheet
+  // names, not "!"), so "'Sales!2026'!D5" splits at its last "!". Every split
+  // of an address into sheet and cells goes through this one helper.
+  source = replaceOnce(
+    source,
+    "range part helper",
+    "function parseRangeAddress(address: string): {",
+    `function rangePart(address: string): string {
+  const bang = address.lastIndexOf("!");
+  return bang >= 0 ? address.slice(bang + 1) : address;
+}
+
+function parseRangeAddress(address: string): {`,
+  );
+  source = replaceOnce(
+    source,
+    "used range dimension",
+    `: usedRange.address.split("!")[1] || "A1";`,
+    `: rangePart(usedRange.address) || "A1";`,
+  );
+  source = replaceOnce(
+    source,
+    "read page start",
+    `const startAddress = range.address.split("!")[1]?.split(":")[0] || "A1";`,
+    `const startAddress = rangePart(range.address).split(":")[0] || "A1";`,
+  );
+
+  // A lone carriage return is a record separator to CSV readers (PapaParse
+  // included), so a field containing one is quoted like one containing "\n".
+  source = replaceOnce(
+    source,
+    "CSV quotes carriage returns",
+    `if (str.includes(",") || str.includes('"') || str.includes("\\n")) {`,
+    `if (str.includes(",") || str.includes('"') || str.includes("\\n") || str.includes("\\r")) {`,
   );
   return patchBoundedReads(source, replaceOnce);
 }

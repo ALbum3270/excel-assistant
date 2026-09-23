@@ -390,15 +390,19 @@ test("style-only edits are not blocked by an existing value", async () => {
   assert.deepEqual(target.values, [[99]]);
 });
 
-test("sparse writes preserve existing values in cells that only change style", async () => {
+test("sparse writes leave cells that only change style untouched", async () => {
+  // Writing B1's content back would send text such as "=1+1" through the
+  // formula parser (additional audit N04), so B1 is not written at all.
   const target = range("A1:B1", [[10, 20]]);
-  installExcel({ "A1:B1": target });
+  const a1 = range("A1", [[10]]);
+  installExcel({ "A1:B1": target, A1: a1 });
   await api.setCellRange(1, "A1:B1", [[{ value: 11 }, { cellStyles: { fontWeight: "bold" } }]], {
     allowOverwrite: true,
   });
+  assert.equal(target.state.formulaAssignments, 0);
   assert.equal(target.state.valueAssignments, 0);
-  assert.equal(target.state.formulaAssignments, 1);
-  assert.deepEqual(target.formulas, [[11, 20]]);
+  assert.deepEqual(a1.formulas, [[11]]);
+  assert.deepEqual(target.formulas, [[10, 20]]);
 });
 
 test("an explicit null is treated as a protected destructive write", async () => {

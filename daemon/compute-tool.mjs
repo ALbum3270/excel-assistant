@@ -95,7 +95,9 @@ function workbookCommands(call, approveWrite) {
           includeHeaders: true,
           maxRows: CSV_PAGE_ROWS,
         }, { signal: ctx.signal });
-        if (page.csv) pages.push(page.csv);
+        // A page of one blank cell serializes to "" and is still a row, so keep
+        // pages by their row count, not by whether their text is empty.
+        if (page.rowCount > 0) pages.push(page.csv ?? "");
         rows += page.rowCount;
         columns = page.columnCount;
         sheetName = page.sheetName;

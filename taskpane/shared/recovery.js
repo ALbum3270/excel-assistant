@@ -609,7 +609,15 @@ async function prepareCustomRecovery(name, args, toolCallId) {
       if (!tableName) return { status: "not_available", reason: "The created table name was unavailable." };
       checkpoint = {
         address: result?.range ?? args.address,
-        state: { kind: "table_absent", table: tableName, count: 1 },
+        state: {
+          kind: "table_absent",
+          table: tableName,
+          count: 1,
+          // tables.add(address, false) inserts a generated header row and moves
+          // the data down one row (documented TableCollection.add behavior), so
+          // undoing it must remove that row, not only convert the table.
+          ...(args.has_headers === false ? { generatedHeader: true } : {}),
+        },
       };
     }
     if (!checkpoint) return { status: "not_available", reason: "The previous workbook state was unavailable." };
@@ -734,11 +742,31 @@ async function restoreCustomState(state) {
     }
     case "table_absent": {
       const inverse = await captureTableState(state.table);
-      await Excel.run(async (context) => {
-        context.workbook.tables.getItem(state.table).convertToRange();
+      const dataAddress = await Excel.run(async (context) => {
+        const table = context.workbook.tables.getItem(state.table);
+        let header = null;
+        let dataAfter = null;
+        if (state.generatedHeader) {
+          // The data moves back up into the header's row once it is removed;
+          // redo recreates the table there without headers, as it was made.
+          header = table.getHeaderRowRange();
+          const body = table.getDataBodyRange();
+          header.load("address");
+          body.load("rowCount,columnCount");
+          await context.sync();
+          dataAfter = header.getCell(0, 0).getResizedRange(body.rowCount - 1, body.columnCount - 1);
+          dataAfter.load("address");
+          await context.sync();
+        }
+        table.convertToRange();
         await context.sync();
+        if (!header) return null;
+        const { worksheet, a1 } = await resolveWorksheet(context, { address: header.address });
+        worksheet.getRange(a1).delete(Excel.DeleteShiftDirection?.up ?? "Up");
+        await context.sync();
+        return dataAfter.address;
       });
-      return inverse;
+      return dataAddress ? { ...inverse, address: dataAddress, hasHeaders: false } : inverse;
     }
     case "table_present":
       await Excel.run(async (context) => {
@@ -747,7 +775,12 @@ async function restoreCustomState(state) {
         table.name = state.name;
         await context.sync();
       });
-      return { kind: "table_absent", table: state.name, count: 1 };
+      return {
+        kind: "table_absent",
+        table: state.name,
+        count: 1,
+        ...(state.hasHeaders ? {} : { generatedHeader: true }),
+      };
     case "table_rows_added":
       return Excel.run(async (context) => {
         const table = context.workbook.tables.getItem(state.table);
@@ -1089,6 +1122,14 @@ function diffCellText(value, formula) {
   return String(value).slice(0, 40);
 }
 
+function diffValue(value) {
+  return value === null || value === undefined ? "" : String(value).slice(0, 40);
+}
+
+function diffFormula(formula) {
+  return typeof formula === "string" && formula.startsWith("=") ? formula.slice(0, 80) : null;
+}
+
 async function recordMutationDiff(toolCallId, captures) {
   const changes = [];
   let changed = 0;
@@ -1103,13 +1144,27 @@ async function recordMutationDiff(toolCallId, captures) {
     const firstRow = Number(start[2]);
     for (let r = 0; r < capture.beforeValues.length; r += 1) {
       for (let c = 0; c < (capture.beforeValues[r]?.length ?? 0); c += 1) {
-        const before = diffCellText(capture.beforeValues[r][c], capture.beforeFormulas?.[r]?.[c]);
-        const now = diffCellText(after.beforeValues?.[r]?.[c], after.beforeFormulas?.[r]?.[c]);
+        const beforeValue = capture.beforeValues[r][c];
+        const beforeFormula = capture.beforeFormulas?.[r]?.[c];
+        const afterValue = after.beforeValues?.[r]?.[c];
+        const afterFormula = after.beforeFormulas?.[r]?.[c];
+        const before = diffCellText(beforeValue, beforeFormula);
+        const now = diffCellText(afterValue, afterFormula);
         if (before === now) continue;
         changed += 1;
         if (changes.length >= MAX_DIFF_ENTRIES) continue;
         const cell = `${columnLetters(firstColumn + c)}${firstRow + r}`;
-        changes.push({ cell: sheetName ? `${sheetName}!${cell}` : cell, before, after: now });
+        // The pane shows value and formula on separate lines, as pi-for-excel's
+        // diff table does; `before`/`after` keep the one-line form.
+        changes.push({
+          cell: sheetName ? `${sheetName}!${cell}` : cell,
+          before,
+          after: now,
+          beforeValue: diffValue(beforeValue),
+          afterValue: diffValue(afterValue),
+          beforeFormula: diffFormula(beforeFormula),
+          afterFormula: diffFormula(afterFormula),
+        });
       }
     }
   }
