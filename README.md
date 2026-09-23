@@ -16,7 +16,7 @@
 
 Excel Assistant is an AI agent that sits in Excel's side panel. Ask it about the workbook you have open, or tell it what to change. It reads the sheets, writes real formulas instead of pasted numbers, shows you every cell it touched, and keeps a restore point so each change can be undone with one click.
 
-It runs on your own machine and works with the model you choose: your Claude Code login, or any Anthropic-compatible API such as Qwen, DeepSeek, Kimi, GLM or MiniMax.
+It runs on your own machine and works with the model you choose: an Anthropic API key, or any Anthropic-compatible API such as Qwen, DeepSeek, Kimi, GLM or MiniMax.
 
 <table>
   <tr>
@@ -60,7 +60,7 @@ It runs on your own machine and works with the model you choose: your Claude Cod
 
 ## Quick start
 
-**You need:** Windows 10 or 11 with desktop Excel (Microsoft 365, or Excel 2021 or later), Node.js 20.18.1 or later, and a model: a signed-in [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) or an API key for an Anthropic-compatible provider.
+**You need:** Windows 10 or 11 with desktop Excel (Microsoft 365, or Excel 2021 or later), Node.js 20.18.1 or later, and an API key for Anthropic or an Anthropic-compatible provider.
 
 ```bash
 git clone https://github.com/ALbum3270/excel-assistant.git
@@ -77,7 +77,7 @@ npm start
 
 ## Choose a model
 
-With no configuration it uses your Claude Code login. To use another provider, enter its Anthropic-compatible base URL, credential and model IDs under **Settings → Model connection** (saving restarts the local daemon), or copy `.env.example` to `.env`. That file is read only by this project and leaves your global Claude Code untouched. Example for Qwen:
+Enter the provider's Anthropic-compatible base URL, API key and model IDs under **Settings → Model connection** (saving restarts the local daemon), or copy `.env.example` to `.env`, which only this project reads. For Anthropic itself, `ANTHROPIC_API_KEY` is enough. Example for Qwen:
 
 ```bash
 ANTHROPIC_BASE_URL=https://dashscope.aliyuncs.com/apps/anthropic

@@ -16,7 +16,7 @@
 
 Excel 助手是一个住在 Excel 侧栏里的 AI 助手。你可以问它当前打开的工作簿，也可以直接让它改。它会先读表，写的是真正的公式而不是粘贴的数字，把改过的每个单元格都列给你看，并在每次修改前留恢复点，一键就能撤销。
 
-它运行在你自己的电脑上，模型由你选择：用你的 Claude Code 登录，或任何 Anthropic 兼容接口，例如通义千问、DeepSeek、Kimi、智谱 GLM、MiniMax。
+它运行在你自己的电脑上，模型由你选择：Anthropic API key，或任何 Anthropic 兼容接口，例如通义千问、DeepSeek、Kimi、智谱 GLM、MiniMax。
 
 <table>
   <tr>
@@ -60,7 +60,7 @@ Excel 助手是一个住在 Excel 侧栏里的 AI 助手。你可以问它当前
 
 ## 快速开始
 
-**需要：** Windows 10 或 11 与桌面版 Excel（Microsoft 365，或 Excel 2021 及以上）、Node.js 20.18.1 及以上，以及一个模型：已登录的 [Claude Code](https://docs.claude.com/en/docs/claude-code/overview)，或某个 Anthropic 兼容服务的 API key。
+**需要：** Windows 10 或 11 与桌面版 Excel（Microsoft 365，或 Excel 2021 及以上）、Node.js 20.18.1 及以上，以及 Anthropic 或某个 Anthropic 兼容服务的 API key。
 
 ```bash
 git clone https://github.com/ALbum3270/excel-assistant.git
@@ -77,7 +77,7 @@ npm start
 
 ## 选择模型
 
-不做任何配置时使用你的 Claude Code 登录。要换其他服务商，在 **设置 → 模型连接** 里填写 Anthropic 兼容接口地址、凭据和各档模型 ID（保存后本地 daemon 会重启）；或者把 `.env.example` 复制为 `.env`。这个文件只被本项目读取，不影响你全局的 Claude Code。以通义千问为例：
+在 **设置 → 模型连接** 里填写服务商的 Anthropic 兼容接口地址、API key 和各档模型 ID（保存后本地 daemon 会重启）；或者把 `.env.example` 复制为 `.env`（只有本项目读取它）。直接用 Anthropic 的话，只填 `ANTHROPIC_API_KEY` 即可。以通义千问为例：
 
 ```bash
 ANTHROPIC_BASE_URL=https://dashscope.aliyuncs.com/apps/anthropic
