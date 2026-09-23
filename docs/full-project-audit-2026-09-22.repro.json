@@ -1,0 +1,164 @@
+{
+  "generatedAt": "2026-09-22T09:44:40.144Z",
+  "note": "Defect reproductions using isolated fixtures; no live Excel or model calls.",
+  "results": [
+    {
+      "id": "F01-valid-quoted-sheet-reference-rejected",
+      "reproduced": true,
+      "evidence": {
+        "bridgeCalls": 0,
+        "errors": [
+          {
+            "formula": "='Plan (draft'!A1",
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "{\n  \"success\": false,\n  \"error\": \"Excel will reject ='Plan (draft'!A1: parentheses are unbalanced.\"\n}"
+                }
+              ],
+              "isError": true
+            }
+          },
+          {
+            "formula": "='Plan )'!A1",
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "{\n  \"success\": false,\n  \"error\": \"Excel will reject ='Plan )'!A1: parentheses are unbalanced.\"\n}"
+                }
+              ],
+              "isError": true
+            }
+          },
+          {
+            "formula": "=Table1[Cost (USD]",
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "{\n  \"success\": false,\n  \"error\": \"Excel will reject =Table1[Cost (USD]: parentheses are unbalanced.\"\n}"
+                }
+              ],
+              "isError": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "F02-large-csv-import-stack-overflow",
+      "reproduced": true,
+      "evidence": {
+        "inputRows": 200000,
+        "writes": 0,
+        "exitCode": 1,
+        "stdout": "",
+        "stderr": "Maximum call stack size exceeded\n"
+      }
+    },
+    {
+      "id": "F03-config-reload-leaves-turn-in-flight",
+      "reproduced": true,
+      "evidence": {
+        "cancelled": 1,
+        "restarted": 1,
+        "turnInFlight": true,
+        "queued": [
+          "next task"
+        ],
+        "dispatched": [
+          "first task"
+        ],
+        "N06FixedInNewPane": true
+      }
+    },
+    {
+      "id": "F04-native-path-hash-collides",
+      "reproduced": true,
+      "evidence": {
+        "contexts": [
+          {
+            "url": "C:\\Work\\Budget#A.xlsx",
+            "workbookId": "url_sha256:fc0b8695851a8fb22069613b3315a54b2a3c025dc30b64e324fb740963d48e41",
+            "workbookName": "Budget",
+            "source": "document.url"
+          },
+          {
+            "url": "C:\\Work\\Budget#B.xlsx",
+            "workbookId": "url_sha256:fc0b8695851a8fb22069613b3315a54b2a3c025dc30b64e324fb740963d48e41",
+            "workbookName": "Budget",
+            "source": "document.url"
+          }
+        ],
+        "affectedStore": "customWorkbookId uses this URL hash without a document-token suffix"
+      }
+    },
+    {
+      "id": "F05-history-truncation-splits-one-restore",
+      "reproduced": true,
+      "evidence": {
+        "snapshotsStillStored": [
+          "group-structure",
+          "group-values"
+        ],
+        "actuallyRestored": [
+          "group-structure"
+        ],
+        "reportedCommitStatus": "committed"
+      }
+    },
+    {
+      "id": "F06-csv-preview-splits-quoted-fields",
+      "reproduced": true,
+      "evidence": {
+        "expectedRows": 2,
+        "expectedColumns": 2,
+        "actual": {
+          "columns": [
+            "D",
+            "E",
+            "F"
+          ],
+          "rows": [
+            {
+              "number": 5,
+              "cells": [
+                "\"a",
+                "b\"",
+                "c"
+              ]
+            },
+            {
+              "number": 6,
+              "cells": [
+                "\"line1",
+                "",
+                ""
+              ]
+            },
+            {
+              "number": 7,
+              "cells": [
+                "line2\"",
+                "d",
+                ""
+              ]
+            }
+          ],
+          "hiddenRows": 0,
+          "hiddenColumns": 0
+        }
+      }
+    },
+    {
+      "id": "F07-stop-does-not-cancel-manual-restart",
+      "reproduced": true,
+      "evidence": {
+        "spawnedAfterStop": 1,
+        "finalStatus": "starting"
+      }
+    }
+  ]
+}

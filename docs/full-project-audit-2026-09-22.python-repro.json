@@ -1,0 +1,30 @@
+{
+  "note": "Isolated workbook and fake COM fixtures; no live Excel session used.",
+  "results": [
+    {
+      "id": "F08-deleted-sheet-not-counted-as-damage",
+      "reproduced": true,
+      "evidence": {
+        "diff": {
+          "unauthorized_cells": 0,
+          "sheets_removed": [
+            "SourceData"
+          ],
+          "sheets_added": [],
+          "samples": []
+        },
+        "countedAsDamagedBySummary": false
+      }
+    },
+    {
+      "id": "F09-open-failure-leaves-excel-global-state",
+      "reproduced": true,
+      "evidence": {
+        "afterOpenFailure": {
+          "DisplayAlerts": false,
+          "Visible": true
+        }
+      }
+    }
+  ]
+}
