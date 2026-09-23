@@ -58,14 +58,20 @@ const EDITS = {
   ],
 };
 
+// Apache-2.0 section 4(b): a modified file carries a notice that it was changed.
+export const MODIFIED_NOTICE =
+  "// Modified from vercel/ai-elements (Apache-2.0) by excel-assistant;\n" +
+  "// every change is listed in scripts/ai-elements-patches.mjs.\n";
+
 export function patchAiElement(file, source) {
   const edits = EDITS[file];
   if (!edits) return source;
   const lf = source.replaceAll(String.fromCharCode(13), "");
-  return edits.reduce(
+  const patched = edits.reduce(
     (current, [before, after], index) => replaceOnce(current, `${file}#${index}`, before, after),
     lf,
   );
+  return MODIFIED_NOTICE + patched;
 }
 
 export const PATCHED_FILES = Object.keys(EDITS);

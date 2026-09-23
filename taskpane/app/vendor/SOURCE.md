@@ -2,6 +2,8 @@ Copied verbatim from https://github.com/vercel/ai-elements at 6a9d5b1822ffb10bba
 by scripts/vendor-ai-elements.mjs. Apache-2.0 (see LICENSE); the shadcn-ui
 files are shadcn/ui components (MIT) as kept in that repository.
 Patched after copying (scripts/ai-elements-patches.mjs): ai-elements/context.tsx, ai-elements/prompt-input.tsx.
+theme.css is an excerpt of vercel/ai-chatbot app/globals.css at c2f8235e1f3ea903ad8b7f61447c4f74164b5c58
+(Apache-2.0, see theme.LICENSE), modified as its header says.
 
 - packages/elements/src/confirmation.tsx
 - packages/elements/src/context.tsx

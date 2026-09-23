@@ -54,6 +54,8 @@ def managed_workbook(app, workbook_path):
 
 # Field descriptions follow SpreadsheetBench's PROMPT_NO_DF_RCT_FORMAT, adapted
 # from "write Python to an output file" to editing the open workbook in place.
+# SpreadsheetBench (https://github.com/RUCKBReasoning/SpreadsheetBench) is
+# CC BY-SA 4.0; this adapted prompt text is shared under the same license.
 PROMPT = """You need to solve the given spreadsheet manipulation question, which contains three types of information:
 - instruction: The question about spreadsheet manipulation.
 - instruction_type: There are two values (Cell-Level Manipulation, Sheet-Level Manipulation) used to indicate whether the answer to this question applies only to specific cells or to the entire worksheet.

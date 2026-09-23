@@ -95,9 +95,14 @@ const themeStart = globalsCss.indexOf("@custom-variant dark");
 const themeEnd = globalsCss.indexOf("@layer base {\n  body {\n    position: relative;");
 if (themeStart < 0 || themeEnd < themeStart)
   throw new Error("theme markers not found in globals.css");
+copyFileSync(join(themeSource, "LICENSE"), join(target, "theme.LICENSE"));
+const themeCopyright = readFileSync(join(themeSource, "LICENSE"), "utf8").split(/\r?\n/, 1)[0];
 writeFileSync(
   join(target, "theme.css"),
-  `/* From vercel/ai-chatbot app/globals.css at ${THEME_PINNED} (Apache-2.0) */\n` +
+  `/* From vercel/ai-chatbot app/globals.css at ${THEME_PINNED}.\n` +
+    ` * ${themeCopyright} Licensed under Apache-2.0; see theme.LICENSE.\n` +
+    ` * Modified by excel-assistant: only the theme section is kept and its @plugin\n` +
+    ` * lines are removed (scripts/vendor-ai-elements.mjs). */\n` +
     globalsCss
       .slice(themeStart, themeEnd)
       .split("\n")
@@ -111,7 +116,9 @@ writeFileSync(
   `Copied verbatim from https://github.com/vercel/ai-elements at ${PINNED}\n` +
     `by scripts/vendor-ai-elements.mjs. Apache-2.0 (see LICENSE); the shadcn-ui\n` +
     `files are shadcn/ui components (MIT) as kept in that repository.\n` +
-    `Patched after copying (scripts/ai-elements-patches.mjs): ${patched.join(", ")}.\n\n` +
+    `Patched after copying (scripts/ai-elements-patches.mjs): ${patched.join(", ")}.\n` +
+    `theme.css is an excerpt of vercel/ai-chatbot app/globals.css at ${THEME_PINNED}\n` +
+    `(Apache-2.0, see theme.LICENSE), modified as its header says.\n\n` +
     [...seen]
       .sort()
       .map((file) => `- packages/${file}`)

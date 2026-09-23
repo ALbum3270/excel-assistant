@@ -1,3 +1,5 @@
+// Modified from vercel/ai-elements (Apache-2.0) by excel-assistant;
+// every change is listed in scripts/ai-elements-patches.mjs.
 "use client";
 
 import { t as translate } from "@pane/i18n";

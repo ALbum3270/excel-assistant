@@ -1,4 +1,7 @@
-/* From vercel/ai-chatbot app/globals.css at c2f8235e1f3ea903ad8b7f61447c4f74164b5c58 (Apache-2.0) */
+/* From vercel/ai-chatbot app/globals.css at c2f8235e1f3ea903ad8b7f61447c4f74164b5c58.
+ * Copyright 2024 Vercel, Inc. Licensed under Apache-2.0; see theme.LICENSE.
+ * Modified by excel-assistant: only the theme section is kept and its @plugin
+ * lines are removed (scripts/vendor-ai-elements.mjs). */
 @custom-variant dark (&:is(.dark, .dark *));
 
 
