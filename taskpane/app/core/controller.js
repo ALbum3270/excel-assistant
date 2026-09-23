@@ -705,12 +705,16 @@ export function createController({
     }
   }
 
-  async function backupAction(action, snapshotId = null) {
+  // `snapshotId` may be a list: deleting a change drops the restore checkpoints
+  // folded into its row too, so the page does not leave them behind as orphans.
+  // `redo` only picks the wording of the status line.
+  async function backupAction(action, snapshotId = null, { redo = false } = {}) {
     if (get().backups.busy) return;
     if (action === "restore" && turnBusy()) {
       setBackups({ status: t("error.restoreWhileBusy"), error: true });
       return;
     }
+    const ids = Array.isArray(snapshotId) ? snapshotId : [snapshotId];
     setBackups({
       busy: true,
       error: false,
@@ -721,11 +725,16 @@ export function createController({
       ),
     });
     try {
-      const result = await daemonWorkbookHistory({ action, snapshot_id: snapshotId });
+      let result;
+      for (const id of ids) {
+        result = await daemonWorkbookHistory({ action, snapshot_id: id });
+      }
       const listed = await daemonWorkbookHistory({ action: "list", limit: 120 });
       const done = {
         restore: () =>
-          t("backups.restored", { targets: result.addresses?.join(", ") || t("backups.workbook") }),
+          t(redo ? "backups.redone" : "backups.undone", {
+            targets: result.addresses?.join(", ") || t("backups.workbook"),
+          }),
         delete: () => t("backups.deleted"),
         clear: () => t("backups.cleared", { count: result.removed || 0 }),
       }[action]();
@@ -1203,7 +1212,7 @@ export function createController({
     importSession,
     // backups
     loadBackups,
-    restoreBackup: (id) => backupAction("restore", id),
+    restoreBackup: (id, options) => backupAction("restore", id, options),
     deleteBackup: (id) => backupAction("delete", id),
     clearBackups: () => backupAction("clear"),
     // workspace and context files
