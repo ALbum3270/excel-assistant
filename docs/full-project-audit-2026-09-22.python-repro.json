@@ -1,9 +1,9 @@
 {
-  "note": "Isolated workbook and fake COM fixtures; no live Excel session used.",
+  "note": "Post-fix verification with isolated workbook and fake COM fixtures; no live Excel session used.",
   "results": [
     {
       "id": "F08-deleted-sheet-not-counted-as-damage",
-      "reproduced": true,
+      "fixed": true,
       "evidence": {
         "diff": {
           "unauthorized_cells": 0,
@@ -13,16 +13,23 @@
           "sheets_added": [],
           "samples": []
         },
-        "countedAsDamagedBySummary": false
+        "summary": {
+          "checked": 1,
+          "skipped_gold_edits_outside": 0,
+          "tasks_with_unauthorized_edits": 1,
+          "unauthorized_cells_total": 0,
+          "unauthorized_sheet_changes_total": 1,
+          "passed_but_damaged": 1
+        }
       }
     },
     {
       "id": "F09-open-failure-leaves-excel-global-state",
-      "reproduced": true,
+      "fixed": true,
       "evidence": {
         "afterOpenFailure": {
-          "DisplayAlerts": false,
-          "Visible": true
+          "DisplayAlerts": true,
+          "Visible": false
         }
       }
     }

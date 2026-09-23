@@ -1,6 +1,7 @@
 // A CSV read shown as a table with Excel's own row numbers and column letters,
 // the way pi-for-excel renders read_range results (src/ui/render-csv-table.ts).
 // The text sent to the model is untouched; this is only what the pane shows.
+import Papa from "papaparse";
 
 export const CSV_PREVIEW_ROWS = 12;
 export const CSV_PREVIEW_COLUMNS = 8;
@@ -12,9 +13,7 @@ export function columnLetter(number) {
 }
 
 export function csvPreview(csv, range) {
-  const rows = String(csv)
-    .split("\n")
-    .map((line) => line.split(","));
+  const rows = Papa.parse(String(csv), { skipEmptyLines: false }).data;
   const start = /^\$?([A-Z]+)\$?(\d+)/i.exec(
     String(range ?? "")
       .split("!")
@@ -25,7 +24,8 @@ export function csvPreview(csv, range) {
     ? [...start[1].toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0)
     : 1;
   const shown = rows.slice(0, CSV_PREVIEW_ROWS);
-  const width = Math.min(Math.max(...shown.map((row) => row.length)), CSV_PREVIEW_COLUMNS);
+  const widest = rows.reduce((maximum, row) => Math.max(maximum, row.length), 0);
+  const width = Math.min(widest, CSV_PREVIEW_COLUMNS);
   return {
     columns: Array.from({ length: width }, (_, index) => columnLetter(firstColumn + index)),
     rows: shown.map((row, index) => ({
@@ -33,6 +33,6 @@ export function csvPreview(csv, range) {
       cells: Array.from({ length: width }, (_, column) => row[column] ?? ""),
     })),
     hiddenRows: rows.length - shown.length,
-    hiddenColumns: Math.max(...rows.map((row) => row.length)) - width,
+    hiddenColumns: widest - width,
   };
 }

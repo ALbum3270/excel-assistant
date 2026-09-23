@@ -10,7 +10,7 @@ from pathlib import Path
 
 import openpyxl
 
-from run_spreadsheetbench import qualified_answer_position, select_tasks, summarize, tool_error_summary
+from run_spreadsheetbench import managed_workbook, qualified_answer_position, select_tasks, summarize, tool_error_summary
 from workbook_diff import authorized_ranges, unauthorized_edits
 
 
@@ -57,6 +57,20 @@ class WorkbookDiffTest(unittest.TestCase):
         after = self.save("b.xlsx", {("Data", "A1"): 1}, sheets=("Data", "New"))
         diff = unauthorized_edits(before, after, "A1", same_value)
         self.assertEqual((diff["sheets_removed"], diff["sheets_added"]), (["Old"], ["New"]))
+
+    def test_removed_sheet_is_counted_as_preservation_damage(self):
+        before = self.save("a.xlsx", {("Data", "A1"): 1, ("Old", "A1"): "keep"}, sheets=("Data", "Old"))
+        after = self.save("b.xlsx", {("Data", "A1"): 1})
+        diff = unauthorized_edits(before, after, "A1", same_value)
+        result = {
+            "instruction_type": "Cell", "infra_status": "ok", "agent_status": "completed",
+            "tool_calls": 1, "tool_errors": 0, "agent_duration_s": 1, "passed": True,
+            **diff,
+            "gold_unauthorized_cells": 0, "gold_sheets_removed": [], "gold_sheets_added": [],
+        }
+        summary = summarize("deleted", [result])
+        self.assertEqual(summary["preservation"]["tasks_with_unauthorized_edits"], 1)
+        self.assertEqual(summary["preservation"]["passed_but_damaged"], 1)
 
     def test_authorized_ranges_parse_multi_part_positions(self):
         boxes = authorized_ranges("'My Sheet'!A1:B2,C5", "First")
@@ -114,6 +128,26 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(summary["preservation"]["passed_but_damaged"], 1)
         self.assertEqual(summary["preservation"]["skipped_gold_edits_outside"], 1)
         self.assertIsNone(summary["agent_seconds"]["p90"])
+
+
+class ManagedWorkbookTest(unittest.TestCase):
+    def test_open_failure_restores_excel_global_state(self):
+        class Workbooks:
+            @staticmethod
+            def Open(*_args, **_kwargs):
+                raise RuntimeError("open failed")
+
+        class App:
+            DisplayAlerts = True
+            Visible = False
+
+        app = App()
+        app.Workbooks = Workbooks()
+        with self.assertRaisesRegex(RuntimeError, "open failed"):
+            with managed_workbook(app, "bad.xlsx"):
+                pass
+        self.assertTrue(app.DisplayAlerts)
+        self.assertFalse(app.Visible)
 
 
 if __name__ == "__main__":

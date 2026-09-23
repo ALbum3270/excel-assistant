@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +32,24 @@ from workbook_diff import unauthorized_edits
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DAEMON = "http://127.0.0.1:47834"
 TOKEN_FILE = Path.home() / ".claude" / "office-addins" / "bridge-token"
+
+
+@contextmanager
+def managed_workbook(app, workbook_path):
+    """Open one evaluation workbook and always restore Excel-wide UI flags."""
+    alerts, visible = app.DisplayAlerts, app.Visible
+    workbook = None
+    try:
+        app.DisplayAlerts = False
+        app.Visible = True
+        workbook = app.Workbooks.Open(str(workbook_path), UpdateLinks=0)
+        yield workbook
+    finally:
+        try:
+            if workbook is not None:
+                workbook.Close(SaveChanges=False)
+        finally:
+            app.DisplayAlerts, app.Visible = alerts, visible
 
 # Field descriptions follow SpreadsheetBench's PROMPT_NO_DF_RCT_FORMAT, adapted
 # from "write Python to an output file" to editing the open workbook in place.
@@ -240,16 +259,12 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
     phase("prepare", started)
 
     app = ready_excel(run_dir)
-    alerts, visible = app.DisplayAlerts, app.Visible
-    app.DisplayAlerts = False
-    app.Visible = True
     started = time.perf_counter()
-    workbook = app.Workbooks.Open(str(workbook_path), UpdateLinks=0)
-    # Many benchmark files were saved minimized; Excel then never loads the task pane.
-    for window in workbook.Windows:
-        window.WindowState = XL_MAXIMIZED
-    phase("open", started)
-    try:
+    with managed_workbook(app, workbook_path) as workbook:
+        # Many benchmark files were saved minimized; Excel then never loads the task pane.
+        for window in workbook.Windows:
+            window.WindowState = XL_MAXIMIZED
+        phase("open", started)
         started = time.perf_counter()
         agent = daemon_request(
             "/eval/run",
@@ -266,13 +281,8 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
             record["saved"] = False
             record["save_error"] = f"{type(exc).__name__}: {exc}"
         phase("save", started)
-    finally:
         started = time.perf_counter()
-        try:
-            workbook.Close(SaveChanges=False)
-        finally:
-            app.DisplayAlerts, app.Visible = alerts, visible
-        phase("close", started)
+    phase("close", started)
 
     transcript = Path(agent["transcriptPath"]) if agent.get("transcriptPath") else None
     if transcript and transcript.exists():
@@ -293,6 +303,8 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
         # instruction also asks to sort a source column), the check can't judge the task.
         gold = unauthorized_edits(init_file, golden_file, answer_position, args.compare_values, limit=0)
         preservation["gold_unauthorized_cells"] = gold["unauthorized_cells"]
+        preservation["gold_sheets_removed"] = gold["sheets_removed"]
+        preservation["gold_sheets_added"] = gold["sheets_added"]
     except Exception as exc:
         preservation = {"error": f"{type(exc).__name__}: {exc}"}
     phase("preservation", started)
@@ -317,6 +329,10 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
             "infra_status": infra,
             "unauthorized_cells": preservation.get("unauthorized_cells"),
             "gold_unauthorized_cells": preservation.get("gold_unauthorized_cells"),
+            "sheets_removed": preservation.get("sheets_removed", []),
+            "sheets_added": preservation.get("sheets_added", []),
+            "gold_sheets_removed": preservation.get("gold_sheets_removed", []),
+            "gold_sheets_added": preservation.get("gold_sheets_added", []),
             "model": agent.get("model"),
             "session_id": agent.get("sessionId"),
             "tool_calls": len(agent.get("tools", [])),
@@ -362,8 +378,15 @@ def summarize(run: str, results: list[dict]) -> dict:
     durations = [r["agent_duration_s"] for r in ok]
     usage_keys = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")
     tokens = {k: sum((r.get("usage") or {}).get(k) or 0 for r in ok) for k in usage_keys}
+    def damage_count(record: dict, prefix: str = "") -> int:
+        return (
+            int(record.get(f"{prefix}unauthorized_cells") or 0)
+            + len(record.get(f"{prefix}sheets_removed") or [])
+            + len(record.get(f"{prefix}sheets_added") or [])
+        )
+
     checkable = [r for r in ok if r.get("unauthorized_cells") is not None]
-    preserved = [r for r in checkable if not r.get("gold_unauthorized_cells")]
+    preserved = [r for r in checkable if damage_count(r, "gold_") == 0]
     tool_error_categories: dict[str, int] = {}
     for result in ok:
         for category, count in (result.get("tool_error_categories") or {}).items():
@@ -389,9 +412,12 @@ def summarize(run: str, results: list[dict]) -> dict:
         "preservation": {
             "checked": len(preserved),
             "skipped_gold_edits_outside": len(checkable) - len(preserved),
-            "tasks_with_unauthorized_edits": sum(1 for r in preserved if r["unauthorized_cells"]),
+            "tasks_with_unauthorized_edits": sum(1 for r in preserved if damage_count(r)),
             "unauthorized_cells_total": sum(r["unauthorized_cells"] for r in preserved),
-            "passed_but_damaged": sum(1 for r in preserved if r["passed"] and r["unauthorized_cells"]),
+            "unauthorized_sheet_changes_total": sum(
+                len(r.get("sheets_removed") or []) + len(r.get("sheets_added") or []) for r in preserved
+            ),
+            "passed_but_damaged": sum(1 for r in preserved if r["passed"] and damage_count(r)),
         },
         "agent_seconds": {
             "median": round(statistics.median(durations), 1) if durations else None,

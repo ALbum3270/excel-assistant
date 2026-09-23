@@ -87,7 +87,7 @@ function documentTokenIdentity() {
 
 function workbookName(rawUrl) {
   if (!rawUrl) return null;
-  const clean = String(rawUrl).split(/[?#]/, 1)[0].replaceAll("\\", "/");
+  const clean = normalizeDocumentLocation(rawUrl);
   const tail = clean.split("/").at(-1);
   if (!tail) return null;
   try {
@@ -95,6 +95,18 @@ function workbookName(rawUrl) {
   } catch {
     return tail;
   }
+}
+
+function normalizeDocumentLocation(rawUrl) {
+  const value = String(rawUrl);
+  // Office returns native Windows paths for local files and URLs for cloud or
+  // file-backed documents. A native path may legally contain '#', so only URL
+  // syntax has query/fragment components to remove. The URL is cut, never
+  // parsed and re-serialized: re-serializing percent-encodes spaces and
+  // lowercases the host, which would give already-recorded workbooks a new
+  // identity and hide their restore points.
+  if (/^(?:https?|file):/i.test(value)) return value.split(/[?#]/, 1)[0].replaceAll("\\", "/");
+  return value.replaceAll("\\", "/");
 }
 
 async function sha256Hex(value) {
@@ -114,7 +126,7 @@ async function sha256Hex(value) {
 async function currentWorkbookContext() {
   const rawUrl = Office?.context?.document?.url?.trim?.() || null;
   if (!rawUrl) return { workbookId: null, workbookName: null, source: "unknown" };
-  const normalized = rawUrl.split(/[?#]/, 1)[0].replaceAll("\\", "/");
+  const normalized = normalizeDocumentLocation(rawUrl);
   return {
     workbookId: `url_sha256:${await sha256Hex(normalized)}`,
     workbookName: workbookName(rawUrl),
@@ -1301,7 +1313,9 @@ async function allSnapshots() {
     ...(await recoveryLog.listForCurrentWorkbook(120)),
     ...(await readCustomSnapshots()),
   ];
-  return snapshots.sort((a, b) => Number(b.at ?? 0) - Number(a.at ?? 0)).slice(0, 120);
+  // Keep complete operations here. Display limits are applied after grouping;
+  // restore/delete must be able to find every snapshot sharing a toolCallId.
+  return snapshots.sort((a, b) => Number(b.at ?? 0) - Number(a.at ?? 0));
 }
 
 export async function workbookHistory({ action = "list", snapshot_id: snapshotId, limit = 20 } = {}) {

@@ -1,4 +1,4 @@
-"""Targeted full-audit reproductions. No live Excel session is opened."""
+"""Targeted post-fix audit verification. No live Excel session is opened."""
 from __future__ import annotations
 
 import json
@@ -45,10 +45,23 @@ def preservation_deleted_sheet(tmp: Path) -> dict:
     result = unauthorized_edits(initial, output, "Answer!A1", lambda a, b: a == b)
     assert result["unauthorized_cells"] == 0
     assert result["sheets_removed"] == ["SourceData"]
-    # This is the exact predicate used by summarize(): a deletion passes it.
-    counted_as_damaged = bool(result["unauthorized_cells"])
-    assert counted_as_damaged is False
-    return {"diff": result, "countedAsDamagedBySummary": counted_as_damaged}
+    record = {
+        "instruction_type": "Cell",
+        "infra_status": "ok",
+        "agent_status": "completed",
+        "tool_calls": 1,
+        "tool_errors": 0,
+        "agent_duration_s": 1,
+        "passed": True,
+        **result,
+        "gold_unauthorized_cells": 0,
+        "gold_sheets_removed": [],
+        "gold_sheets_added": [],
+    }
+    preservation = runner.summarize("audit", [record])["preservation"]
+    assert preservation["tasks_with_unauthorized_edits"] == 1
+    assert preservation["passed_but_damaged"] == 1
+    return {"diff": result, "summary": preservation}
 
 
 def open_failure_leaves_excel_flags_changed(tmp: Path) -> dict:
@@ -79,19 +92,19 @@ def open_failure_leaves_excel_flags_changed(tmp: Path) -> dict:
         assert str(error) == "open failed"
     else:
         raise AssertionError("expected Workbooks.Open to fail")
-    assert app.DisplayAlerts is False
-    assert app.Visible is True
+    assert app.DisplayAlerts is True
+    assert app.Visible is False
     return {"afterOpenFailure": {"DisplayAlerts": app.DisplayAlerts, "Visible": app.Visible}}
 
 
 with tempfile.TemporaryDirectory(prefix="excel-assistant-audit-") as raw:
     tmp = Path(raw)
     results = [
-        {"id": "F08-deleted-sheet-not-counted-as-damage", "reproduced": True, "evidence": preservation_deleted_sheet(tmp)},
-        {"id": "F09-open-failure-leaves-excel-global-state", "reproduced": True, "evidence": open_failure_leaves_excel_flags_changed(tmp)},
+        {"id": "F08-deleted-sheet-not-counted-as-damage", "fixed": True, "evidence": preservation_deleted_sheet(tmp)},
+        {"id": "F09-open-failure-leaves-excel-global-state", "fixed": True, "evidence": open_failure_leaves_excel_flags_changed(tmp)},
     ]
 
-report = {"note": "Isolated workbook and fake COM fixtures; no live Excel session used.", "results": results}
+report = {"note": "Post-fix verification with isolated workbook and fake COM fixtures; no live Excel session used.", "results": results}
 if "--save" in sys.argv:
     (ROOT / "docs" / "full-project-audit-2026-09-22.python-repro.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

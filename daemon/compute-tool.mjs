@@ -13,6 +13,8 @@ const MAX_OUTPUT_CHARS = 30_000;
 // Matches the task pane's bounded read/write chunks.
 const WRITE_CHUNK_CELLS = 2000;
 const CSV_PAGE_ROWS = 20_000;
+const EXCEL_MAX_ROWS = 1_048_576;
+const EXCEL_MAX_COLUMNS = 16_384;
 // Stay below the bridge's 60s tool deadline so an abandoned computation
 // cannot continue into late workbook writes.
 const COMPUTE_TIMEOUT_MS = 45_000;
@@ -142,8 +144,13 @@ function workbookCommands(call, approveWrite) {
       }
       const rows = parsed.data;
       if (rows.length === 0) return failure("CSV file is empty");
-      const width = Math.max(...rows.map((r) => r.length));
-      if (width < 1 || width > 16_384) return failure(`CSV width ${width} is outside Excel's limits`);
+      const width = rows.reduce((maximum, row) => Math.max(maximum, row.length), 0);
+      if (width < 1 || width > EXCEL_MAX_COLUMNS) return failure(`CSV width ${width} is outside Excel's limits`);
+      if (start.row + rows.length > EXCEL_MAX_ROWS || start.col + width > EXCEL_MAX_COLUMNS) {
+        return failure(
+          `CSV target from ${startArg} with ${rows.length} rows x ${width} columns is outside Excel's limits`,
+        );
+      }
       const cells = rows.map((row) =>
         Array.from({ length: width }, (_, i) => cellInput(row[i] ?? "", { text: exactText, formulas })),
       );

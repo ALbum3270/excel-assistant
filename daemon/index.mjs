@@ -2297,6 +2297,7 @@ async function restartSession(key, host, { reason = "config_changed" } = {}) {
   const { cwd, sessionId } = s;
   cancelPaneSession(key);
   console.log(`[daemon] Restarting session for ${cwd} (reason: ${reason})`);
+  bridge.sendAssistantEvent({ event: "turn_complete", interrupted: true }, key);
   bridge.sendAssistantEvent({ event: "config_reloaded", reason }, key);
   // Funnel through the serialized per-key queue (not a direct
   // startSessionForFolder) so a config/model restart coalesces with any

@@ -128,13 +128,33 @@ function formulaProblem(formula) {
   if (!body.trim()) return "the formula is empty";
   if ((body.match(/"/g) ?? []).length % 2 !== 0) return "quotes are unbalanced";
   let depth = 0;
-  let inString = false;
-  for (const char of body) {
-    if (char === '"') {
-      inString = !inString;
+  let quote = null;
+  let brackets = 0;
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index];
+    if (quote) {
+      // Excel escapes both string quotes ("") and quoted-sheet apostrophes
+      // ('') by doubling them.
+      if (char === quote && body[index + 1] === quote) {
+        index += 1;
+      } else if (char === quote) {
+        quote = null;
+      }
       continue;
     }
-    if (inString) continue;
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "[") {
+      brackets += 1;
+      continue;
+    }
+    if (char === "]" && brackets > 0) {
+      brackets -= 1;
+      continue;
+    }
+    if (brackets > 0) continue;
     if (char === "(") depth += 1;
     if (char === ")" && --depth < 0) return "parentheses are unbalanced";
   }

@@ -143,7 +143,7 @@ function harness(t, overrides = {}) {
       `
     globalThis.api = { sessionFor, startSessionForFolder, cancelPaneSession,
       startNewConversation, activateConversation, removeConversation,
-      ensureLoopForMessage, scheduleSessionStart,
+      ensureLoopForMessage, scheduleSessionStart, restartSession,
       cwdForKey, onPaneConnect, awaitWorkspaceResolution, sendTranscriptReplayTo };
   `,
     sandbox,
@@ -237,6 +237,18 @@ test("recents storage failure does not prevent a turn", async (t) => {
   assert.equal(
     h.events.some((e) => e.event === "error"),
     false,
+  );
+});
+
+test("reloading a live session sends a terminal event for the cancelled turn", async (t) => {
+  const h = harness(t);
+  await h.send("first");
+  await until(() => h.received.length === 1);
+  h.events.length = 0;
+  await h.api.restartSession(h.key, "excel", { reason: "model_changed" });
+  assert.equal(
+    h.events.some((event) => event.event === "turn_complete" && event.interrupted === true),
+    true,
   );
 });
 

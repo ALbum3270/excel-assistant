@@ -1,94 +1,59 @@
 {
-  "generatedAt": "2026-09-22T09:44:40.144Z",
-  "note": "Defect reproductions using isolated fixtures; no live Excel or model calls.",
+  "generatedAt": "2026-09-23T04:14:58.558Z",
+  "note": "Post-fix verification using isolated fixtures; no live Excel or model calls.",
   "results": [
     {
       "id": "F01-valid-quoted-sheet-reference-rejected",
-      "reproduced": true,
+      "fixed": true,
       "evidence": {
-        "bridgeCalls": 0,
-        "errors": [
-          {
-            "formula": "='Plan (draft'!A1",
-            "result": {
-              "content": [
-                {
-                  "type": "text",
-                  "text": "{\n  \"success\": false,\n  \"error\": \"Excel will reject ='Plan (draft'!A1: parentheses are unbalanced.\"\n}"
-                }
-              ],
-              "isError": true
-            }
-          },
-          {
-            "formula": "='Plan )'!A1",
-            "result": {
-              "content": [
-                {
-                  "type": "text",
-                  "text": "{\n  \"success\": false,\n  \"error\": \"Excel will reject ='Plan )'!A1: parentheses are unbalanced.\"\n}"
-                }
-              ],
-              "isError": true
-            }
-          },
-          {
-            "formula": "=Table1[Cost (USD]",
-            "result": {
-              "content": [
-                {
-                  "type": "text",
-                  "text": "{\n  \"success\": false,\n  \"error\": \"Excel will reject =Table1[Cost (USD]: parentheses are unbalanced.\"\n}"
-                }
-              ],
-              "isError": true
-            }
-          }
+        "bridgeCalls": 3,
+        "dispatches": [
+          "='Plan (draft'!A1",
+          "='Plan )'!A1",
+          "=Table1[Cost (USD]"
         ]
       }
     },
     {
       "id": "F02-large-csv-import-stack-overflow",
-      "reproduced": true,
+      "fixed": true,
       "evidence": {
         "inputRows": 200000,
-        "writes": 0,
-        "exitCode": 1,
-        "stdout": "",
-        "stderr": "Maximum call stack size exceeded\n"
+        "writes": 100,
+        "writtenRows": 200000,
+        "exitCode": 0
       }
     },
     {
       "id": "F03-config-reload-leaves-turn-in-flight",
-      "reproduced": true,
+      "fixed": true,
       "evidence": {
         "cancelled": 1,
         "restarted": 1,
         "turnInFlight": true,
-        "queued": [
-          "next task"
-        ],
+        "queued": [],
         "dispatched": [
-          "first task"
+          "first task",
+          "next task"
         ],
         "N06FixedInNewPane": true
       }
     },
     {
       "id": "F04-native-path-hash-collides",
-      "reproduced": true,
+      "fixed": true,
       "evidence": {
         "contexts": [
           {
             "url": "C:\\Work\\Budget#A.xlsx",
-            "workbookId": "url_sha256:fc0b8695851a8fb22069613b3315a54b2a3c025dc30b64e324fb740963d48e41",
-            "workbookName": "Budget",
+            "workbookId": "url_sha256:5fd74abf0cd5feadbf4c3e6ca8aa8ba4711356865eb0bb3c494cc59a4885c444",
+            "workbookName": "Budget#A.xlsx",
             "source": "document.url"
           },
           {
             "url": "C:\\Work\\Budget#B.xlsx",
-            "workbookId": "url_sha256:fc0b8695851a8fb22069613b3315a54b2a3c025dc30b64e324fb740963d48e41",
-            "workbookName": "Budget",
+            "workbookId": "url_sha256:bb8b76b61e725ea486c4bb6cbb2a00d35db6b5b4767db47b63a7e7de95e7949f",
+            "workbookName": "Budget#B.xlsx",
             "source": "document.url"
           }
         ],
@@ -97,53 +62,43 @@
     },
     {
       "id": "F05-history-truncation-splits-one-restore",
-      "reproduced": true,
+      "fixed": true,
       "evidence": {
         "snapshotsStillStored": [
           "group-structure",
           "group-values"
         ],
         "actuallyRestored": [
-          "group-structure"
+          "group-structure",
+          "group-values"
         ],
         "reportedCommitStatus": "committed"
       }
     },
     {
       "id": "F06-csv-preview-splits-quoted-fields",
-      "reproduced": true,
+      "fixed": true,
       "evidence": {
         "expectedRows": 2,
         "expectedColumns": 2,
         "actual": {
           "columns": [
             "D",
-            "E",
-            "F"
+            "E"
           ],
           "rows": [
             {
               "number": 5,
               "cells": [
-                "\"a",
-                "b\"",
+                "a,b",
                 "c"
               ]
             },
             {
               "number": 6,
               "cells": [
-                "\"line1",
-                "",
-                ""
-              ]
-            },
-            {
-              "number": 7,
-              "cells": [
-                "line2\"",
-                "d",
-                ""
+                "line1\nline2",
+                "d"
               ]
             }
           ],
@@ -154,10 +109,10 @@
     },
     {
       "id": "F07-stop-does-not-cancel-manual-restart",
-      "reproduced": true,
+      "fixed": true,
       "evidence": {
-        "spawnedAfterStop": 1,
-        "finalStatus": "starting"
+        "spawnedAfterStop": 0,
+        "finalStatus": "stopped"
       }
     }
   ]

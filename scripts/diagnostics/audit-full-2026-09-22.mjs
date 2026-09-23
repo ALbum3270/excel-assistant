@@ -1,5 +1,5 @@
-// Audit evidence, not regression tests: reproduced=true means the defect exists.
-// Uses actual repository functions with isolated transport/Office/process fixtures.
+// Post-fix audit verification using actual repository functions with isolated
+// transport/Office/process fixtures.
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
@@ -23,8 +23,8 @@ const evaluate = (source, bindings) => {
 };
 const results = [];
 async function check(id, fn) {
-  try { results.push({ id, reproduced: true, evidence: await fn() }); }
-  catch (error) { results.push({ id, reproduced: false, error: error.stack }); process.exitCode = 1; }
+  try { results.push({ id, fixed: true, evidence: await fn() }); }
+  catch (error) { results.push({ id, fixed: false, error: error.stack }); process.exitCode = 1; }
 }
 
 await check('F01-valid-quoted-sheet-reference-rejected', async () => {
@@ -33,26 +33,21 @@ await check('F01-valid-quoted-sheet-reference-rejected', async () => {
     calls.push({ name, args }); return { success: true, commitStatus: 'committed' };
   } }, 'excel', 'audit');
   const handler = server.instance._registeredTools.excel_set_cell_range.handler;
-  const errors = [];
+  const dispatches = [];
   for (const formula of ["='Plan (draft'!A1", "='Plan )'!A1", '=Table1[Cost (USD]']) {
-    try {
-      const result = await handler({ sheetId: 1, range: 'B1', cells: [[{ formula }]] });
-      errors.push({ formula, result });
-      assert.equal(result.isError, true);
-    } catch (error) {
-      // The registered handler may throw; both paths reject before bridge dispatch.
-      errors.push({ formula, error: error.message });
-      assert.match(error.message, /parentheses are unbalanced/);
-    }
+    const result = await handler({ sheetId: 1, range: 'B1', cells: [[{ formula }]] });
+    assert.notEqual(result.isError, true);
+    dispatches.push(formula);
   }
-  assert.equal(calls.length, 0);
-  return { bridgeCalls: calls.length, errors };
+  assert.equal(calls.length, 3);
+  return { bridgeCalls: calls.length, dispatches };
 });
 
 await check('F02-large-csv-import-stack-overflow', async () => {
-  let writes = 0;
+  let writes = 0, writtenRows = 0;
   const shell = createComputeShell(async (_name, args) => {
-    writes++; return { commitStatus: 'committed', writtenRange: args.range };
+    writes++; writtenRows += args.cells.length;
+    return { success: true, commitStatus: 'committed', writtenRange: args.range };
   });
   const result = await shell({
     command: `python3 - <<'PY'
@@ -61,10 +56,9 @@ with open('big.csv', 'w') as stream:
 PY
 csv-to-sheet big.csv 1 A1 --force --text`,
   });
-  assert.equal(result.exitCode, 1);
-  assert.match(result.stderr, /Maximum call stack size exceeded/);
-  assert.equal(writes, 0);
-  return { inputRows: 200000, writes, ...result };
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(writtenRows, 200000);
+  return { inputRows: 200000, writes, writtenRows, exitCode: result.exitCode };
 });
 
 await check('F03-config-reload-leaves-turn-in-flight', async () => {
@@ -91,8 +85,8 @@ await check('F03-config-reload-leaves-turn-in-flight', async () => {
   assert.equal(cancelled, 1);
   assert.equal(restarted, 1);
   assert.equal(state.turnInFlight, true);
-  assert.equal(state.queue.length, 1);
-  assert.equal(sent.filter((msg) => msg.type === 'user_message').length, 1);
+  assert.equal(state.queue.length, 0);
+  assert.equal(sent.filter((msg) => msg.type === 'user_message').length, 2);
   assert.equal(turnFailed({ subtype: 'success', is_error: true }), true); // N06 fixed in the new pane
   return { cancelled, restarted, turnInFlight: state.turnInFlight, queued: state.queue.map((t) => t.text), dispatched: sent.filter((m) => m.type === 'user_message').map((m) => m.text), N06FixedInNewPane: true };
 });
@@ -107,7 +101,7 @@ await check('F04-native-path-hash-collides', async () => {
     ctx.Office.context.document.url = url;
     ids.push({ url, ...await ctx.currentWorkbookContext() });
   }
-  assert.equal(ids[0].workbookId, ids[1].workbookId);
+  assert.notEqual(ids[0].workbookId, ids[1].workbookId);
   return { contexts: ids, affectedStore: 'customWorkbookId uses this URL hash without a document-token suffix' };
 });
 
@@ -128,14 +122,14 @@ await check('F05-history-truncation-splits-one-restore', async () => {
   });
   const result = await ctx.workbookHistory({ action: 'restore', snapshot_id: 'group-structure' });
   assert.equal(result.success, true);
-  assert.deepEqual(restored, ['group-structure']);
+  assert.deepEqual(new Set(restored), new Set(['group-structure', 'group-values']));
   return { snapshotsStillStored: pi.map((s) => s.id), actuallyRestored: restored, reportedCommitStatus: result.commitStatus };
 });
 
 await check('F06-csv-preview-splits-quoted-fields', async () => {
   const result = csvPreview('"a,b",c\n"line1\nline2",d', 'D5:E6');
-  assert.equal(result.rows.length, 3);
-  assert.equal(result.columns.length, 3);
+  assert.equal(result.rows.length, 2);
+  assert.equal(result.columns.length, 2);
   return { expectedRows: 2, expectedColumns: 2, actual: result };
 });
 
@@ -162,11 +156,11 @@ await check('F07-stop-does-not-cancel-manual-restart', async () => {
   ctx.stopDaemon();
   old.emit('exit', null, 'SIGTERM');
   await new Promise(setImmediate);
-  assert.equal(spawned, 2);
-  assert.equal(ctx.daemonStatus, 'starting');
+  assert.equal(spawned, 1);
+  assert.equal(ctx.daemonStatus, 'stopped');
   return { spawnedAfterStop: spawned - 1, finalStatus: ctx.daemonStatus };
 });
 
-const report = { generatedAt: new Date().toISOString(), note: 'Defect reproductions using isolated fixtures; no live Excel or model calls.', results };
+const report = { generatedAt: new Date().toISOString(), note: 'Post-fix verification using isolated fixtures; no live Excel or model calls.', results };
 if (process.argv.includes('--save')) writeFileSync(new URL('../../docs/full-project-audit-2026-09-22.repro.json', import.meta.url), JSON.stringify(report, null, 2) + '\n');
 console.log(JSON.stringify(report, null, 2));

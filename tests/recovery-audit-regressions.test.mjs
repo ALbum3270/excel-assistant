@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { webcrypto } from 'node:crypto';
 import { createThepExcelGateway } from '../daemon/thepexcel-gateway.mjs';
 import { createWorkbookExecution } from '../daemon/workbook-execution.mjs';
 
@@ -19,6 +20,75 @@ function run(code, bindings = {}) {
 }
 const recovery = read('taskpane/shared/recovery.js');
 const pi = read('taskpane/shared/vendor/pi-recovery.js');
+
+test('native Windows paths keep a # in the workbook recovery identity', async () => {
+  const functions = run(cut(recovery, 'function workbookName(', 'const recoveryLog ='), {
+    Office: { context: { document: { url: '' } } },
+    TextEncoder,
+    crypto: webcrypto,
+  });
+  const ids = [];
+  for (const url of ['C:\\Work\\Budget#A.xlsx', 'C:\\Work\\Budget#B.xlsx']) {
+    functions.Office.context.document.url = url;
+    ids.push((await functions.currentWorkbookContext()).workbookId);
+  }
+  assert.notEqual(ids[0], ids[1]);
+});
+
+test('a cloud workbook keeps the identity it already had in the log', async () => {
+  // The fix for '#' in native paths must not renumber documents that were
+  // already recorded: a URL is cut at '?' or '#', not re-serialized, which
+  // would percent-encode spaces and lowercase the host.
+  const functions = run(cut(recovery, 'function workbookName(', 'const recoveryLog ='), {
+    Office: { context: { document: { url: '' } } },
+    TextEncoder,
+    crypto: webcrypto,
+  });
+  const idFor = async (url) => {
+    functions.Office.context.document.url = url;
+    return (await functions.currentWorkbookContext()).workbookId;
+  };
+  const legacy = async (url) => {
+    functions.Office.context.document.url = url.split(/[?#]/, 1)[0];
+    return (await functions.currentWorkbookContext()).workbookId;
+  };
+  const shared = 'https://Contoso.SharePoint.com/sites/fin/Shared Documents/Book.xlsx';
+  assert.equal(await idFor(shared), await legacy(shared), 'space or host case changed the id');
+  assert.equal(await idFor(`${shared}?web=1`), await idFor(shared), 'query string changed the id');
+  assert.equal(await idFor(`${shared}#anchor`), await idFor(shared), 'fragment changed the id');
+});
+
+test('restore resolves every snapshot in an operation before applying the history display limit', async () => {
+  const piSnapshots = [
+    { id: 'structure', toolCallId: 'operation', at: 2, snapshotKind: 'modify_structure_state', address: 'Sheet1!A1' },
+    { id: 'values', toolCallId: 'operation', at: 1, snapshotKind: 'range_values', address: 'Sheet1!A1' },
+  ];
+  const customSnapshots = Array.from({ length: 119 }, (_, index) => ({
+    id: `recent-${index}`,
+    toolCallId: `call-${index}`,
+    at: index + 3,
+    snapshotKind: 'custom_state',
+    address: 'Sheet1!A1',
+  }));
+  const restored = [];
+  const functions = run(
+    recovery.slice(recovery.indexOf('function compactSnapshotGroup('))
+      .replace('export async function workbookHistory', 'async function workbookHistory'),
+    {
+      readCustomSnapshots: async () => customSnapshots,
+      recoveryLog: {
+        listForCurrentWorkbook: async () => piSnapshots,
+        restore: async (id) => {
+          restored.push(id);
+          return { restoredSnapshotId: id, address: 'Sheet1!A1', changedCount: 1 };
+        },
+      },
+    },
+  );
+  const result = await functions.workbookHistory({ action: 'restore', snapshot_id: 'structure' });
+  assert.equal(result.commitStatus, 'committed');
+  assert.deepEqual(new Set(restored), new Set(['structure', 'values']));
+});
 
 // Actual recovery plan and actual captureRange. A1 is the supported top-left
 // shorthand for a 2x2 matrix; before the write, A1 itself is still a 1x1 range.

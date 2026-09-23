@@ -11,6 +11,7 @@ import {
 import { createContextSnapshot, readSelection } from "../taskpane/app/core/excel-tools.js";
 import { describeArgs } from "../taskpane/app/core/labels.js";
 import { groupTimeline } from "../taskpane/app/core/tool-groups.js";
+import { csvPreview } from "../taskpane/app/core/csv-preview.js";
 
 function memoryStorage() {
   const data = new Map();
@@ -164,6 +165,15 @@ test("a turn that reports is_error shows the error and does not run the queued f
   assert.equal(turnFailed({ interrupted: true, is_error: true }), false);
   assert.equal(turnFailed({ subtype: "error_max_turns" }), true);
   assert.equal(turnFailed({ subtype: "success" }), false);
+});
+
+test("CSV preview respects quoted commas and quoted newlines", () => {
+  const preview = csvPreview('"a,b",c\n"line1\nline2",d', "D5:E6");
+  assert.deepEqual(preview.columns, ["D", "E"]);
+  assert.deepEqual(preview.rows, [
+    { number: 5, cells: ["a,b", "c"] },
+    { number: 6, cells: ["line1\nline2", "d"] },
+  ]);
 });
 
 test("sending from a view-only conversation clears its transcript", async () => {

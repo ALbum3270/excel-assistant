@@ -181,9 +181,11 @@ function restartDaemon() {
   cancelPendingRestart();
   if (daemonProcess) {
     const proc = daemonProcess;
+    const generation = lifecycle;
     daemonStatus = "starting";
     updateTray();
     proc.once("exit", () => {
+      if (generation !== lifecycle || daemonStatus === "stopped") return;
       restartAttempts = 0;
       startDaemon();
     });

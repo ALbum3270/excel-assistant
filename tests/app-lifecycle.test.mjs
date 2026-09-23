@@ -16,7 +16,7 @@ const slice = (from, to) => {
   return source.slice(start, end);
 };
 
-function lifecycle({ workspace = async () => null } = {}) {
+function lifecycle({ workspace = async () => null, deferExit = false } = {}) {
   const timers = [];
   let spawned = 0;
   const sandbox = {
@@ -47,7 +47,9 @@ function lifecycle({ workspace = async () => null } = {}) {
       const child = new EventEmitter();
       child.stdout = new EventEmitter();
       child.stderr = new EventEmitter();
-      child.kill = () => child.emit("exit", null, "SIGTERM");
+      child.kill = () => {
+        if (!deferExit) child.emit("exit", null, "SIGTERM");
+      };
       return child;
     },
   };
@@ -92,4 +94,16 @@ test("two starts at once spawn one daemon", async () => {
   const app = lifecycle();
   await Promise.all([app.api.startDaemon(), app.api.startDaemon()]);
   assert.equal(app.spawned(), 1);
+});
+
+test("Stop cancels a manual restart while the old daemon is still exiting", async () => {
+  const app = lifecycle({ deferExit: true });
+  await app.api.startDaemon();
+  const old = app.sandbox.daemonProcess;
+  app.api.restartDaemon();
+  app.api.stopDaemon();
+  old.emit("exit", null, "SIGTERM");
+  await new Promise(setImmediate);
+  assert.equal(app.spawned(), 1);
+  assert.equal(app.sandbox.daemonStatus, "stopped");
 });

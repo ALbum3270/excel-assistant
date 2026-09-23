@@ -46,6 +46,38 @@ test("csv-to-sheet accepts a valid one-column CSV", async () => {
   assert.deepEqual(calls[0].args.cells, [[{ value: "Alpha" }], [{ value: "Beta" }]]);
 });
 
+test("csv-to-sheet imports a large valid row set without spreading it onto the JS call stack", async () => {
+  let rowsWritten = 0;
+  const shell = createComputeShell(async (_name, args) => {
+    rowsWritten += args.cells.length;
+    return { success: true, commitStatus: "committed", writtenRange: args.range };
+  });
+  const result = await shell({
+    command: `python3 - <<'PY'
+with open('large.csv', 'w') as stream:
+    stream.write('x\\n' * 200000)
+PY
+csv-to-sheet large.csv 1 A1 --force --text`,
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(rowsWritten, 200_000);
+});
+
+test("csv-to-sheet rejects a target that would cross Excel's last row before writing", async () => {
+  let writes = 0;
+  const shell = createComputeShell(async () => {
+    writes += 1;
+    return { success: true, commitStatus: "committed" };
+  });
+  const result = await shell({
+    command: `printf 'one\ntwo' > rows.csv
+csv-to-sheet rows.csv 1 A1048576 --force --text`,
+  });
+  assert.equal(result.exitCode, 1);
+  assert.match(result.stderr, /outside Excel's limits/);
+  assert.equal(writes, 0);
+});
+
 test("csv-to-sheet finishes every chunk and then lists formula errors", async () => {
   const ranges = [];
   const shell = createComputeShell(async (name, args) => {

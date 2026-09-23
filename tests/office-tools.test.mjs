@@ -444,6 +444,30 @@ test("the repeat budget ignores transient failures and starts over each turn", a
   assert.equal(dispatches, 4, "the fourth call reaches Excel once the cell is no longer being edited");
 });
 
+test("formula preflight ignores parentheses inside quoted sheet names and structured references", async () => {
+  const calls = [];
+  const server = createOfficeBridgeMcp(
+    {
+      async callTaskpaneTool(name, args) {
+        calls.push({ name, args });
+        return { success: true, commitStatus: "committed" };
+      },
+    },
+    "excel",
+    "test-pane",
+  );
+  const handler = server.instance._registeredTools.excel_set_cell_range.handler;
+  const formulas = ["='Plan (draft'!A1", "='Plan )'!A1", "=Table1[Cost (USD]"];
+  for (const formula of formulas) {
+    const result = await handler({ sheetId: 1, range: "B1", cells: [[{ formula }]] });
+    assert.notEqual(result.isError, true, formula);
+  }
+  assert.deepEqual(
+    calls.map((call) => call.args.cells[0][0].formula),
+    formulas,
+  );
+});
+
 test("a call refused three times in one turn is allowed again in the next", async () => {
   let dispatches = 0;
   const turn = { value: 1 };
