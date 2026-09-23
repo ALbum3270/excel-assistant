@@ -1,95 +1,83 @@
-# Excel Assistant
+<div align="center">
 
-English | [简体中文](README.zh-CN.md)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/banner-en-dark.png">
+  <img alt="Excel Assistant — an AI agent in Excel's side panel. Reads your workbook, writes real formulas, and every change can be undone." src="docs/images/banner-en-light.png" width="100%">
+</picture>
 
-An AI agent in the Excel side panel. It reads and edits the workbook you have open, runs locally on your machine, and works with the model of your choice: your Claude Code login, or any Anthropic-compatible API such as Qwen, DeepSeek, Kimi, GLM or MiniMax.
+**English** · [简体中文](README.zh-CN.md)
 
-![A write in the Excel task pane: the assistant replaces a text string in G2 with a real formula, and the tool card shows the commit status, the range, how it was verified, the workbook revision, the cell's before and after values, and a Restore button.](docs/images/write-receipt.png)
+[![License: MIT](https://img.shields.io/badge/license-MIT-10b981)](LICENSE)
+![Windows + Excel](https://img.shields.io/badge/Excel-Windows%20desktop-217346?logo=microsoftexcel&logoColor=white)
+![Node.js ≥ 20.18](https://img.shields.io/badge/node-%E2%89%A5%2020.18-339933?logo=nodedotjs&logoColor=white)
+![Models](https://img.shields.io/badge/models-Claude%20%C2%B7%20Qwen%20%C2%B7%20DeepSeek%20%C2%B7%20Kimi%20%C2%B7%20GLM-555)
 
-*Every change reports what it did: commit status, the range (click it to select it in Excel), how it was verified, the workbook revision, the cells that changed with their previous values, and a restore point taken before the write.*
+</div>
 
-It is assembled from open-source projects rather than written from scratch. Each part comes from the project that already does it best. This repository adds the glue between them, fixes for the upstream bugs found along the way, and an evaluation harness to check the result.
+Excel Assistant is an AI agent that sits in Excel's side panel. Ask it about the workbook you have open, or tell it what to change. It reads the sheets, writes real formulas instead of pasted numbers, shows you every cell it touched, and keeps a restore point so each change can be undone with one click.
 
-## What it can do
+It runs on your own machine and works with the model you choose: your Claude Code login, or any Anthropic-compatible API such as Qwen, DeepSeek, Kimi, GLM or MiniMax.
 
-- **Read and edit the workbook** through Office.js tools: values, formulas, formatting, sorting, filters, tables, charts, rows, columns and sheets. Reads and searches page through large sheets instead of loading them whole.
-- **See the workbook before it acts.** Every message carries the workbook overview (sheets, headers, tables, named ranges), your selection with the rows around it, and the cells you changed since the last turn.
-- **Explain formulas and trace dependencies.** It can show what feeds a cell and what breaks if you change it.
-- **Undo many of its edits.** Restore points cover values, formulas, formatting, sorting, clearing, rows and columns, sheets, tables, worksheet filters, hidden rows and columns, frozen panes, cell comments, and chart creation or selected chart properties. Restoring a change can itself be redone.
-- **Ask before it writes (optional).** Turn this on and every change waits for Approve, Approve rest of turn or Reject in the chat.
-- **Crunch data too large for the chat** in a sandboxed shell with Python (standard library), awk, jq and sqlite3. Data moves between the sheet and the shell without passing through the model.
-- **Use Excel features Office.js cannot reach** through Windows COM, such as Power Query, PivotTable layouts, the Data Model and DAX, conditional formatting and data validation.
-- **Build finance models** with Anthropic's financial-analysis skills: DCF, LBO, three-statement, comps and model audits.
-- **Read your local files** (notes, specs, prior work) from folders you point it at.
-- **Keep track of the work**: one conversation history per workbook with portable read-only exports, a restore-point list, queued follow-ups, and provider, token and estimated cost displays.
+<table>
+  <tr>
+    <td width="33%" align="center"><img src="docs/images/chat-en.png" alt="A write card: the range, the number of changed cells, and a Before/After table with each new formula and its result."></td>
+    <td width="33%" align="center"><img src="docs/images/approval-en.png" alt="An approval card asking to write A26:E26, with Reject, Allow rest of turn and Allow."></td>
+    <td width="33%" align="center"><img src="docs/images/undone-en.png" alt="The same write card after Undo: marked Undone, with a Redo button."></td>
+  </tr>
+  <tr>
+    <td align="center"><b>See every cell it changed</b><br><sub>Before and after, with the formula and its result</sub></td>
+    <td align="center"><b>Approve before it writes</b><br><sub>Optional; one switch in the input bar</sub></td>
+    <td align="center"><b>Undo and redo in place</b><br><sub>On the card of the change itself</sub></td>
+  </tr>
+</table>
 
-## How it is built
+## Highlights
 
-| Part | Taken from | License |
-| --- | --- | --- |
-| Local daemon, WebSocket bridge, task pane, tray app, sideloading | [Draftspect](https://github.com/LeonardHope/Draftspect-Add-Ins-for-Word-and-Excel-Powered-by-Claude-Code) | MIT |
-| Excel Office.js API layer (reads, writes, search, structure, objects) | [office-agents](https://github.com/hewliyang/office-agents) | MIT |
-| Workbook context, formula explain and trace, restore log | [pi-for-excel](https://github.com/tmustier/pi-for-excel) | MIT |
-| Task-solving protocol in the system prompt | [fabric-rlm](https://github.com/pawarbi/fabric-rlm-core), the only open-source entry on the SpreadsheetBench Verified-400 leaderboard | MIT |
-| Sandboxed shell for computation | [just-bash](https://github.com/vercel-labs/just-bash) | Apache-2.0 |
-| COM tools for advanced Excel features | [ThepExcelMCP](https://github.com/ThepExcel/ThepExcelMCP) | MIT |
-| Finance skills | [financial-services-plugins](https://github.com/anthropics/financial-services-plugins) | Apache-2.0 |
-| Agent loop | [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) | Anthropic terms |
+**It looks before it acts.** Every message carries an overview of the workbook (sheets, headers, tables, named ranges), your current selection with the rows around it, and the cells you changed since the last turn. Large sheets are read and searched page by page, never loaded whole.
 
-Upstream code is vendored at pinned commits by scripts in `scripts/`, with small patches that must each match exactly once. What this repository adds:
+**Real work, not text in a chat.** Values, formulas, formatting, sorting, filters, tables, charts, rows, columns and sheets, all through Office.js. It can also explain a formula and trace what feeds a cell or what breaks if you change it.
 
-- **Safe writes.** Overwrite protection, a commit receipt from every write tool, and bounded results so large fills don't overflow the model's context. Writes are rejected when the data would spill outside the target range.
-- **Reliable tool calls.** Cancellation and ownership checks on tool calls, and error messages that name the Office.js API that failed.
-- **Fixes to upstream code**, all found by testing in real Excel:
-  - format restore points failed on ranges with mixed formatting;
-  - restoring "no fill" was rejected by Windows Excel;
-  - dependency traces kept only the top-left cell of a range;
-  - undoing a row or column delete left dependent formulas as `#REF!`.
-- **Approve before apply**, built on the SDK's permission hook so the model still sees each real result.
-- **An evaluation harness** for SpreadsheetBench (see below).
+**Every change is accountable.** Each write reports whether Excel committed it, which range it touched (click to select it), how it was verified, and a cell-by-cell Before/After table. Overwriting cells that already hold data needs an explicit flag.
 
-The full comparison with other open-source Excel agents is in [docs/open-source-comparison.md](docs/open-source-comparison.md).
+**Every change can be undone.** A restore point is taken before each write, covering values, formulas, formatting, sorting, clearing, rows and columns, sheets, tables, filters, hidden rows and columns, frozen panes, comments and chart creation. Undo sits on the change's own card, turns into Redo, and can go back and forth.
 
-## Architecture
+**Beyond what Office.js can reach.** A sandboxed shell (Python standard library, awk, jq, sqlite3) crunches data too large for the chat, and moves it between the sheet and the shell without passing through the model. Windows COM tools reach Power Query, PivotTable layouts, the Data Model and DAX, conditional formatting and data validation. Anthropic's financial-analysis skills add DCF, LBO, three-statement, comps and model audits.
 
-```
- Excel (Windows)                          Your machine
- ┌─────────────────────────┐   WebSocket   ┌──────────────────────────────┐    HTTPS    ┌──────────────┐
- │ Task pane (Office.js)   │◄─────────────►│ Daemon (Node)                │◄───────────►│ Model API    │
- │ excel_* tools, context, │  127.0.0.1    │ Claude Agent SDK loop        │             │ (Claude, or  │
- │ restore log (IndexedDB) │  :47833       │ in-process MCP tools         │             │ compatible)  │
- └─────────────────────────┘               │ excel_bash (just-bash)       │             └──────────────┘
-            ▲                              │ approval, permission guard   │
-            │ COM                          └──────────────┬───────────────┘
-            │                                             │ stdio MCP
-            └──────────────── ThepExcelMCP (optional) ◄───┘
-```
+**Made for daily use.** One conversation history per workbook, with portable read-only exports. A restore-point browser. Follow-ups you can queue while it works. Token and cost display. Presets. Chinese and English UI. Light and dark themes that follow Excel.
 
-The tray app (`app/`) starts the daemon and registers the add-in with Excel. The daemon serves the task pane and Office.js locally on port 47834.
+<table>
+  <tr>
+    <td width="33%" align="center"><img src="docs/images/greeting-en.png" alt="The welcome screen with suggested tasks."></td>
+    <td width="33%" align="center"><img src="docs/images/chat-en-dark.png" alt="A conversation in dark mode."></td>
+    <td width="33%" align="center"><img src="docs/images/settings-en.png" alt="Settings: language, appearance, approvals, workspace and context files."></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Start from a suggestion or your own words</sub></td>
+    <td align="center"><sub>Follows Excel's theme, or pick one</sub></td>
+    <td align="center"><sub>Language, appearance, workspace, model</sub></td>
+  </tr>
+</table>
 
-## Requirements
+## Quick start
 
-- Windows 10 or 11 with desktop Microsoft Excel (Microsoft 365, or Excel 2021 or later; ExcelApi 1.9 or later).
-- Node.js 20.18.1 or later.
-- A model: a signed-in [Claude Code](https://docs.claude.com/en/docs/claude-code/overview), or an API key for an Anthropic-compatible provider.
-- Optional: [uv](https://docs.astral.sh/uv/) and a checkout of ThepExcelMCP for the COM tools; Python and uv for the evaluation harness.
-
-## Install
+**You need:** Windows 10 or 11 with desktop Excel (Microsoft 365, or Excel 2021 or later), Node.js 20.18.1 or later, and a model: a signed-in [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) or an API key for an Anthropic-compatible provider.
 
 ```bash
-git clone <this repository>
+git clone https://github.com/ALbum3270/excel-assistant.git
 cd excel-assistant
 npm install
 npm start
 ```
 
-A tray icon appears. On first launch it offers to install the add-in into Excel; click **Install**. Quit and reopen Excel, then open **Excel Assistant** from **Insert → Add-ins** (or **Home → Add-ins**). The add-in is registered through the `WEF\Developer` registry key, so no admin rights or network share are needed.
+1. A tray icon appears. On first launch it offers to install the add-in into Excel; click **Install**. It registers through the `WEF\Developer` registry key, so no admin rights or network share are needed.
+2. Quit and reopen Excel, then open **Excel Assistant** from **Home → Add-ins**.
+3. Open a saved workbook and ask, for example: _"Add a total row under the sales table"_ or _"Why is D14 showing #N/A?"_
 
-To watch the daemon's log in a terminal, run `npm run dev` instead of `npm start`.
+`npm start` builds the pane first. To watch the daemon's log in a terminal, run `npm run dev` instead.
 
 ## Choose a model
 
-Without configuration the agent uses your Claude Code login. You can enter an Anthropic-compatible base URL, credential and tier model IDs in the pane's **Setup → Model connection** section. Saving restarts the local daemon. Alternatively, copy `.env.example` to `.env` and fill it in. This file is read only by this project and does not change your global Claude Code. Example for Qwen:
+With no configuration it uses your Claude Code login. To use another provider, enter its Anthropic-compatible base URL, credential and model IDs under **Settings → Model connection** (saving restarts the local daemon), or copy `.env.example` to `.env`. That file is read only by this project and leaves your global Claude Code untouched. Example for Qwen:
 
 ```bash
 ANTHROPIC_BASE_URL=https://dashscope.aliyuncs.com/apps/anthropic
@@ -99,66 +87,98 @@ ANTHROPIC_DEFAULT_SONNET_MODEL=qwen3.7-plus
 ANTHROPIC_DEFAULT_OPUS_MODEL=qwen3.7-max
 ```
 
-The model picker in the pane switches between these three tiers.
+The model picker in the input bar switches between these three tiers.
 
-## Optional: advanced tools and skills
+<details>
+<summary><b>Optional: COM tools, finance skills and built-in tools</b></summary>
 
 Copy `agent.config.example.json` to `agent.config.json` to turn on:
 
-- **COM tools** (`mcpServers`): point it at your ThepExcelMCP checkout.
-- **Finance skills** (`plugins`, `skills`): point it at `financial-services-plugins`.
+- **COM tools** (`mcpServers`): point it at your [ThepExcelMCP](https://github.com/ThepExcel/ThepExcelMCP) checkout (needs [uv](https://docs.astral.sh/uv/)).
+- **Finance skills** (`plugins`, `skills`): point it at [financial-services-plugins](https://github.com/anthropics/financial-services-plugins).
 - **Built-in tools** (`builtinTools`): the default is read-only file access plus web search.
 
-By default the agent does not inherit the MCP servers from your global `~/.claude.json` (`inheritUserMcpServers: false`), which keeps its context small and predictable.
+The agent does not inherit the MCP servers from your global `~/.claude.json` (`inheritUserMcpServers: false`), which keeps its context small and predictable.
 
-## Using it
+</details>
 
-- Open a saved workbook, open the pane and describe what you want, for example "Add a total row under the sales table" or "Why is D14 showing #N/A?".
-- Each write shows a card with its range, commit status, verification level, formula errors and restore link. Small cell edits also show before/after values.
-- You can queue a follow-up message while the agent is still working.
-- **History** (in the chat header) lists this workbook's past conversations; you can reopen, continue, export or delete them. Imported conversation archives are view-only and cannot be resumed by the agent.
-- **Backups** tab lists the restore points: search them, restore one, or clear them. You can also just ask "undo your last change".
+## How it works
 
-![The Backups tab listing restore points, each with the operation, the range it covered, the number of cells and a Restore button.](docs/images/backups.png)
-- **Setup** tab: choose the workspace folder and context files, configure the model provider, see the last turn and current agent run's token usage and estimated cost, and turn on **Ask before changing the workbook** to approve each edit.
+```mermaid
+flowchart LR
+  subgraph Excel["Excel (Windows)"]
+    Pane["Task pane<br/>React · Office.js tools<br/>restore log (IndexedDB)"]
+  end
+  subgraph Local["Your machine"]
+    Daemon["Daemon (Node)<br/>Claude Agent SDK loop<br/>in-process MCP tools<br/>excel_bash sandbox · approvals"]
+    COM["ThepExcelMCP<br/>(optional, COM)"]
+  end
+  Model["Model API<br/>Claude or compatible"]
+  Pane <-- "WebSocket 127.0.0.1:47833" --> Daemon
+  Daemon <-- HTTPS --> Model
+  Daemon <-- "stdio MCP" --> COM
+  COM -. COM .-> Excel
+```
+
+The tray app (`app/`) starts the daemon and registers the add-in with Excel. The daemon serves the task pane and Office.js locally on port 47834. The pane runs every Excel tool itself through Office.js, so the workbook is only ever changed from inside Excel.
+
+## Built from open source
+
+Excel Assistant is assembled from projects that already do each part well; this repository is the glue between them, the fixes found along the way, and the tests and evaluation harness that check the result. Upstream code is copied at pinned commits by scripts in `scripts/`, with small patches that must each match exactly once.
+
+| Part                                                             | Taken from                                                                                                                         | License          |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| Daemon, WebSocket bridge, tray app, sideloading                  | [Draftspect](https://github.com/LeonardHope/Draftspect-Add-Ins-for-Word-and-Excel-Powered-by-Claude-Code)                          | MIT              |
+| Chat components: conversation, messages, approvals, usage, input | [AI Elements](https://github.com/vercel/ai-elements) on [shadcn/ui](https://github.com/shadcn-ui/ui)                               | Apache-2.0 / MIT |
+| Visual design: colors, shadows, greeting and input styling       | [Vercel chatbot template](https://github.com/vercel/ai-chatbot), [Geist](https://vercel.com/font) typeface                         | Apache-2.0 / OFL |
+| Tool cards, Before/After tables, cell links, tool grouping       | [pi-for-excel](https://github.com/tmustier/pi-for-excel) (design), side-panel layout after [Cline](https://github.com/cline/cline) | MIT / Apache-2.0 |
+| Excel Office.js API layer                                        | [office-agents](https://github.com/hewliyang/office-agents)                                                                        | MIT              |
+| Workbook context, formula explain and trace, restore log         | [pi-for-excel](https://github.com/tmustier/pi-for-excel)                                                                           | MIT              |
+| Task-solving protocol in the system prompt                       | [fabric-rlm](https://github.com/pawarbi/fabric-rlm-core)                                                                           | MIT              |
+| Sandboxed shell                                                  | [just-bash](https://github.com/vercel-labs/just-bash)                                                                              | Apache-2.0       |
+| COM tools for advanced Excel features                            | [ThepExcelMCP](https://github.com/ThepExcel/ThepExcelMCP)                                                                          | MIT              |
+| Finance skills                                                   | [financial-services-plugins](https://github.com/anthropics/financial-services-plugins)                                             | Apache-2.0       |
+| Agent loop                                                       | [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk)                                                   | Anthropic terms  |
+
+What this repository adds on top: overwrite protection and a commit receipt from every write; cancellation and ownership checks on tool calls; one-click undo and redo per change; approve-before-apply built on the SDK's permission hook; a workbook write coordinator that refuses to act on a stale view of the sheet; fixes to upstream code found by testing in real Excel; and an evaluation harness. Full credits are in [NOTICE.md](NOTICE.md); a comparison with other open-source Excel agents is in [docs/open-source-comparison.md](docs/open-source-comparison.md).
 
 ## Safety and privacy
 
-- The workbook is changed only through Office.js tools. The agent is blocked from writing Office files on disk, and VBA and Python in Excel are disabled.
-- Overwriting cells that already hold data needs an explicit flag, and every write reports whether it was committed.
-- Restore points are kept locally in the task pane's storage.
+- The workbook is changed only through Office.js tools inside Excel. The agent cannot write Office files on disk, and VBA and Python in Excel are disabled.
+- Overwriting cells that already hold data needs an explicit flag, and every write reports whether Excel committed it.
+- Restore points stay local, in the task pane's storage. Before each COM write, the workbook file is also copied to `~/.claude/office-addins/com-backups/`.
 - The conversation, including the cell contents the model reads, goes to the model provider you configure. Web search and fetch, when the agent uses them, go to the web.
 
 ## Evaluation
 
-`evals/run_spreadsheetbench.py` runs [SpreadsheetBench](https://github.com/RUCKBReasoning/SpreadsheetBench) Verified-400 tasks in live Excel and grades them with the benchmark's own comparison code. The task prompt is the official one, plus one line adapting it to a live workbook. The harness pins the configuration of each run, separates infrastructure failures from agent failures, and counts edits outside the answer range, calibrated against the reference solution.
+`evals/run_spreadsheetbench.py` runs [SpreadsheetBench](https://github.com/RUCKBReasoning/SpreadsheetBench) Verified-400 tasks in live Excel and grades them with the benchmark's own comparison code. The task prompt is the official one, plus one line adapting it to a live workbook. The harness pins each run's configuration, separates infrastructure failures from agent failures, and counts edits outside the answer range.
 
-| Run | Model | Tasks | Passed |
-| --- | --- | --- | --- |
-| 2026-09-19, fixed 10-task sample | qwen3.7-flash | 10 | 4 |
-| 2026-09-19, same 10 tasks after the next round of work | qwen3.7-flash | 10 | 5 |
+| Run                                                    | Model         | Tasks | Passed |
+| ------------------------------------------------------ | ------------- | ----- | ------ |
+| 2026-09-19, fixed 10-task sample                       | qwen3.7-flash | 10    | 4      |
+| 2026-09-19, same 10 tasks after the next round of work | qwen3.7-flash | 10    | 5      |
 
-Seven of those ten tasks changed verdict between the two runs, in both directions. With a small model on a small sample, run-to-run variance is larger than the difference between the runs, so neither number shows an improvement.
-
-For scale, the best open-source entry on the official leaderboard is fabric-rlm with MiniMax M3 at 82.5% on all 400 tasks. It edits `.xlsx` files with Python rather than driving live Excel, so the numbers are not directly comparable. A 10-task sample on a small model is a smoke test, not a score.
+Seven of those ten tasks changed verdict between the two runs, in both directions: with a small model on a small sample, run-to-run variance is larger than the difference, so neither number shows an improvement. For scale, the best open-source entry on the official leaderboard (fabric-rlm with MiniMax M3) scores 82.5% on all 400 tasks by editing `.xlsx` files with Python rather than driving live Excel, so the numbers are not directly comparable.
 
 ## Development
 
 ```bash
 npm test                      # Node tests
+npm run build:pane            # bundle the task pane (start and dev run this first)
+npm run vendor:ai-elements    # re-copy the AI Elements components and theme
 npm run vendor:office-agents  # rebuild the office-agents bundle
 npm run vendor:pi-context     # rebuild the pi-for-excel bundles
 python -X utf8 evals/run_spreadsheetbench.py --dataset <path/to/spreadsheetbench_verified_400> --run <name> --model haiku --ids <task ids>
 ```
 
-- The vendor scripts need the upstream checkouts at their pinned commits with clean working trees.
-- After changing task-pane code, reload the pane in Excel.
-- Design notes and progress are logged in [docs/optimization-analysis.md](docs/optimization-analysis.md).
+- The pane lives in `taskpane/app/`: `core/` holds the DOM-free logic (bridge, tool execution, state), `view/` the React UI, and `vendor/` the copied components.
+- Vendor scripts need the upstream checkouts at their pinned commits with clean working trees.
+- After changing pane code, run `npm run build:pane` and reload the pane in Excel.
 
 ## Limitations
 
 - Built and tested on Windows only; the COM tools are Windows-only.
-- Restore remains incomplete for chart deletion and data-source changes, PivotTables and duplicated sheets. COM writes have no cell-level restore point; instead the workbook file is copied to `~/.claude/office-addins/com-backups/` before each one, which captures the **last saved** state (ten kept per workbook, `EXCEL_COM_BACKUP=off` turns it off). New table, filter, hidden-row/column and freeze-pane recovery paths still need live Excel acceptance.
+- Restore is incomplete for chart deletion and data-source changes, PivotTables and duplicated sheets. COM writes get a file copy of the **last saved** workbook instead of a cell-level restore point (ten kept per workbook; `EXCEL_COM_BACKUP=off` turns it off).
 - After rows, columns or a sheet are deleted and restored, formulas on other sheets that pointed at them stay `#REF!`.
 
 ## License
