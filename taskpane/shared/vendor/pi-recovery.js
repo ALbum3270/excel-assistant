@@ -11403,7 +11403,6 @@ function estimateModifyStructureCellCount(state) {
 }
 
 // src/workbook/recovery/constants.ts
-var MAX_RECOVERY_ENTRIES = 120;
 var MAX_RECOVERY_CELLS = 2e4;
 
 // src/workbook/recovery/structure-capture.ts
@@ -11817,7 +11816,8 @@ var persistedSnapshotBase = {
   workbookId: typebox_exports.Optional(typebox_exports.String()),
   workbookLabel: typebox_exports.Optional(typebox_exports.String()),
   restoredFromSnapshotId: typebox_exports.Optional(typebox_exports.String()),
-  restoreOrder: typebox_exports.Optional(typebox_exports.Integer({ minimum: 0 }))
+  restoreOrder: typebox_exports.Optional(typebox_exports.Integer({ minimum: 0 })),
+  restoreDepth: typebox_exports.Optional(typebox_exports.Integer({ minimum: 0 }))
 };
 var optionalGrids = {
   beforeValues: typebox_exports.Optional(RecoveryGridSchema),
@@ -11891,6 +11891,7 @@ function toSnapshot(persisted) {
   if (persisted.workbookId !== void 0) snapshot.workbookId = persisted.workbookId;
   if (persisted.workbookLabel !== void 0) snapshot.workbookLabel = persisted.workbookLabel;
   if (persisted.restoreOrder !== void 0) snapshot.restoreOrder = persisted.restoreOrder;
+  if (persisted.restoreDepth !== void 0) snapshot.restoreDepth = persisted.restoreDepth;
   if (persisted.restoredFromSnapshotId !== void 0) {
     snapshot.restoredFromSnapshotId = persisted.restoredFromSnapshotId;
   }
@@ -12005,6 +12006,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
         toolName: "restore_snapshot",
         toolCallId: inverseCallId,
         restoreOrder: args.restoreOrder,
+        restoreDepth: args.restoreDepth ?? (snapshot.restoreDepth ?? 0) + 1,
         address: snapshot.address,
         changedCount: snapshot.changedCount,
         formatRangeState: currentState2,
@@ -12030,6 +12032,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
         toolName: "restore_snapshot",
         toolCallId: inverseCallId,
         restoreOrder: args.restoreOrder,
+        restoreDepth: args.restoreDepth ?? (snapshot.restoreDepth ?? 0) + 1,
         address: snapshot.address,
         changedCount: snapshot.changedCount,
         modifyStructureState: currentState2,
@@ -12055,6 +12058,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
         toolName: "restore_snapshot",
         toolCallId: inverseCallId,
         restoreOrder: args.restoreOrder,
+        restoreDepth: args.restoreDepth ?? (snapshot.restoreDepth ?? 0) + 1,
         address: snapshot.address,
         changedCount: snapshot.changedCount,
         cellCount: snapshot.cellCount,
@@ -12081,6 +12085,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
         toolName: "restore_snapshot",
         toolCallId: inverseCallId,
         restoreOrder: args.restoreOrder,
+        restoreDepth: args.restoreDepth ?? (snapshot.restoreDepth ?? 0) + 1,
         address: snapshot.address,
         changedCount: snapshot.changedCount,
         commentThreadState: currentState2,
@@ -12106,6 +12111,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
         toolName: "restore_snapshot",
         toolCallId: inverseCallId,
         restoreOrder: args.restoreOrder,
+        restoreDepth: args.restoreDepth ?? (snapshot.restoreDepth ?? 0) + 1,
         // A restore can rename the chart, so the inverse must be stored at
         // the post-restore identity for the rollback backup to resolve.
         address: applied.address,
@@ -12135,6 +12141,7 @@ async function restoreWorkbookRecoverySnapshot(args) {
       toolName: "restore_snapshot",
       toolCallId: inverseCallId,
       restoreOrder: args.restoreOrder,
+      restoreDepth: args.restoreDepth ?? (snapshot.restoreDepth ?? 0) + 1,
       address: snapshot.address,
       changedCount: inverseChangedCount,
       beforeValues: currentState.values,
@@ -13999,7 +14006,6 @@ function clampLimit(limit) {
   if (!Number.isFinite(limit)) return 20;
   const rounded = Math.floor(limit);
   if (rounded <= 0) return 0;
-  if (rounded > MAX_RECOVERY_ENTRIES) return MAX_RECOVERY_ENTRIES;
   return rounded;
 }
 function matchesWorkbook(snapshot, workbookId) {
@@ -14034,7 +14040,7 @@ var WorkbookRecoveryLog = class {
     const settings2 = await this.dependencies.getSettingsStore();
     const payload = await readPersistedWorkbookRecoveryPayload(settings2);
     this.snapshots = parsePersistedSnapshots(payload, {
-      maxEntries: MAX_RECOVERY_ENTRIES
+      maxEntries: Number.MAX_SAFE_INTEGER
     });
     this.loaded = true;
   }
@@ -14065,7 +14071,7 @@ var WorkbookRecoveryLog = class {
     }
   }
   async appendSnapshot(snapshot) {
-    this.snapshots = [snapshot, ...this.snapshots].slice(0, MAX_RECOVERY_ENTRIES);
+    this.snapshots = [snapshot, ...this.snapshots];
     await this.persist();
     return snapshot;
   }
@@ -14092,7 +14098,8 @@ var WorkbookRecoveryLog = class {
       workbookId: scope.workbookId,
       workbookLabel: scope.workbookLabel,
       ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {},
-      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {}
+      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {},
+      ...args.restoreDepth !== void 0 ? { restoreDepth: args.restoreDepth } : {}
     });
   }
   async appendFormatCellsWithContext(args, scopeOverride) {
@@ -14117,7 +14124,8 @@ var WorkbookRecoveryLog = class {
       workbookId: scope.workbookId,
       workbookLabel: scope.workbookLabel,
       ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {},
-      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {}
+      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {},
+      ...args.restoreDepth !== void 0 ? { restoreDepth: args.restoreDepth } : {}
     });
   }
   async appendModifyStructureWithContext(args, scopeOverride) {
@@ -14143,7 +14151,8 @@ var WorkbookRecoveryLog = class {
       workbookId: scope.workbookId,
       workbookLabel: scope.workbookLabel,
       ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {},
-      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {}
+      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {},
+      ...args.restoreDepth !== void 0 ? { restoreDepth: args.restoreDepth } : {}
     });
   }
   async appendConditionalFormatWithContext(args, scopeOverride) {
@@ -14168,7 +14177,8 @@ var WorkbookRecoveryLog = class {
       workbookId: scope.workbookId,
       workbookLabel: scope.workbookLabel,
       ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {},
-      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {}
+      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {},
+      ...args.restoreDepth !== void 0 ? { restoreDepth: args.restoreDepth } : {}
     });
   }
   async appendCommentThreadWithContext(args, scopeOverride) {
@@ -14190,7 +14200,8 @@ var WorkbookRecoveryLog = class {
       workbookId: scope.workbookId,
       workbookLabel: scope.workbookLabel,
       ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {},
-      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {}
+      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {},
+      ...args.restoreDepth !== void 0 ? { restoreDepth: args.restoreDepth } : {}
     });
   }
   async appendChartWithContext(args, scopeOverride) {
@@ -14212,7 +14223,8 @@ var WorkbookRecoveryLog = class {
       workbookId: scope.workbookId,
       workbookLabel: scope.workbookLabel,
       ...args.restoredFromSnapshotId !== void 0 ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {},
-      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {}
+      ...args.restoreOrder !== void 0 ? { restoreOrder: args.restoreOrder } : {},
+      ...args.restoreDepth !== void 0 ? { restoreDepth: args.restoreDepth } : {}
     });
   }
   async append(args) {
@@ -14256,6 +14268,12 @@ var WorkbookRecoveryLog = class {
     const scope = await this.scope.resolveForRead();
     if (!scope) return [];
     return this.list({ limit, workbookId: scope.workbookId });
+  }
+  async deleteSnapshots(snapshotIds) {
+    await this.ensureLoaded();
+    const ids = new Set(snapshotIds);
+    this.snapshots = this.snapshots.filter((snapshot) => !ids.has(snapshot.id));
+    await this.persist();
   }
   async delete(snapshotId) {
     await this.ensureLoaded();
@@ -14303,6 +14321,7 @@ var WorkbookRecoveryLog = class {
       scope,
       toolCallId: options.toolCallId,
       restoreOrder: options.restoreOrder,
+      restoreDepth: options.restoreDepth,
       dependencies: {
         applySnapshot: this.dependencies.applySnapshot,
         applyFormatCellsSnapshot: this.dependencies.applyFormatCellsSnapshot,

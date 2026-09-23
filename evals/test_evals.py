@@ -11,7 +11,7 @@ from pathlib import Path
 import openpyxl
 
 from run_spreadsheetbench import managed_workbook, qualified_answer_position, select_tasks, summarize, tool_error_summary
-from workbook_diff import authorized_ranges, unauthorized_edits
+from workbook_diff import authorized_ranges, unauthorized_edits, compare_answer_workbooks
 
 
 def same_value(a, b):
@@ -75,6 +75,21 @@ class WorkbookDiffTest(unittest.TestCase):
     def test_authorized_ranges_parse_multi_part_positions(self):
         boxes = authorized_ranges("'My Sheet'!A1:B2,C5", "First")
         self.assertEqual(boxes, {"My Sheet": [(1, 1, 2, 2)], "First": [(5, 3, 5, 3)]})
+        for position in ["Sheet1'!A1,'Sheet2'!B2", "'Sheet1!'A1,'Sheet2!'B2'", "'Sheet1'!'A1,Sheet2!B2"]:
+            self.assertEqual(authorized_ranges(position, "First"), {"Sheet1": [(1, 1, 1, 1)], "Sheet2": [(2, 2, 2, 2)]})
+
+    def test_quoted_sheet_names_reach_both_comparison_and_preservation(self):
+        name = "Bob's, Q1!"
+        before = self.save("a.xlsx", {(name, "A1"): 1}, sheets=(name,))
+        after = self.save("b.xlsx", {(name, "A1"): 2}, sheets=(name,))
+        position = "'Bob''s, Q1!'!$A$1"
+        self.assertEqual(authorized_ranges(position, "Other"), {name: [(1, 1, 1, 1)]})
+        self.assertEqual(unauthorized_edits(before, after, position, same_value)["unauthorized_cells"], 0)
+        def compare(a, b, sheet, cells):
+            self.assertEqual((sheet, cells), (name, "A1"))
+            return a[sheet][cells].value == b[sheet][cells].value, "different"
+        self.assertFalse(compare_answer_workbooks(before, after, "Cell", position, cell_compare=compare)[0])
+        self.assertTrue(compare_answer_workbooks(before, before, "Cell", position, cell_compare=compare)[0])
 
 
 class SelectionTest(unittest.TestCase):
@@ -95,8 +110,18 @@ class SelectionTest(unittest.TestCase):
         task = {"answer_position": "A1:B2,D4", "answer_sheet": "Out"}
         self.assertEqual(qualified_answer_position(task), "'Out'!A1:B2,'Out'!D4")
 
+    def test_sheet_list_is_distinct_from_a_sheet_whose_name_contains_commas(self):
+        task = {"answer_position": "A1", "answer_sheet": "Output,Source"}
+        self.assertEqual(qualified_answer_position(task, ["Output", "Source"]), "'Output'!A1")
+        self.assertEqual(qualified_answer_position(task, ["Output,Source"]), "'Output,Source'!A1")
+        self.assertEqual(qualified_answer_position({"answer_position": "A1", "answer_sheet": "Bob's"}), "'Bob''s'!A1")
+
 
 class SummaryTest(unittest.TestCase):
+    def test_missing_agent_status_is_counted(self):
+        record = {"instruction_type": "Cell", "infra_status": "harness_error", "agent_status": None, "passed": False}
+        self.assertEqual(summarize("failed", [record])["agent_statuses"], {"None": 1})
+
     def test_tool_errors_are_grouped_by_root_cause(self):
         with tempfile.TemporaryDirectory() as directory:
             transcript = Path(directory) / "transcript.jsonl"

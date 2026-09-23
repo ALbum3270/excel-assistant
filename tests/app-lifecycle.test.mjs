@@ -112,3 +112,29 @@ test("Stop cancels a manual restart while the old daemon is still exiting", asyn
   assert.equal(app.spawned(), 1);
   assert.equal(app.sandbox.daemonStatus, "stopped");
 });
+
+test("manual restart replaces the old process without a subsequent Stop", async () => {
+  const app = lifecycle({ deferExit: true });
+  await app.api.startDaemon();
+  const old = app.sandbox.daemonProcess;
+  app.api.restartDaemon();
+  old.emit("exit", null, "SIGTERM");
+  await new Promise(setImmediate);
+  assert.equal(app.spawned(), 2);
+  assert.notEqual(app.sandbox.daemonProcess, old);
+});
+
+test("Stop followed by Start retires the pending workspace lookup", async () => {
+  const releases = [];
+  const app = lifecycle({ workspace: () => new Promise((resolve) => releases.push(resolve)) });
+  const old = app.api.startDaemon();
+  app.api.stopDaemon();
+  const fresh = app.api.startDaemon();
+  releases[0](null);
+  await old;
+  const same = app.api.startDaemon();
+  assert.equal(same, fresh, "the old finally must not clear the new start");
+  releases[1](null);
+  await fresh;
+  assert.equal(app.spawned(), 1);
+});

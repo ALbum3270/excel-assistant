@@ -22,12 +22,13 @@ import subprocess
 import sys
 import time
 import urllib.request
+import openpyxl
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 from embed_taskpane import embed_taskpane, read_manifest
-from workbook_diff import unauthorized_edits
+from workbook_diff import unauthorized_edits, parse_answer_position, compare_answer_workbooks
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DAEMON = "http://127.0.0.1:47834"
@@ -75,12 +76,21 @@ INFRA_STATUSES = {"no_pane", "busy", "bad_request"}
 XL_MAXIMIZED = -4137
 
 
-def qualified_answer_position(task: dict) -> str:
+def qualified_answer_position(task: dict, sheet_names: list[str] | None = None) -> str:
     position = task["answer_position"]
     sheet = task.get("answer_sheet")
-    if not sheet or "!" in position:
-        return position
-    return ",".join(f"'{sheet}'!{part.strip()}" for part in position.split(","))
+    ranges = parse_answer_position(position)
+    if sheet and sheet_names and sheet not in sheet_names and any(name is None for name, _ in ranges):
+        # Some records list all involved sheets here. Unqualified addresses
+        # follow the official grader and refer to the workbook's first sheet.
+        if all(name.strip() in sheet_names for name in sheet.split(",")):
+            sheet = sheet_names[0]
+        else:
+            raise ValueError(f"answer_sheet does not exist in workbook: {sheet}")
+    return ",".join(
+        "'" + (name or sheet).replace("'", "''") + "'!" + cells if name or sheet else cells
+        for name, cells in ranges
+    )
 
 
 def daemon_request(path: str, token: str, payload: dict | None = None, timeout: float = 30) -> dict:
@@ -252,7 +262,11 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
     workbook_path = task_dir / f"{task_id}.xlsx"
     shutil.copyfile(init_file, workbook_path)
     embed_taskpane(workbook_path, *addin)
-    answer_position = qualified_answer_position(task)
+    source_workbook = openpyxl.load_workbook(init_file, read_only=True)
+    try:
+        answer_position = qualified_answer_position(task, source_workbook.sheetnames)
+    finally:
+        source_workbook.close()
     prompt = PROMPT.format(
         instruction=task["instruction"], instruction_type=task["instruction_type"], answer_position=answer_position
     )
@@ -404,7 +418,7 @@ def summarize(run: str, results: list[dict]) -> dict:
             for g in [[r for r in results if r["instruction_type"] == kind]]
         },
         "infra_statuses": {s: sum(r["infra_status"] == s for r in results) for s in sorted({r["infra_status"] for r in results})},
-        "agent_statuses": {str(s): sum(r["agent_status"] == s for r in results) for s in sorted({str(r["agent_status"]) for r in results})},
+        "agent_statuses": {s: sum(str(r["agent_status"]) == s for r in results) for s in sorted({str(r["agent_status"]) for r in results})},
         "failure_classes": {
             status: sum((r.get("failure_class") or "unknown") == status for r in results)
             for status in sorted({r.get("failure_class") or "unknown" for r in results})
@@ -469,7 +483,10 @@ def main() -> None:
     keep_awake()
 
     sys.path.insert(0, str(args.spreadsheetbench / "evaluation"))
-    from evaluation import compare_cell_value, compare_workbooks
+    from evaluation import compare_cell_value, cell_level_compare
+
+    def compare_workbooks(*args):
+        return compare_answer_workbooks(*args, cell_compare=cell_level_compare)
 
     args.compare_values = compare_cell_value
     tasks = json.loads((args.dataset / "dataset.json").read_text(encoding="utf-8"))

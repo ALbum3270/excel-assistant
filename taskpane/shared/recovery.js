@@ -158,7 +158,7 @@ async function readCustomSnapshots() {
 async function writeCustomSnapshots(snapshots) {
   const workbookId = await customWorkbookId();
   if (!workbookId) return;
-  await recoverySettings.set(`${CUSTOM_RECOVERY_PREFIX}${workbookId}`, snapshots.slice(0, 120));
+  await recoverySettings.set(`${CUSTOM_RECOVERY_PREFIX}${workbookId}`, snapshots);
 }
 
 async function appendCustomSnapshot({
@@ -168,6 +168,7 @@ async function appendCustomSnapshot({
   state,
   restoredFromSnapshotId,
   restoreOrder,
+  restoreDepth,
 }) {
   const workbookId = await customWorkbookId();
   if (!workbookId) return null;
@@ -183,6 +184,7 @@ async function appendCustomSnapshot({
     customState: state,
     ...(restoredFromSnapshotId ? { restoredFromSnapshotId } : {}),
     ...(restoreOrder !== undefined ? { restoreOrder } : {}),
+    ...(restoreDepth !== undefined ? { restoreDepth } : {}),
   };
   const snapshots = await readCustomSnapshots();
   snapshots.unshift(snapshot);
@@ -918,6 +920,7 @@ async function restoreCustomSnapshot(
   snapshot,
   toolCallId = `restore_${snapshot.id}`,
   restoreOrder,
+  restoreDepth = (snapshot.restoreDepth ?? 0) + 1,
 ) {
   const inverseState = await restoreCustomState(snapshot.customState);
   const inverse = await appendCustomSnapshot({
@@ -927,6 +930,7 @@ async function restoreCustomSnapshot(
     state: inverseState,
     restoredFromSnapshotId: snapshot.id,
     restoreOrder,
+    restoreDepth,
   });
   return {
     restoredSnapshotId: snapshot.id,
@@ -1319,6 +1323,19 @@ async function recordMutationDiff(toolCallId, captures) {
 }
 
 export async function prepareMutationRecovery(name, args, toolCallId) {
+  const commit = await prepareRecovery(name, args, toolCallId);
+  return async (...result) => {
+    try {
+      return await commit(...result);
+    } finally {
+      await pruneRecoveryHistory().catch((error) =>
+        console.warn("Recovery retention failed", error),
+      );
+    }
+  };
+}
+
+async function prepareRecovery(name, args, toolCallId) {
   if (
     (name === "excel_modify_sheet_structure" &&
       ["hide", "unhide", "freeze", "unfreeze"].includes(args?.operation)) ||
@@ -1423,6 +1440,7 @@ function compactSnapshotGroup(snapshots) {
     changedCount: Math.max(...snapshots.map((item) => item.changedCount)),
     kinds: [...new Set(snapshots.map((item) => item.snapshotKind ?? "range_values"))],
     restoredFromSnapshotId: snapshot.restoredFromSnapshotId,
+    restoreDepth: snapshot.restoreDepth,
   };
 }
 
@@ -1447,12 +1465,28 @@ async function resolveSnapshotGroup(snapshotId) {
 
 async function allSnapshots() {
   const snapshots = [
-    ...(await recoveryLog.listForCurrentWorkbook(120)),
+    ...(await recoveryLog.listForCurrentWorkbook(Number.MAX_SAFE_INTEGER)),
     ...(await readCustomSnapshots()),
   ];
   // Keep complete operations here. Display limits are applied after grouping;
   // restore/delete must be able to find every snapshot sharing a toolCallId.
   return snapshots.sort((a, b) => Number(b.at ?? 0) - Number(a.at ?? 0));
+}
+
+// Both stores participate in the same operation budget. Run only after the
+// whole capture/restore finishes, including when a restore fails partway.
+async function pruneRecoveryHistory() {
+  const expired = groupSnapshots(await allSnapshots())
+    .slice(120)
+    .flat();
+  const piIds = expired.filter((s) => s.snapshotKind !== "custom_state").map((s) => s.id);
+  const customIds = new Set(
+    expired.filter((s) => s.snapshotKind === "custom_state").map((s) => s.id),
+  );
+  if (piIds.length) await recoveryLog.deleteSnapshots(piIds);
+  if (customIds.size) {
+    await writeCustomSnapshots((await readCustomSnapshots()).filter((s) => !customIds.has(s.id)));
+  }
 }
 
 export async function workbookHistory({
@@ -1489,13 +1523,24 @@ export async function workbookHistory({
       // Every inverse of this restore shares one id, so the restore itself is
       // one entry in the history and can be undone as a whole.
       const restoreCallId = `restore:${group[0].toolCallId || group[0].id}:${Date.now().toString(36)}`;
-      for (const [index, snapshot] of ordered.entries()) {
-        // Invert the actual sequence on every restore, including custom state.
-        const restoreOrder = ordered.length - index - 1;
-        restored.push(
-          snapshot.snapshotKind === "custom_state"
-            ? await restoreCustomSnapshot(snapshot, restoreCallId, restoreOrder)
-            : await recoveryLog.restore(snapshot.id, { toolCallId: restoreCallId, restoreOrder }),
+      const restoreDepth = lineageDepth(group[0], await allSnapshots()) + 1;
+      try {
+        for (const [index, snapshot] of ordered.entries()) {
+          // Invert the actual sequence on every restore, including custom state.
+          const restoreOrder = ordered.length - index - 1;
+          restored.push(
+            snapshot.snapshotKind === "custom_state"
+              ? await restoreCustomSnapshot(snapshot, restoreCallId, restoreOrder, restoreDepth)
+              : await recoveryLog.restore(snapshot.id, {
+                  toolCallId: restoreCallId,
+                  restoreOrder,
+                  restoreDepth,
+                }),
+          );
+        }
+      } finally {
+        await pruneRecoveryHistory().catch((error) =>
+          console.warn("Recovery retention failed", error),
         );
       }
       return {
@@ -1537,4 +1582,22 @@ export async function workbookHistory({
     default:
       throw new Error(`Unsupported workbook history action: ${action}`);
   }
+}
+
+// How many restores separate a snapshot from the change it descends from.
+// Inverses written before restoreDepth was stored have no depth of their own,
+// so count the restoredFromSnapshotId links instead; a missing ancestor stops
+// the walk, and a stored depth higher up the lineage is used when one is found.
+function lineageDepth(snapshot, snapshots) {
+  const byId = new Map(snapshots.map((item) => [item.id, item]));
+  let depth = 0;
+  let current = snapshot;
+  const seen = new Set();
+  while (current?.restoredFromSnapshotId && !seen.has(current.id)) {
+    if (current.restoreDepth !== undefined) return depth + current.restoreDepth;
+    seen.add(current.id);
+    depth += 1;
+    current = byId.get(current.restoredFromSnapshotId);
+  }
+  return depth;
 }

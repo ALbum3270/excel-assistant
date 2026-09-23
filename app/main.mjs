@@ -75,9 +75,12 @@ function openLogStream() {
 function startDaemon() {
   cancelPendingRestart();
   if (daemonProcess) return Promise.resolve();
-  startInFlight ??= spawnDaemon().finally(() => {
-    startInFlight = null;
-  });
+  if (!startInFlight) {
+    const starting = spawnDaemon().finally(() => {
+      if (startInFlight === starting) startInFlight = null;
+    });
+    startInFlight = starting;
+  }
   return startInFlight;
 }
 
@@ -172,6 +175,7 @@ function stopDaemon() {
   // Also stops a restart that a crash scheduled but has not run yet.
   cancelPendingRestart();
   lifecycle += 1;
+  startInFlight = null;
   daemonStatus = "stopped";
   daemonProcess?.kill("SIGTERM");
   updateTray();
@@ -185,7 +189,7 @@ function restartDaemon() {
     daemonStatus = "starting";
     updateTray();
     proc.once("exit", () => {
-      if (generation !== lifecycle || daemonStatus === "stopped") return;
+      if (generation !== lifecycle) return;
       restartAttempts = 0;
       startDaemon();
     });

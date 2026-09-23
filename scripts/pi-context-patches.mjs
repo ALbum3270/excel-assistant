@@ -270,7 +270,7 @@ export function patchRecoveryRestore(input) {
     source,
     "restore args take the inverse call id",
     "  dependencies: RestoreWorkbookRecoverySnapshotDependencies;\n}",
-    "  dependencies: RestoreWorkbookRecoverySnapshotDependencies;\n  /** Shared group identity and inverse application order. */\n  toolCallId?: string;\n  restoreOrder?: number;\n}",
+    "  dependencies: RestoreWorkbookRecoverySnapshotDependencies;\n  /** Shared group identity and inverse application order. */\n  toolCallId?: string;\n  restoreOrder?: number;\n  restoreDepth?: number;\n}",
   );
   source = replaceOnce(
     source,
@@ -283,7 +283,9 @@ export function patchRecoveryRestore(input) {
   if (count !== 6) throw new Error(`pi restore patch expected 6 inverse call ids, found ${count}`);
   return source
     .split(perSnapshot)
-    .join("toolCallId: inverseCallId,\n        restoreOrder: args.restoreOrder,");
+    .join(
+      "toolCallId: inverseCallId,\n        restoreOrder: args.restoreOrder,\n        restoreDepth: args.restoreDepth ?? (snapshot.restoreDepth ?? 0) + 1,",
+    );
 }
 
 export function patchRecoveryLogRestore(input) {
@@ -291,26 +293,59 @@ export function patchRecoveryLogRestore(input) {
     unixNewlines(input),
     "restore accepts the inverse call id",
     "  async restore(snapshotId: string): Promise<RestoreWorkbookRecoverySnapshotResult> {",
-    "  async restore(snapshotId: string, options: { toolCallId?: string; restoreOrder?: number } = {}): Promise<RestoreWorkbookRecoverySnapshotResult> {",
+    "  async restore(snapshotId: string, options: { toolCallId?: string; restoreOrder?: number; restoreDepth?: number } = {}): Promise<RestoreWorkbookRecoverySnapshotResult> {",
   );
   source = replaceOnce(
     source,
     "pass the inverse call id on",
     "    return restoreWorkbookRecoverySnapshot({\n      snapshot,\n      scope,",
-    "    return restoreWorkbookRecoverySnapshot({\n      snapshot,\n      scope,\n      toolCallId: options.toolCallId,\n      restoreOrder: options.restoreOrder,",
+    "    return restoreWorkbookRecoverySnapshot({\n      snapshot,\n      scope,\n      toolCallId: options.toolCallId,\n      restoreOrder: options.restoreOrder,\n      restoreDepth: options.restoreDepth,",
+  );
+  // Retention belongs to the adapter: an operation can span Pi and custom
+  // storage. Never evict a member while another member is being restored.
+  source = replaceOnce(
+    source,
+    "adapter owns append retention",
+    "this.snapshots = [snapshot, ...this.snapshots].slice(0, MAX_RECOVERY_ENTRIES);",
+    "this.snapshots = [snapshot, ...this.snapshots];",
+  );
+  source = replaceOnce(
+    source,
+    "load complete operation groups",
+    "maxEntries: MAX_RECOVERY_ENTRIES,",
+    "maxEntries: Number.MAX_SAFE_INTEGER,",
+  );
+  source = replaceOnce(
+    source,
+    "adapter can read all snapshots",
+    "  if (rounded > MAX_RECOVERY_ENTRIES) return MAX_RECOVERY_ENTRIES;",
+    "",
+  );
+  source = replaceOnce(
+    source,
+    "batch retention deletion",
+    "  async delete(snapshotId: string): Promise<boolean> {",
+    `  async deleteSnapshots(snapshotIds: string[]): Promise<void> {
+    await this.ensureLoaded();
+    const ids = new Set(snapshotIds);
+    this.snapshots = this.snapshots.filter((snapshot) => !ids.has(snapshot.id));
+    await this.persist();
+  }
+
+  async delete(snapshotId: string): Promise<boolean> {`,
   );
   // Snapshot plus the six append argument interfaces share this metadata.
   const field = "  restoredFromSnapshotId?: string;";
   if (source.split(field).length - 1 !== 7)
     throw new Error("Expected seven recovery metadata interfaces");
-  source = source.split(field).join(`${field}\n  restoreOrder?: number;`);
+  source = source.split(field).join(`${field}\n  restoreOrder?: number;\n  restoreDepth?: number;`);
   const append =
     "...(args.restoredFromSnapshotId !== undefined ? { restoredFromSnapshotId: args.restoredFromSnapshotId } : {}),";
   if (source.split(append).length - 1 !== 6) throw new Error("Expected six recovery append paths");
   return source
     .split(append)
     .join(
-      `${append}\n      ...(args.restoreOrder !== undefined ? { restoreOrder: args.restoreOrder } : {}),`,
+      `${append}\n      ...(args.restoreOrder !== undefined ? { restoreOrder: args.restoreOrder } : {}),\n      ...(args.restoreDepth !== undefined ? { restoreDepth: args.restoreDepth } : {}),`,
     );
 }
 
@@ -319,12 +354,12 @@ export function patchRecoveryOrderCodec(input) {
     unixNewlines(input),
     "persist inverse application order",
     "  restoredFromSnapshotId: Type.Optional(Type.String()),",
-    "  restoredFromSnapshotId: Type.Optional(Type.String()),\n  restoreOrder: Type.Optional(Type.Integer({ minimum: 0 })),",
+    "  restoredFromSnapshotId: Type.Optional(Type.String()),\n  restoreOrder: Type.Optional(Type.Integer({ minimum: 0 })),\n  restoreDepth: Type.Optional(Type.Integer({ minimum: 0 })),",
   );
   return replaceOnce(
     source,
     "reload inverse application order",
     "  if (persisted.restoredFromSnapshotId !== undefined) {",
-    "  if (persisted.restoreOrder !== undefined) snapshot.restoreOrder = persisted.restoreOrder;\n  if (persisted.restoredFromSnapshotId !== undefined) {",
+    "  if (persisted.restoreOrder !== undefined) snapshot.restoreOrder = persisted.restoreOrder;\n  if (persisted.restoreDepth !== undefined) snapshot.restoreDepth = persisted.restoreDepth;\n  if (persisted.restoredFromSnapshotId !== undefined) {",
   );
 }

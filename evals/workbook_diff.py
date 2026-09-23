@@ -19,18 +19,74 @@ def _parse_range(cell_range: str) -> tuple[int, int, int, int]:
     return r1, column_index_from_string(c1), r2, column_index_from_string(c2)
 
 
+def parse_answer_position(answer_position: str) -> list[tuple[str | None, str]]:
+    """Split ranges outside quoted worksheet names, including escaped apostrophes."""
+    parts = []
+    start = 0
+    quoted = False
+    index = 0
+    while index < len(answer_position):
+        char = answer_position[index]
+        if char == "'":
+            if quoted and index + 1 < len(answer_position) and answer_position[index + 1] == "'":
+                index += 2
+                continue
+            if quoted:
+                quoted = False
+            elif not answer_position[start:index].strip():
+                quoted = True
+        elif char == "," and not quoted:
+            parts.append(answer_position[start:index])
+            start = index + 1
+        index += 1
+    if quoted:
+        raise ValueError("Unclosed worksheet-name quote in answer_position")
+    parts.append(answer_position[start:])
+    ranges = []
+    for part in parts:
+        if "!" in part:
+            sheet, _, cells = part.strip().rpartition("!")
+            if sheet.startswith("'") and sheet.endswith("'"):
+                sheet = sheet[1:-1].replace("''", "'")
+            else:
+                # Preserve the official wrapper's tolerance of a stray quote
+                # (e.g. Sheet1'!A1 or 'Sheet1!'A1 in the source dataset).
+                sheet = sheet.strip("'")
+        else:
+            sheet, cells = None, part
+        ranges.append((sheet, cells.strip().strip("'").replace("$", "")))
+    return ranges
+
+
 def authorized_ranges(answer_position: str, first_sheet: str) -> dict[str, list[tuple[int, int, int, int]]]:
     """Map sheet name -> (min_row, min_col, max_row, max_col) boxes, like the official grader."""
     boxes: dict[str, list[tuple[int, int, int, int]]] = {}
-    for part in answer_position.split(","):
-        part = part.strip()
-        if "!" in part:
-            sheet, _, cells = part.rpartition("!")
-            sheet = sheet.strip("'")
-        else:
-            sheet, cells = first_sheet, part
-        boxes.setdefault(sheet, []).append(_parse_range(cells.strip("'").replace("$", "")))
+    for sheet, cells in parse_answer_position(answer_position):
+        boxes.setdefault(sheet or first_sheet, []).append(_parse_range(cells))
     return boxes
+
+
+def compare_answer_workbooks(gt_file, proc_file, instruction_type, answer_position, *, cell_compare):
+    """Use the official cell comparator with the same address parser as preservation.
+
+    SpreadsheetBench's workbook wrapper splits on every comma / exclamation mark;
+    its cell comparator preserves the official value and formula grading rules.
+    """
+    if not Path(proc_file).exists():
+        return False, "File not exist"
+    before = openpyxl.load_workbook(gt_file, data_only=True)
+    try:
+        after = openpyxl.load_workbook(proc_file, data_only=True)
+        try:
+            for sheet, cells in parse_answer_position(answer_position):
+                passed, message = cell_compare(before, after, sheet or before.sheetnames[0], cells)
+                if not passed:
+                    return False, message
+            return True, ""
+        finally:
+            after.close()
+    finally:
+        before.close()
 
 
 def _normalized(value):

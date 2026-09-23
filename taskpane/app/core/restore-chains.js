@@ -12,6 +12,17 @@
 
 const createdTime = (group) => Date.parse(group?.createdAt ?? "") || 0;
 
+// Restores between the original change and `tip`. When the row starts at the
+// change itself the links on the page count them exactly — inverses written
+// before restoreDepth was stored have no depth of their own, so the stored
+// value is not trusted over the graph. Only a row whose change was pruned
+// needs the depth its first checkpoint recorded.
+function depthOf(root, tip, hops) {
+  if (!root.restoredFromSnapshotId) return hops;
+  if (root.restoreDepth !== undefined) return root.restoreDepth + hops;
+  return tip.restoreDepth ?? hops;
+}
+
 /**
  * Fold restore checkpoints into the change they undo.
  *
@@ -51,29 +62,29 @@ export function collapseRestoreChains(snapshots = []) {
     if (parents.has(group)) continue;
     const chain = [group];
     const seen = new Set(chain);
-    let current = group;
-    for (;;) {
-      const next = (children.get(current) ?? [])
-        // Restoring the same snapshot twice leaves two inverses; the newest is
-        // the one the next click has to restore.
-        .reduce(
-          (newest, candidate) =>
-            createdTime(candidate) >= createdTime(newest) ? candidate : newest,
-          null,
-        );
-      if (!next || seen.has(next)) break;
+    let tip = group;
+    let tipDepth = 0;
+    const pending = (children.get(group) ?? []).map((child) => [child, 1]);
+    while (pending.length) {
+      const [next, depth] = pending.shift();
+      if (seen.has(next)) continue;
       seen.add(next);
       chain.push(next);
-      current = next;
+      if (tip === group || createdTime(next) > createdTime(tip)) {
+        tip = next;
+        tipDepth = depth;
+      }
+      pending.push(...(children.get(next) ?? []).map((child) => [child, depth + 1]));
     }
-    const tip = chain[chain.length - 1];
+    chain.sort((a, b) => createdTime(a) - createdTime(b));
     const restoreCount = chain.length - 1;
     rows.push({
       ...group,
       chain: chain.map((item) => item.id),
+      memberIds: chain.flatMap((item) => (item.snapshotIds?.length ? item.snapshotIds : [item.id])),
       tipId: tip.id,
       restoreCount,
-      undone: restoreCount % 2 === 1,
+      undone: depthOf(group, tip, tipDepth) % 2 === 1,
       lastRestoredAt: restoreCount ? tip.createdAt : null,
     });
   }

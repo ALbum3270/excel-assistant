@@ -6,6 +6,7 @@ import { isMutationCall } from "./office-runner.js";
 import { localToolName, statusKeyForTool } from "./labels.js";
 import { resolveLanguage, setLanguage, t } from "./i18n.js";
 import { defaultPresets, migratePresets, presetText } from "./presets.js";
+import { collapseRestoreChains } from "./restore-chains.js";
 import { docDirFromActiveUrl, isInOrUnder } from "../../shared/paths.js";
 
 const SETTINGS_KEY = "claude-code-office-settings-v1";
@@ -264,6 +265,7 @@ export function createController({
     if (events.length > 0) items.push({ kind: "divider", id: newId(), key: "divider.end" });
     assistantItemId = null;
     set({ items });
+    if (items.some((item) => undoPoint(item))) loadBackups();
   }
 
   // ---- Agent status ------------------------------------------------------------
@@ -328,6 +330,8 @@ export function createController({
           error: outcome.error,
         });
       }
+      if (findItem(id)?.local === "excel_workbook_history" || get().view === "backups")
+        loadBackups();
     },
   });
 
@@ -658,16 +662,23 @@ export function createController({
   }
 
   async function toggleUndo(itemId) {
+    if (get().backups.busy) return;
     const item = findItem(itemId);
-    const snapshotId = item && undoPoint(item);
+    let snapshotId = item && undoPoint(item);
     if (!snapshotId) return;
-    const undone = Boolean(item.undo?.undone);
+    let undone = Boolean(item.undo?.undone);
     if (turnBusy()) {
       updateItem(itemId, { undo: { snapshotId, undone, error: t("error.restoreWhileBusy") } });
       return;
     }
     updateItem(itemId, { undo: { snapshotId, undone, busy: true, error: null } });
+    setBackups({ busy: true });
     try {
+      await refreshRecoveryState();
+      const current = findItem(itemId);
+      snapshotId = current && undoPoint(current);
+      if (!snapshotId) return;
+      undone = Boolean(current.undo?.undone);
       const restored = await daemonWorkbookHistory({ action: "restore", snapshot_id: snapshotId });
       updateItem(itemId, {
         undo: {
@@ -676,11 +687,13 @@ export function createController({
           error: null,
         },
       });
-      if (get().view === "backups") loadBackups();
+      await refreshRecoveryState();
     } catch (failure) {
-      updateItem(itemId, {
-        undo: { snapshotId, undone, error: failure?.message || String(failure) },
-      });
+      updateItem(itemId, (current) => ({
+        undo: { ...current.undo, busy: false, error: failure?.message || String(failure) },
+      }));
+    } finally {
+      setBackups({ busy: false });
     }
   }
 
@@ -700,12 +713,32 @@ export function createController({
     set((state) => ({ ...state, backups: { ...state.backups, ...update } }));
   }
 
+  async function refreshRecoveryState() {
+    const result = await daemonWorkbookHistory({ action: "list", limit: 120 });
+    const snapshots = result.snapshots || [];
+    const byMember = new Map();
+    for (const row of collapseRestoreChains(snapshots)) {
+      for (const id of row.memberIds) byMember.set(id, row);
+    }
+    set((state) => ({
+      ...state,
+      backups: { ...state.backups, snapshots, loaded: true },
+      items: state.items.map((item) => {
+        const original =
+          item.result?.recovery?.snapshotIds?.[0] ?? item.error?.recovery?.snapshotIds?.[0];
+        if (!original) return item;
+        const row = byMember.get(original) ?? byMember.get(item.undo?.snapshotId);
+        return { ...item, undo: { snapshotId: row?.tipId ?? null, undone: row?.undone ?? false } };
+      }),
+    }));
+  }
+
   async function loadBackups(status = "") {
     if (get().backups.busy) return;
     setBackups({ busy: true, status: status || t("backups.loading"), error: false });
     try {
-      const result = await daemonWorkbookHistory({ action: "list", limit: 120 });
-      setBackups({ snapshots: result.snapshots || [], status, loaded: true });
+      await refreshRecoveryState();
+      setBackups({ status });
     } catch (failure) {
       setBackups({ status: failure?.message || String(failure), error: true });
     } finally {
@@ -737,7 +770,7 @@ export function createController({
       for (const id of ids) {
         result = await daemonWorkbookHistory({ action, snapshot_id: id });
       }
-      const listed = await daemonWorkbookHistory({ action: "list", limit: 120 });
+      await refreshRecoveryState();
       const done = {
         restore: () =>
           t(redo ? "backups.redone" : "backups.undone", {
@@ -746,7 +779,7 @@ export function createController({
         delete: () => t("backups.deleted"),
         clear: () => t("backups.cleared", { count: result.removed || 0 }),
       }[action]();
-      setBackups({ snapshots: listed.snapshots || [], status: done });
+      setBackups({ status: done });
     } catch (failure) {
       setBackups({ status: failure?.message || String(failure), error: true });
     } finally {
@@ -1084,7 +1117,9 @@ export function createController({
         entries: entries.map((entry) => ({ ...entry })),
         expected_cwd: targetCwd,
       });
-      if (!response.ok) throw new Error(response.error || t("error.contextSave"));
+      if (!response.ok && !Array.isArray(response.saved)) {
+        throw new Error(response.error || t("error.contextSave"));
+      }
       if (get().workspace.cwd !== targetCwd || get().context.cwd !== targetCwd) return false;
       if (response.errors?.length) {
         setContext({

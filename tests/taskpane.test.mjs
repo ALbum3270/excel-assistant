@@ -553,29 +553,57 @@ test("the theme follows Excel until the user picks one, and the pick is remember
   assert.equal(make().store.getState().settings.theme, "auto");
 });
 
-test("undo and redo toggle on the card of the change, without adding cards", async () => {
-  const restores = [];
-  let next = 0;
-  const h = createHarness({
-    requests: {
-      workbook_history({ args }) {
-        restores.push(args.snapshot_id);
-        next += 1;
-        return Promise.resolve({ ok: true, result: { inverseSnapshotIds: [`inverse-${next}`] } });
-      },
-    },
-  });
-  h.pane.handleServerMessage({
+// In-memory workbook/history boundary: a restore swaps the saved and current
+// values. Controller tests use both entry points against this shared log.
+function historyFixture(root = "s1") {
+  let value = "after";
+  let serial = 0;
+  let snapshots = [
+    { id: root, snapshotIds: [root], createdAt: new Date(0).toISOString(), saved: "before" },
+  ];
+  const restored = [];
+  async function request({ args }) {
+    if (args.action === "list") return { ok: true, result: { snapshots: [...snapshots] } };
+    if (args.action === "clear") snapshots = [];
+    if (args.action === "delete") snapshots = snapshots.filter((s) => s.id !== args.snapshot_id);
+    if (args.action !== "restore") return { ok: true, result: {} };
+    const from = snapshots.find((s) => s.id === args.snapshot_id);
+    assert.ok(from, "must restore an existing checkpoint");
+    const id = `inverse-${++serial}`;
+    snapshots.unshift({
+      id,
+      snapshotIds: [id],
+      createdAt: new Date(serial).toISOString(),
+      restoredFromSnapshotId: from.id,
+      restoreDepth: (from.restoreDepth ?? 0) + 1,
+      saved: value,
+    });
+    value = from.saved;
+    restored.push(from.id);
+    return { ok: true, result: { inverseSnapshotIds: [id], addresses: ["Sheet1!A1"] } };
+  }
+  return { request, restored, value: () => value };
+}
+
+function replayChange(pane, snapshotId) {
+  pane.handleServerMessage({
     type: "transcript_replay",
     events: [
       { kind: "tool", name: "mcp__office__excel_set_cell_range", id: "w1", input: { range: "A1" } },
       {
         kind: "tool_result",
         id: "w1",
-        text: JSON.stringify({ success: true, recovery: { snapshotIds: ["before-w1"] } }),
+        text: JSON.stringify({ recovery: { snapshotIds: [snapshotId] } }),
       },
     ],
   });
+}
+
+test("undo and redo toggle on the card of the change, without adding cards", async () => {
+  const history = historyFixture("before-w1");
+  const h = createHarness({ requests: { workbook_history: history.request } });
+  replayChange(h.pane, "before-w1");
+  await new Promise(setImmediate);
   const card = () => h.state().items.find((item) => item.id === "w1");
   const count = h.state().items.length;
 
@@ -586,7 +614,7 @@ test("undo and redo toggle on the card of the change, without adding cards", asy
   await h.pane.toggleUndo("w1");
   assert.equal(card().undo.undone, true);
   // Each click restores the reverse point the previous click left.
-  assert.deepEqual(restores, ["before-w1", "inverse-1", "inverse-2"]);
+  assert.deepEqual(history.restored, ["before-w1", "inverse-1", "inverse-2"]);
   assert.equal(h.state().items.length, count, "no card is added");
 
   // The pane-started call the daemon sends back runs without a card of its own.
@@ -602,9 +630,15 @@ test("undo and redo toggle on the card of the change, without adding cards", asy
 
 test("an older daemon's untagged echo of the pane's own restore draws no card", async () => {
   let answer;
+  const history = historyFixture();
   const h = createHarness({
     requests: {
-      workbook_history: () => new Promise((resolve) => (answer = resolve)),
+      workbook_history: (payload) =>
+        payload.args.action === "list"
+          ? history.request(payload)
+          : new Promise((resolve) => {
+              answer = async () => resolve(await history.request(payload));
+            }),
     },
   });
   h.pane.handleServerMessage({
@@ -618,8 +652,10 @@ test("an older daemon's untagged echo of the pane's own restore draws no card", 
       },
     ],
   });
+  await new Promise(setImmediate);
   const count = h.state().items.length;
   const undo = h.pane.toggleUndo("w1");
+  await new Promise(setImmediate);
   // While the pane's request is open, the call it causes has no origin tag.
   h.pane.handleServerMessage({
     type: "tool_call",
@@ -627,7 +663,7 @@ test("an older daemon's untagged echo of the pane's own restore draws no card", 
     name: "excel_workbook_history",
     args: { action: "restore", snapshot_id: "s1" },
   });
-  answer({ ok: true, result: { inverseSnapshotIds: ["s2"] } });
+  await answer();
   await undo;
   assert.equal(h.state().items.length, count);
   // Afterwards, a restore the assistant asks for is shown as usual.
@@ -638,4 +674,45 @@ test("an older daemon's untagged echo of the pane's own restore draws no card", 
     args: { action: "restore", snapshot_id: "s2" },
   });
   assert.equal(h.state().items.length, count + 1);
+});
+
+test("page, card and transcript reload share the persisted undo state", async () => {
+  const history = historyFixture();
+  const h = createHarness({ requests: { workbook_history: history.request } });
+  replayChange(h.pane, "s1");
+  await new Promise(setImmediate);
+  const card = () => h.state().items.find((item) => item.id === "w1");
+  await h.pane.restoreBackup("s1");
+  assert.equal(history.value(), "before");
+  assert.equal(card().undo.undone, true);
+  await h.pane.toggleUndo("w1");
+  assert.equal(history.value(), "after");
+  assert.equal(card().undo.undone, false);
+  await h.pane.toggleUndo("w1");
+  replayChange(h.pane, "s1");
+  await new Promise(setImmediate);
+  assert.equal(card().undo.undone, true);
+  await h.pane.toggleUndo("w1");
+  assert.equal(history.value(), "after");
+  assert.deepEqual(history.restored, ["s1", "inverse-1", "inverse-2", "inverse-3"]);
+});
+
+test("partial context saves show the persisted entries and validation errors", async () => {
+  const h = createHarness({
+    requests: {
+      set_context: {
+        ok: false,
+        saved: [{ path: "valid.txt" }],
+        errors: [{ path: "missing.txt", error: "Does not exist" }],
+      },
+    },
+  });
+  h.pane.store.setState({
+    workspace: { cwd: "C:/work" },
+    context: { cwd: "C:/work", entries: [{ path: "missing.txt" }], dialog: { cwd: "C:/work" } },
+  });
+  await h.pane.addContextEntry("valid.txt", "");
+  assert.deepEqual(h.state().context.entries, [{ path: "valid.txt" }]);
+  assert.match(h.state().context.error, /missing.txt/);
+  assert.equal(h.state().context.dialog, null);
 });

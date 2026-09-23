@@ -55,13 +55,14 @@ function UndoButton({ item }: { item: any }) {
   const pane = usePane();
   const t = useT();
   const busyTurn = usePaneState((state) => state.turnInFlight || state.submitPending);
+  const recoveryBusy = usePaneState((state) => state.backups.busy);
   if (!undoPoint(item) || item.state === "running") return null;
   const undone = Boolean(item.undo?.undone);
   const Icon = item.undo?.busy ? LoaderIcon : undone ? Redo2Icon : Undo2Icon;
   return (
     <Button
       className="h-7 shrink-0 gap-1 px-2 text-xs"
-      disabled={item.undo?.busy || busyTurn}
+      disabled={item.undo?.busy || busyTurn || recoveryBusy}
       onClick={() => pane.toggleUndo(item.id)}
       size="sm"
       title={

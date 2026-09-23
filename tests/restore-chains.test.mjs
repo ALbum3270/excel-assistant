@@ -108,6 +108,13 @@ test("restoring the same change twice follows the newer checkpoint", () => {
   ]);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].tipId, "late");
+  assert.deepEqual(rows[0].chain, ["s1", "early", "late"]);
+  assert.equal(rows[0].restoreCount, 2);
+});
+
+test("an inverse retains its redo state after its parent is pruned", () => {
+  const [row] = collapseRestoreChains([{ ...restore("r", 2, "gone"), restoreDepth: 1 }]);
+  assert.equal(row.undone, true);
 });
 
 test("a checkpoint that points at itself does not loop", () => {
@@ -120,4 +127,25 @@ test("an empty or missing list is an empty page", () => {
   assert.deepEqual(collapseRestoreChains([]), []);
   assert.deepEqual(collapseRestoreChains(), []);
   assert.deepEqual(collapseRestoreChains([null, undefined]), []);
+});
+
+test("a chain started before restoreDepth existed is counted from its links", () => {
+  // Undo from the previous release (no depth), then a redo whose stored depth
+  // an older build miscounted as 1: the change is back in effect either way.
+  const [row] = collapseRestoreChains([
+    { ...restore("s3", 3000, "s2"), restoreDepth: 1 },
+    restore("s2", 2000, "s1"),
+    group("s1", 1000),
+  ]);
+  assert.equal(row.tipId, "s3");
+  assert.equal(row.undone, false);
+});
+
+test("a pruned change's row adds the hops below its first stored depth", () => {
+  const [row] = collapseRestoreChains([
+    restore("r2", 3000, "r1"),
+    { ...restore("r1", 2000, "gone"), restoreDepth: 1 },
+  ]);
+  assert.equal(row.tipId, "r2");
+  assert.equal(row.undone, false, "undo (depth 1) then redo (depth 2) leaves the change in effect");
 });

@@ -221,6 +221,8 @@ test("grouped row recovery reverses its execution order on every undo and redo",
       .slice(recovery.indexOf("export async function workbookHistory("))
       .replace("export async", "async"),
     {
+      pruneRecoveryHistory: async () => {},
+      allSnapshots: async () => snapshots,
       resolveSnapshotGroup: async (id) => {
         const anchor = snapshots.find((s) => s.id === id);
         return snapshots.filter((s) => s.toolCallId === anchor.toolCallId);
