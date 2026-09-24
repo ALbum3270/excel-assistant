@@ -294,7 +294,8 @@ function EmptyState() {
       </motion.div>
       <div className="grid w-full gap-2 @[22rem]:grid-cols-2">
         {shown.map((preset: any, index: number) => {
-          const { title, prompt } = presetText(preset);
+          // Title only: the full prompt is what a click sends, not what the card shows.
+          const { title } = presetText(preset);
           const Icon = PRESET_ICONS[preset.builtin] ?? SparklesIcon;
           return (
             <motion.button
@@ -311,9 +312,6 @@ function EmptyState() {
                   <Icon className="size-3.5" />
                 </span>
                 {title}
-              </span>
-              <span className="line-clamp-2 text-muted-foreground text-xs leading-relaxed">
-                {prompt}
               </span>
             </motion.button>
           );
