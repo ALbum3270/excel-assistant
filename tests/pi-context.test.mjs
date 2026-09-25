@@ -131,7 +131,10 @@ test("a write that fails part-way still consumes its revision", async () => {
     execution.run(path, { write: true, expectedRevision: 0, toolName: "stale" }, async () => {
       staleRan = true;
     }),
-    (error) => error.code === "STALE_WORKBOOK_REVISION",
+    (error) =>
+      error.code === "STALE_WORKBOOK_REVISION" &&
+      /write operation ended without a confirmed commit/.test(error.message) &&
+      !/did not come from this session/.test(error.message),
   );
   assert.equal(staleRan, false);
 

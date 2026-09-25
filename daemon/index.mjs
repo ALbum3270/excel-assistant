@@ -25,6 +25,8 @@ import { diag } from "./diag.mjs";
 import { getContextEntries, setContextEntries } from "./context.mjs";
 import { ApprovalManager, needsApproval } from "./approval.mjs";
 import { createThepExcelGateway } from "./thepexcel-gateway.mjs";
+import { guardOfficeToolSearch } from "./tool-search-guard.mjs";
+import { createTurnProgress } from "./turn-progress.mjs";
 import { stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 
@@ -1221,6 +1223,7 @@ for (const method of ["sendAssistantEvent", "sendAssistantText"]) {
           usage: payload.usage,
           numTurns: payload.num_turns,
           costUsd: payload.total_cost_usd,
+          taskCheck: payload.task_check,
         });
       else if (payload.event === "error" || payload.event === "auth_error")
         observer.finish({ status: "error", error: payload.error });
@@ -1829,6 +1832,7 @@ async function* userMessageStream(key, session) {
     } else if (session) {
       session.lastUserText = text;
       session.turn.value += 1;
+      session.turnProgress.reset();
       session.contextRecovery = null;
     }
     if (session?.isNew && !session.title) {
@@ -2062,6 +2066,7 @@ async function startSessionForFolder(
     workbookRevision,
     // Counts user turns; the tools' repeat-failure budget starts over each turn.
     turn: { value: 0 },
+    turnProgress: createTurnProgress(),
   };
   sessions.set(key, session);
   workspaceByKey.set(key, cwd);
@@ -2118,6 +2123,7 @@ async function startSessionForFolder(
       revisionState: session.workbookRevision,
       approveWrite: (toolName, input) => decideApproval(key, session, toolName, input),
       turnState: session.turn,
+      turnProgress: session.turnProgress,
     });
     if (host === "excel" && thepExcelGateway) {
       thepExcelMcp = thepExcelGateway.createSessionServer({
@@ -2182,6 +2188,19 @@ async function startSessionForFolder(
           disallowedTools: agentConfig.disallowedTools,
           settingSources: agentConfig.settingSources,
           canUseTool: (toolName, input) => permissionFor(key, session, host, toolName, input),
+          ...(host === "excel"
+            ? {
+                hooks: {
+                  PreToolUse: [
+                    {
+                      matcher: "ToolSearch",
+                      hooks: [async (input) => guardOfficeToolSearch(input)],
+                    },
+                  ],
+                  Stop: [{ hooks: [async (input) => session.turnProgress.stopCheck(input)] }],
+                },
+              }
+            : {}),
           includePartialMessages: true,
           // User-chosen model (composer dropdown); always explicit.
           model: modelArgFor(key),
@@ -2455,6 +2474,7 @@ function handleAgentMessage(msg, session) {
           model_usage: msg.modelUsage,
           num_turns: msg.num_turns,
           total_cost_usd: msg.total_cost_usd,
+          task_check: session?.turnProgress.summary(),
         },
         session?.key,
       );

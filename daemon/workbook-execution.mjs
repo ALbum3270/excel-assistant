@@ -7,6 +7,9 @@ import { createWorkbookCoordinator } from "./vendor/pi-coordinator.mjs";
 // most common something is the panel's own restore button, which the agent
 // never sees, so name it rather than leaving the model to guess.
 function describeLastWrite(state) {
+  if (state.lastWriteUncertain) {
+    return `The ${state.lastWrite || "previous"} operation ended without a confirmed commit; its effect on the workbook is unknown.`;
+  }
   if (state.lastWrite === "excel_workbook_history") {
     return "The change was a restore from the panel's backups, so the cells you read earlier may be back to their previous values.";
   }
@@ -143,6 +146,7 @@ export function createWorkbookExecution() {
             if (write && didCommit(result)) {
               state.revision = pending;
               state.lastWrite = toolName;
+              state.lastWriteUncertain = false;
             }
             this.settled(workbookId, opId);
             return { result, revision: state.revision, uncertain: Boolean(state.blocked) };
@@ -153,7 +157,11 @@ export function createWorkbookExecution() {
             // Only an explicit not_committed keeps the number; tying it to
             // "still running" let stale writers through after a partial write.
             const mayHaveChanged = write && error.commitStatus !== "not_committed";
-            if (mayHaveChanged) state.revision = pending;
+            if (mayHaveChanged) {
+              state.revision = pending;
+              state.lastWrite = toolName;
+              state.lastWriteUncertain = true;
+            }
             if (mayHaveChanged && !error.executionSettled) {
               state.blocked = { opId, toolName, reason: error.message };
             } else this.settled(workbookId, opId);

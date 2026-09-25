@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createComputeShell } from "../daemon/compute-tool.mjs";
+import { getFormulaFlags } from "../taskpane/shared/formula-flags.js";
 
 test("csv-to-sheet writes parsed values through the workbook bridge", async () => {
   const calls = [];
@@ -133,6 +134,109 @@ test("csv-to-sheet keeps lossy numbers as text and offers exact text on request"
   ]);
 });
 
+test("typed JSON round-trip preserves mixed text, numbers, booleans and formulas", async () => {
+  const writes = [];
+  const shell = createComputeShell(async (name, args) => {
+    if (name === "excel_get_formula_flags") {
+      assert.deepEqual(args.addresses, ["B2", "D2"]);
+      return { success: true, flags: { B2: false, D2: true } };
+    }
+    if (name === "excel_get_cell_ranges") {
+      return args.ranges[0] === "A1:D2"
+        ? {
+            success: true,
+            worksheet: { name: "Data", cells: { A1: "2026-03-04", B1: 42, C1: true } },
+            remainingRanges: ["D1:D2"],
+          }
+        : {
+            success: true,
+            worksheet: {
+              name: "Data",
+              cells: { D1: 2, A2: "00123", B2: "=literal", D2: "=A1" },
+              formulas: { D1: "=1+1", B2: "=literal", D2: "=A1" },
+            },
+            remainingRanges: [],
+          };
+    }
+    writes.push(args);
+    return { success: true, commitStatus: "committed", writtenRange: args.range };
+  });
+  const result = await shell({
+    command: "sheet-to-json 1 A1:D2 data.json && json-to-sheet data.json 1 F1 --force",
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].range, "F1:I2");
+  assert.deepEqual(writes[0].cells, [
+    [{ value: "'2026-03-04" }, { value: 42 }, { value: true }, { formula: "=1+1" }],
+    [{ value: "'00123" }, { value: "'=literal" }, { value: "" }, { formula: "=A1" }],
+  ]);
+});
+
+test("assert-sheet-json compares an independently prepared matrix with live cells", async () => {
+  const assertions = [];
+  const shell = createComputeShell(
+    async (name) => {
+      assert.equal(name, "excel_get_cell_ranges");
+      return {
+        success: true,
+        worksheet: { name: "Data", cells: { C2: 10, C3: 20 } },
+        remainingRanges: [],
+      };
+    },
+    { onAssert: (target) => assertions.push(target) },
+  );
+  const prepared = await shell({
+    command: `python3 - <<'PY'
+import json
+with open('expected.json', 'w') as f:
+    json.dump({'format':'excel-typed-cells-v1','rows':[[{'value':10}],[{'value':20}]]}, f)
+PY
+assert-sheet-json expected.json 1 C2:C3`,
+  });
+  assert.equal(prepared.exitCode, 0, prepared.stderr);
+  assert.deepEqual(assertions, [{ sheetId: 1, range: "C2:C3" }]);
+  const mismatch = await shell({
+    command: `python3 - <<'PY'
+import json
+with open('wrong.json', 'w') as f:
+    json.dump({'format':'excel-typed-cells-v1','rows':[[{'value':10}],[{'value':21}]]}, f)
+PY
+assert-sheet-json wrong.json 1 C2:C3`,
+  });
+  assert.equal(mismatch.exitCode, 1);
+  assert.match(mismatch.stderr, /C3: expected.*21.*got.*20/);
+  assert.equal(assertions.length, 1);
+});
+
+test("formula-presence check distinguishes literal equals text from formulas", async () => {
+  const original = globalThis.Excel;
+  globalThis.Excel = {
+    run: async (callback) =>
+      callback({
+        workbook: {
+          worksheets: {
+            getItem: () => ({
+              getRange: (address) => ({
+                getSpecialCellsOrNullObject: () => ({
+                  isNullObject: address === "B2",
+                  load() {},
+                }),
+              }),
+            }),
+          },
+        },
+        async sync() {},
+      }),
+  };
+  try {
+    const result = await getFormulaFlags("Data", ["B2", "D2"]);
+    assert.deepEqual(result.flags, { B2: false, D2: true });
+  } finally {
+    globalThis.Excel = original;
+  }
+});
+
 test("a write from a saved script still asks for approval at the moment it writes", async () => {
   const writes = [];
   const asked = [];
@@ -167,22 +271,33 @@ test("sheet-to-csv keeps a trailing page that is one blank cell", async () => {
   // Additional audit N02: the last page is a single empty cell, which
   // serializes to "", and must still count as a row on the way back in.
   const writes = [];
-  const shell = createComputeShell(async (name, args) => {
-    if (name === "excel_get_range_as_csv") {
-      return args.range === "A1:A3"
-        ? {
-            csv: "row\nrow",
-            rowCount: 2,
-            columnCount: 1,
-            sheetName: "S",
-            hasMore: true,
-            nextRange: "A3:A3",
-          }
-        : { csv: "", rowCount: 1, columnCount: 1, sheetName: "S", hasMore: false, nextRange: null };
-    }
-    writes.push(args);
-    return { success: true, commitStatus: "committed", writtenRange: args.range };
-  });
+  const reads = [];
+  const shell = createComputeShell(
+    async (name, args) => {
+      if (name === "excel_get_range_as_csv") {
+        return args.range === "A1:A3"
+          ? {
+              csv: "row\nrow",
+              rowCount: 2,
+              columnCount: 1,
+              sheetName: "S",
+              hasMore: true,
+              nextRange: "A3:A3",
+            }
+          : {
+              csv: "",
+              rowCount: 1,
+              columnCount: 1,
+              sheetName: "S",
+              hasMore: false,
+              nextRange: null,
+            };
+      }
+      writes.push(args);
+      return { success: true, commitStatus: "committed", writtenRange: args.range };
+    },
+    { onRead: (target) => reads.push(target) },
+  );
   const result = await shell({
     command: "sheet-to-csv 1 A1:A3 data.csv && csv-to-sheet data.csv 1 B1 --force --text",
   });
@@ -190,4 +305,34 @@ test("sheet-to-csv keeps a trailing page that is one blank cell", async () => {
   assert.match(result.stdout, /Exported 3 rows/);
   assert.equal(writes[0].range, "B1:B3");
   assert.equal(writes[0].cells.length, 3);
+  assert.deepEqual(reads, [{ sheetId: 1, range: "A1:A3" }]);
+});
+
+test("CSV exported from a range cannot silently overwrite that range with inferred types", async () => {
+  const writes = [];
+  const shell = createComputeShell(async (name, args) => {
+    if (name === "excel_get_range_as_csv") {
+      return {
+        success: true,
+        csv: "2026-03-04,42",
+        rowCount: 1,
+        columnCount: 2,
+        sheetName: "Data",
+        hasMore: false,
+      };
+    }
+    writes.push(args.range);
+    return { success: true, commitStatus: "committed", writtenRange: args.range };
+  });
+  const refused = await shell({
+    command: "sheet-to-csv 1 A1:B1 data.csv && csv-to-sheet data.csv 1 A1 --force",
+  });
+  assert.equal(refused.exitCode, 1);
+  assert.match(refused.stderr, /typed round trip/);
+  assert.deepEqual(writes, []);
+  const deliberate = await shell({
+    command: "csv-to-sheet data.csv 1 A1 --force --allow-type-loss",
+  });
+  assert.equal(deliberate.exitCode, 0, deliberate.stderr);
+  assert.deepEqual(writes, ["A1:B1"]);
 });

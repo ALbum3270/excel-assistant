@@ -105,6 +105,30 @@ test("restore resolves every snapshot in an operation before applying the histor
   assert.deepEqual(new Set(restored), new Set(["structure", "values"]));
 });
 
+test("history distinguishes an unknown checkpoint ID from an empty workbook history", async () => {
+  let snapshots = [{ id: "real-id", at: 1, snapshotKind: "range_values" }];
+  const functions = run(
+    cut(
+      recovery,
+      "function compactSnapshotGroup(",
+      "// How many restores separate a snapshot",
+    ).replace("export async function workbookHistory", "async function workbookHistory"),
+    {
+      recoveryLog: { listForCurrentWorkbook: async () => snapshots },
+      readCustomSnapshots: async () => [],
+    },
+  );
+  await assert.rejects(
+    functions.workbookHistory({ action: "restore", snapshot_id: "wrong-id" }),
+    /specified recovery checkpoint ID was not found.*List workbook history/,
+  );
+  snapshots = [];
+  await assert.rejects(
+    functions.workbookHistory({ action: "restore", snapshot_id: "wrong-id" }),
+    /No recovery checkpoint is available/,
+  );
+});
+
 // Actual recovery plan and actual captureRange. A1 is the supported top-left
 // shorthand for a 2x2 matrix; before the write, A1 itself is still a 1x1 range.
 test("copy recovery uses the matrix size when the source is a single starting cell", async () => {

@@ -7,10 +7,14 @@ import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
+from unittest.mock import patch
 
 import openpyxl
 
-from run_spreadsheetbench import managed_workbook, qualified_answer_position, select_tasks, summarize, tool_error_summary
+from run_spreadsheetbench import (
+    classify_outcome, harness_error_record, managed_workbook, qualified_answer_position,
+    run_task, select_tasks, summarize, tool_error_summary,
+)
 from workbook_diff import authorized_ranges, unauthorized_edits, compare_answer_workbooks
 
 
@@ -118,6 +122,24 @@ class SelectionTest(unittest.TestCase):
 
 
 class SummaryTest(unittest.TestCase):
+    def test_tool_error_is_process_evidence_not_a_failure_cause(self):
+        self.assertEqual(classify_outcome("ok", False, "completed"), "answer_mismatch")
+        self.assertEqual(classify_outcome("ok", False, "timeout"), "agent_incomplete")
+        self.assertEqual(classify_outcome("harness_error", False, None), "infrastructure")
+
+    def test_harness_error_keeps_completed_stage_and_agent_evidence(self):
+        partial = {
+            "id": "120-24", "instruction_type": "Cell", "stage": "close",
+            "phases_s": {"prepare": 1.2, "agent": 25.0},
+            "agent_status": "completed", "tool_calls": 7, "tool_errors": 2,
+        }
+        result = harness_error_record(partial, RuntimeError("COM rejected close"))
+        self.assertEqual(result["stage"], "close")
+        self.assertEqual(result["phases_s"], partial["phases_s"])
+        self.assertEqual(result["tool_calls"], 7)
+        self.assertEqual(result["agent_status"], "completed")
+        self.assertEqual(result["failure_class"], "infrastructure")
+
     def test_missing_agent_status_is_counted(self):
         record = {"instruction_type": "Cell", "infra_status": "harness_error", "agent_status": None, "passed": False}
         self.assertEqual(summarize("failed", [record])["agent_statuses"], {"None": 1})
@@ -156,6 +178,43 @@ class SummaryTest(unittest.TestCase):
 
 
 class ManagedWorkbookTest(unittest.TestCase):
+    def test_close_error_preserves_agent_work_in_partial_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "case"
+            source.mkdir()
+            wb = openpyxl.Workbook()
+            wb.save(source / "case_init.xlsx")
+            wb.save(source / "golden.xlsx")
+
+            class Workbook:
+                Windows = []
+                def Save(self):
+                    pass
+                def Close(self, SaveChanges=False):
+                    raise RuntimeError("close rejected")
+
+            class App:
+                DisplayAlerts = True
+                Visible = False
+                Workbooks = type("Workbooks", (), {"Open": lambda *_args, **_kwargs: Workbook()})()
+
+            task = {"id": "sample", "instruction_type": "Cell", "spreadsheet_path": "case",
+                    "answer_position": "A1", "instruction": "Fill A1"}
+            partial = {"id": "sample", "instruction_type": "Cell", "phases_s": {}}
+            agent = {"status": "completed", "tools": ["a", "b"], "monotonicMs": 3000}
+            with patch("run_spreadsheetbench.embed_taskpane"), \
+                 patch("run_spreadsheetbench.ready_excel", return_value=App()), \
+                 patch("run_spreadsheetbench.daemon_request", return_value=agent):
+                with self.assertRaisesRegex(RuntimeError, "close rejected") as caught:
+                    run_task(task, root, root / "run", Namespace(model="haiku", timeout=10), "token",
+                             ("manifest", "id"), lambda *_: (True, None), partial)
+            result = harness_error_record(partial, caught.exception)
+            self.assertEqual(result["stage"], "close")
+            self.assertEqual(result["agent_status"], "completed")
+            self.assertEqual(result["tool_calls"], 2)
+            self.assertEqual(result["agent_duration_s"], 3.0)
+
     def test_open_failure_restores_excel_global_state(self):
         class Workbooks:
             @staticmethod

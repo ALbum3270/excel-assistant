@@ -294,8 +294,15 @@ export function createOfficeBridgeMcp(
   bridge,
   host = null,
   paneKey = null,
-  { signal, revisionState = { value: undefined }, approveWrite, turnState = { value: 0 } } = {},
+  {
+    signal,
+    revisionState = { value: undefined },
+    approveWrite,
+    turnState = { value: 0 },
+    turnProgress,
+  } = {},
 ) {
+  const formulaFailures = new Map();
   // `paneKey` routes every call to the exact workbook pane this session
   // belongs to (so two open workbooks don't cross-talk).
   const isWrite = (name, args) =>
@@ -309,6 +316,18 @@ export function createOfficeBridgeMcp(
         : {}),
     });
     if (Number.isInteger(result?.workbookRevision)) revisionState.value = result.workbookRevision;
+    turnProgress?.record(name, args, result, isWrite(name, args));
+    if (
+      result?.success !== false &&
+      ["excel_get_cell_ranges", "excel_get_range_as_csv"].includes(name)
+    ) {
+      for (const [key, state] of formulaFailures) {
+        if (key.startsWith(`${turnState.value}:${args.sheetId}:`) && state.needsRead) {
+          state.needsRead = false;
+          state.count = 0;
+        }
+      }
+    }
     return result;
   };
   const call = rawCall;
@@ -357,6 +376,7 @@ export function createOfficeBridgeMcp(
   // It is not a task-level abort — any change to the arguments starts over.
   const REPEAT_LIMIT = 3;
   const repeatedFailures = new Map();
+  let budgetTurn = turnState.value;
   // JSON.stringify's array replacer filters nested keys too, which would make
   // two different formulas look like the same call. Sort keys at every level.
   const stable = (value) => {
@@ -392,8 +412,18 @@ export function createOfficeBridgeMcp(
   // (The first version counted only dispatched calls; a run then showed the
   // same unbalanced formula resent three times with nothing counting it.)
   const guarded = async (name, args, body) => {
+    if (budgetTurn !== turnState.value) {
+      repeatedFailures.clear();
+      formulaFailures.clear();
+      budgetTurn = turnState.value;
+    }
     const key = fingerprint(name, args);
     const previous = repeatedFailures.get(key);
+    const formulaCall =
+      name === "excel_fill_formula" ||
+      (name === "excel_set_cell_range" && /"formula"|"=/.test(JSON.stringify(args?.cells ?? [])));
+    const formulaKey = formulaCall ? `${turnState.value}:${args?.sheetId}:${args?.range}` : null;
+    const formulaState = formulaKey && formulaFailures.get(formulaKey);
     if (previous && previous.count >= REPEAT_LIMIT) {
       return asMcpError(
         new Error(
@@ -402,16 +432,47 @@ export function createOfficeBridgeMcp(
         ),
       );
     }
+    if (formulaState?.cycles >= 2) {
+      return asMcpError(
+        new Error(
+          `Formula attempts for ${args.range} still failed after a reread. Stop trial-and-error writes for this turn; explain what remains unresolved.`,
+        ),
+      );
+    }
+    if (formulaState?.needsRead) {
+      return asMcpError(
+        new Error(
+          `Several formula attempts for ${args.range} failed. Read the target and source cells again, then change the approach before another write.`,
+        ),
+      );
+    }
     const remember = (reason, code) => {
       if (TRANSIENT_FAILURES.has(code)) return;
       if (repeatedFailures.size > 200) repeatedFailures.clear();
       repeatedFailures.set(key, { count: (previous?.count ?? 0) + 1, reason });
+      // Overwrite approval and other permission failures are not evidence that
+      // the formula itself is wrong. They should not exhaust this range budget.
+      const formulaError =
+        code === "InvalidArgument" ||
+        !/overwrite|approval|permission|protected|覆盖|审批|权限|保护/i.test(reason);
+      if (formulaKey && formulaError) {
+        const state = formulaFailures.get(formulaKey) ?? { count: 0, cycles: 0, needsRead: false };
+        state.count += 1;
+        if (state.count >= REPEAT_LIMIT) {
+          state.needsRead = true;
+          state.cycles += 1;
+        }
+        formulaFailures.set(formulaKey, state);
+      }
     };
     try {
       const result = await body();
       if (failed(result))
         remember(String(result.error ?? "the call reported success: false."), result.code);
-      else repeatedFailures.delete(key);
+      else {
+        repeatedFailures.delete(key);
+        if (formulaKey) formulaFailures.delete(formulaKey);
+      }
       return asMcpResult(result);
     } catch (e) {
       remember(e?.message ?? String(e), e?.code);
@@ -907,7 +968,13 @@ export function createOfficeBridgeMcp(
     { command: z.string().min(1).describe("The bash command to run in the sandbox.") },
     async (args) => {
       try {
-        computeShell ??= createComputeShell(call, { signal, approveWrite });
+        computeShell ??= createComputeShell(call, {
+          signal,
+          approveWrite,
+          turnState,
+          onAssert: (target) => turnProgress?.recordAssertion(target),
+          onRead: (target) => turnProgress?.recordRead(target),
+        });
         const result = await computeShell(args);
         return asMcpResult(result, { isError: result.exitCode !== 0 });
       } catch (e) {

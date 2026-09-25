@@ -328,9 +328,10 @@ test("the same failing call is refused after three attempts instead of dispatche
   assert.match(refused.content[0].text, /already failed 3 times/);
   assert.equal(dispatches, 3, "the fourth identical call never reaches Excel");
 
-  // A different formula is a different call, so it is dispatched.
-  await handler({ ...call, cells: [[{ formula: "=LARGE(A1:A9,1)" }]] });
-  assert.equal(dispatches, 4);
+  // Changing only the formula no longer bypasses the target-level failure budget.
+  const changed = await handler({ ...call, cells: [[{ formula: "=LARGE(A1:A9,1)" }]] });
+  assert.match(changed.content[0].text, /Read the target and source cells again/);
+  assert.equal(dispatches, 3);
 });
 
 test("a comma outside every bracket is rejected, but the valid places for one are not", async () => {
@@ -522,4 +523,38 @@ test("a call refused three times in one turn is allowed again in the next", asyn
   turn.value += 1;
   await handler({ ...call });
   assert.equal(dispatches, 4, "a new turn starts the count over");
+});
+
+test("varying invalid formulas require a reread and stop after another failed cycle", async () => {
+  let writes = 0;
+  const turn = { value: 1 };
+  const server = createOfficeBridgeMcp(
+    {
+      async callTaskpaneTool(name) {
+        if (name === "excel_get_cell_ranges") {
+          return { success: true, worksheet: { cells: {} }, remainingRanges: [] };
+        }
+        writes += 1;
+        throw new Error("Excel rejected formula arguments");
+      },
+    },
+    "excel",
+    "test-pane",
+    { turnState: turn },
+  );
+  const fill = server.instance._registeredTools.excel_fill_formula.handler;
+  const read = server.instance._registeredTools.excel_get_cell_ranges.handler;
+  const attempt = (n) => fill({ sheetId: 1, range: "D2:D5", formula: `=FOO(${n})` });
+  for (let n = 0; n < 3; n++) await attempt(n);
+  const blocked = await attempt(3);
+  assert.match(blocked.content[0].text, /Read the target and source cells again/);
+  assert.equal(writes, 3);
+  await read({ sheetId: 1, ranges: ["A2:D5"] });
+  for (let n = 4; n < 7; n++) await attempt(n);
+  const stopped = await attempt(7);
+  assert.match(stopped.content[0].text, /Stop trial-and-error writes/);
+  assert.equal(writes, 6);
+  turn.value++;
+  await attempt(8);
+  assert.equal(writes, 7);
 });

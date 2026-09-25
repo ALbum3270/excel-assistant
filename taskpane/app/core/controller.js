@@ -507,6 +507,9 @@ export function createController({
           usage: addTurnUsage(state.usage, msg.usage, msg.total_cost_usd, msg.model_usage),
         }));
         const failed = turnFailed(msg);
+        if (!failed && msg.task_check?.status === "write_unchecked") {
+          notice("notice.writeNotChecked");
+        }
         if (failed) {
           if (msg.error) errorText(msg.error);
           else error("error.turnEnded", { subtype: msg.subtype || "error" });

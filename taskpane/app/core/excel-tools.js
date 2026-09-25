@@ -33,6 +33,7 @@ import {
   readSelectionContext,
 } from "../../shared/vendor/pi-context.js";
 import { workbookHistory } from "../../shared/recovery.js";
+import { getFormulaFlags } from "../../shared/formula-flags.js";
 
 export { getWorkbookMetadata };
 
@@ -124,6 +125,8 @@ export async function executeTool(name, args, id) {
         includeStyles: args.includeStyles,
         cellLimit: args.cellLimit,
       });
+    case "excel_get_formula_flags":
+      return getFormulaFlags(args.sheetName, args.addresses);
     case "excel_get_range_as_csv":
       return getRangeAsCsv(args.sheetId, args.range, {
         includeHeaders: args.includeHeaders,

@@ -183,6 +183,7 @@ export default {
   "receipt.verification": "核对",
   "receipt.verify.read_back": "已从 Excel 读回",
   "receipt.verify.commit_acknowledged": "Excel 已接受",
+  "notice.writeNotChecked": "最后一次修改后没有重新读取目标区域，任务结果仍未核实。",
   "receipt.revision": "版本",
   "receipt.unlock": "我已检查工作簿，继续",
   "receipt.unlocked": "已解除写入锁定（版本 {{revision}}）。",

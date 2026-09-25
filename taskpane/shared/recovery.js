@@ -1459,8 +1459,16 @@ async function resolveSnapshotGroup(snapshotId) {
   const anchor = snapshotId
     ? snapshots.find((snapshot) => snapshot.id === snapshotId)
     : snapshots[0];
-  if (!anchor) throw new Error("No recovery checkpoint is available for this workbook.");
-  return snapshots.filter((snapshot) => snapshot.toolCallId === anchor.toolCallId);
+  if (!anchor) {
+    throw new Error(
+      snapshots.length === 0
+        ? "No recovery checkpoint is available for this workbook."
+        : "The specified recovery checkpoint ID was not found in this workbook. List workbook history again and use an ID from the current list.",
+    );
+  }
+  return snapshots.filter((snapshot) =>
+    anchor.toolCallId ? snapshot.toolCallId === anchor.toolCallId : snapshot.id === anchor.id,
+  );
 }
 
 async function allSnapshots() {

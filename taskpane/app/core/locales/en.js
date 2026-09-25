@@ -192,6 +192,8 @@ export default {
   "receipt.verification": "Verification",
   "receipt.verify.read_back": "Read back from Excel",
   "receipt.verify.commit_acknowledged": "Accepted by Excel",
+  "notice.writeNotChecked":
+    "The last workbook change was not read back after writing. Its task result remains unverified.",
   "receipt.revision": "Revision",
   "receipt.unlock": "I checked the workbook — continue",
   "receipt.unlocked": "Writes unlocked at revision {{revision}}.",

@@ -118,9 +118,13 @@ def git(*args: str, check: bool = True) -> str:
 
 
 def uncommitted_patch() -> str:
-    """Tracked changes plus new untracked files, as one applyable patch."""
-    patch = git("diff", "HEAD")
-    for path in git("ls-files", "--others", "--exclude-standard").splitlines():
+    """Capture project implementation changes without copying local workbooks or notes."""
+    paths = ("app", "daemon", "taskpane", "scripts", "tests", "evals", "manifests",
+             "package.json", "package-lock.json", "agent.config.example.json", "CLAUDE.md")
+    patch = git("diff", "HEAD", "--", *paths)
+    for path in git("ls-files", "--others", "--exclude-standard", "--", *paths).splitlines():
+        if path.startswith("evals/runs/"):
+            continue
         # --no-index exits 1 when the files differ, which is always the case here.
         patch += git("diff", "--no-index", "--", "/dev/null", path, check=False)
     return patch
@@ -245,15 +249,42 @@ def tool_error_summary(transcript: Path | None) -> dict:
     return {"count": len(errors), "categories": categories, "first": errors[0][:500] if errors else None}
 
 
-def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: tuple[str, str], compare) -> dict:
+def classify_outcome(infra_status: str, passed: bool, agent_status: str | None) -> str:
+    """Describe the observed outcome, not an inferred root cause."""
+    if infra_status != "ok":
+        return "infrastructure"
+    if passed:
+        return "passed"
+    return "answer_mismatch" if agent_status == "completed" else "agent_incomplete"
+
+
+def harness_error_record(partial: dict, exc: Exception) -> dict:
+    """Retain evidence collected before an outer COM/harness exception."""
+    return {
+        **partial,
+        "passed": False,
+        "infra_status": "harness_error",
+        "failure_class": "infrastructure",
+        "unauthorized_cells": None,
+        "tool_calls": partial.get("tool_calls", 0),
+        "tool_errors": partial.get("tool_errors", 0),
+        "agent_duration_s": partial.get("agent_duration_s", 0),
+        "agent_status": partial.get("agent_status"),
+        "error": f"{type(exc).__name__}: {exc}",
+    }
+
+
+def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: tuple[str, str], compare,
+             record: dict | None = None) -> dict:
     task_id = str(task["id"])
-    phases: dict[str, float] = {}
-    record: dict = {"id": task_id, "instruction_type": task["instruction_type"], "phases_s": phases}
+    record = record if record is not None else {"id": task_id, "instruction_type": task["instruction_type"]}
+    phases: dict[str, float] = record.setdefault("phases_s", {})
 
     def phase(name: str, started: float) -> None:
         phases[name] = round(time.perf_counter() - started, 2)
 
     started = time.perf_counter()
+    record["stage"] = "prepare"
     source_dir = dataset / task["spreadsheet_path"]
     # Most folders use N_<id>_init/golden.xlsx; a few use initial.xlsx/golden.xlsx.
     init_file = next(p for p in source_dir.glob("*.xlsx") if p.stem.endswith(("_init", "initial")))
@@ -274,14 +305,17 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
     )
     phase("prepare", started)
 
+    record["stage"] = "excel_ready"
     app = ready_excel(run_dir)
     started = time.perf_counter()
+    record["stage"] = "open"
     with managed_workbook(app, workbook_path) as workbook:
         # Many benchmark files were saved minimized; Excel then never loads the task pane.
         for window in workbook.Windows:
             window.WindowState = XL_MAXIMIZED
         phase("open", started)
         started = time.perf_counter()
+        record["stage"] = "agent"
         agent = daemon_request(
             "/eval/run",
             token,
@@ -289,7 +323,23 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
             timeout=args.timeout + 180,
         )
         phase("agent", started)
+        record.update({
+            "agent_status": agent.get("status"),
+            "tool_calls": len(agent.get("tools", [])),
+            "agent_duration_s": round((agent.get("monotonicMs") or 0) / 1000, 1),
+            "agent_wall_s": round((agent.get("durationMs") or 0) / 1000, 1),
+            "task_check": agent.get("taskCheck"),
+            "usage": agent.get("usage"),
+        })
+        transcript = Path(agent["transcriptPath"]) if agent.get("transcriptPath") else None
+        if transcript and transcript.exists():
+            shutil.copyfile(transcript, task_dir / "transcript.jsonl")
+            errors = tool_error_summary(task_dir / "transcript.jsonl")
+            record["tool_errors"] = errors["count"]
+            record["tool_error_categories"] = errors["categories"]
+            record["first_tool_error"] = errors["first"]
         started = time.perf_counter()
+        record["stage"] = "save"
         try:
             workbook.Save()
             record["saved"] = True
@@ -298,13 +348,11 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
             record["save_error"] = f"{type(exc).__name__}: {exc}"
         phase("save", started)
         started = time.perf_counter()
+        record["stage"] = "close"
     phase("close", started)
 
-    transcript = Path(agent["transcriptPath"]) if agent.get("transcriptPath") else None
-    if transcript and transcript.exists():
-        shutil.copyfile(transcript, task_dir / "transcript.jsonl")
-
     started = time.perf_counter()
+    record["stage"] = "grade"
     try:
         passed, _ = compare(str(golden_file), str(workbook_path), task["instruction_type"], answer_position)
     except Exception as exc:
@@ -313,6 +361,7 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
     phase("grade", started)
 
     started = time.perf_counter()
+    record["stage"] = "preservation"
     try:
         preservation = unauthorized_edits(init_file, workbook_path, answer_position, args.compare_values)
         # When the reference solution itself edits outside answer_position (e.g. the
@@ -363,16 +412,8 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
             "error": agent.get("error"),
         }
     )
-    if infra != "ok":
-        record["failure_class"] = "infrastructure"
-    elif passed:
-        record["failure_class"] = "passed"
-    # The overwrite guard is the expected first step of an authorized overwrite,
-    # not a tool failure.
-    elif error_summary["count"] - error_summary["categories"].get("overwrite_guard", 0):
-        record["failure_class"] = "tool_or_recovery"
-    else:
-        record["failure_class"] = "agent_or_benchmark"
+    record["failure_class"] = classify_outcome(infra, passed, agent_status)
+    record["stage"] = "done"
 
     (task_dir / "attempt.json").write_text(
         json.dumps({**record, "preservation": preservation, "agent": agent, "prompt": prompt}, ensure_ascii=False, indent=2),
@@ -448,7 +489,7 @@ def summarize(run: str, results: list[dict]) -> dict:
     }
 
 
-def keep_awake() -> None:
+def keep_awake() -> int | None:
     """Hold off idle sleep for as long as this process runs.
 
     A 40-task run lost five tasks to idle sleep: twice before the AC timeout
@@ -459,12 +500,18 @@ def keep_awake() -> None:
     sleeps the machine.
     """
     if sys.platform != "win32":
-        return
+        return None
     import ctypes
 
     ES_CONTINUOUS = 0x80000000
     ES_SYSTEM_REQUIRED = 0x00000001
-    ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+    call = ctypes.WinDLL("kernel32", use_last_error=True).SetThreadExecutionState
+    call.argtypes = [ctypes.c_uint]
+    call.restype = ctypes.c_uint
+    previous_state = call(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+    if previous_state == 0:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return previous_state
 
 
 def main() -> None:
@@ -482,7 +529,9 @@ def main() -> None:
     parser.add_argument("--timeout", type=int, default=900, help="per-task agent timeout, seconds")
     parser.add_argument("--retry-infra", action="store_true", help="rerun tasks whose last attempt was an infra failure")
     args = parser.parse_args()
-    keep_awake()
+    previous_power_state = keep_awake()
+    if previous_power_state is not None:
+        print(f"Windows keep-awake request accepted; previous execution state=0x{previous_power_state:08x}", flush=True)
 
     sys.path.insert(0, str(args.spreadsheetbench / "evaluation"))
     from evaluation import compare_cell_value, cell_level_compare
@@ -495,6 +544,7 @@ def main() -> None:
     selected = select_tasks(tasks, args)
     token = TOKEN_FILE.read_text(encoding="utf-8").strip()
     manifest = build_manifest(args, selected, daemon_request("/eval/info", token))
+    manifest["runtime"] = {"keepAwakeRequestAccepted": previous_power_state is not None}
 
     run_dir = PROJECT_ROOT / "evals" / "runs" / args.run
     manifest_path = run_dir / "manifest.json"
@@ -529,26 +579,19 @@ def main() -> None:
         if last and not (args.retry_infra and last["infra_status"] != "ok"):
             continue
         started = time.perf_counter()
+        partial = {"id": str(task["id"]), "instruction_type": task["instruction_type"], "phases_s": {}}
         try:
-            result = run_task(task, args.dataset, run_dir, args, token, addin, compare_workbooks)
+            result = run_task(task, args.dataset, run_dir, args, token, addin, compare_workbooks, partial)
         except ExcelUnavailable as exc:
             # Stop without recording results; --retry-infra or a rerun picks these tasks up.
             print(f"[{index}/{len(selected)}] {task['id']}: run stopped — {exc}", flush=True)
             break
         except Exception as exc:
             # One broken task (COM error, unreadable workbook) must not end the run.
-            result = {
-                "id": str(task["id"]),
-                "instruction_type": task["instruction_type"],
-                "passed": False,
-                "agent_status": None,
-                "infra_status": "harness_error",
-                "unauthorized_cells": None,
-                "tool_calls": 0,
-                "tool_errors": 0,
-                "agent_duration_s": 0,
-                "error": f"{type(exc).__name__}: {exc}",
-            }
+            result = harness_error_record(partial, exc)
+            task_dir = run_dir / str(task["id"])
+            task_dir.mkdir(parents=True, exist_ok=True)
+            (task_dir / "attempt.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         with results_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(result, ensure_ascii=False) + "\n")
         previous[result["id"]] = result

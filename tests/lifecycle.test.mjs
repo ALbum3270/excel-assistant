@@ -7,6 +7,8 @@ import { once } from "node:events";
 import WebSocket from "ws";
 import { createBridge } from "../daemon/bridge.mjs";
 import { ApprovalManager, needsApproval } from "../daemon/approval.mjs";
+import { createTurnProgress } from "../daemon/turn-progress.mjs";
+import { guardOfficeToolSearch } from "../daemon/tool-search-guard.mjs";
 
 // index.mjs boots HTTP servers, reads credentials and starts the SDK when
 // imported. Evaluate its actual lifecycle/handler code without that boot
@@ -74,6 +76,8 @@ function harness(t, overrides = {}) {
     customPermissionHandler() {},
     ApprovalManager,
     needsApproval,
+    createTurnProgress,
+    guardOfficeToolSearch,
     touchFolder: async () => {},
     buildSystemPromptAppend: async () => "test prompt",
     createOfficeBridgeMcp: () => ({}),
