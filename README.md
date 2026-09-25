@@ -151,14 +151,14 @@ What this repository adds on top: overwrite protection and a commit receipt from
 
 ## Evaluation
 
-`evals/run_spreadsheetbench.py` runs [SpreadsheetBench](https://github.com/RUCKBReasoning/SpreadsheetBench) Verified-400 tasks in live Excel and grades them with the benchmark's own comparison code. The task prompt is the official one, plus one line adapting it to a live workbook. The harness pins each run's configuration, separates infrastructure failures from agent failures, and counts edits outside the answer range.
+`evals/run_spreadsheetbench.py` runs [SpreadsheetBench](https://github.com/RUCKBReasoning/SpreadsheetBench) Verified-400 tasks in live Excel and grades them with the benchmark's comparison code. The task prompt is the official one, plus one line adapting it to a live workbook. The harness pins each run's configuration, records execution and grading failures separately from answer mismatches, and counts edits outside the answer range. These outcome labels do not establish the root cause of a failed task.
 
-| Run                                                    | Model         | Tasks | Passed |
-| ------------------------------------------------------ | ------------- | ----- | ------ |
-| 2026-09-19, fixed 10-task sample                       | qwen3.7-flash | 10    | 4      |
-| 2026-09-19, same 10 tasks after the next round of work | qwen3.7-flash | 10    | 5      |
+| Run                                                                    | Model         | Tasks | Passed |
+| ---------------------------------------------------------------------- | ------------- | ----: | -----: |
+| 2026-09-24, stratified sample (seed 20260924), before the latest fixes | qwen3.7-flash |   100 |     52 |
+| 2026-09-25, after the fixes, **only the 48 tasks that failed above**   | qwen3.7-flash |    48 |     13 |
 
-Seven of those ten tasks changed verdict between the two runs, in both directions: with a small model on a small sample, run-to-run variance is larger than the difference, so neither number shows an improvement. For scale, the best open-source entry on the official leaderboard (fabric-rlm with MiniMax M3) scores 82.5% on all 400 tasks by editing `.xlsx` files with Python rather than driving live Excel, so the numbers are not directly comparable.
+The second row includes the three tasks completed after an interrupted run. Its other outcomes were 28 answer mismatches, 5 execution or grading failures, and 2 unfinished agent runs. The 52 tasks that passed in the first row were **not** rerun after the fixes. Adding 52 and 13 shows that 65 distinct tasks passed at least once across two code versions; **it is not a measured 65% pass rate for the current version**. No current-version 100-task run or full 400-task run has been completed, and these local results are not an official leaderboard submission. The benchmark grades the answer range; three of the 13 passing reruns also had detected changes outside that range, which need separate review. See [the post-analysis fixes and limits](docs/product-fixes-2026-09-25.md).
 
 ## Development
 
