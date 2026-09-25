@@ -15,7 +15,8 @@ from run_spreadsheetbench import (
     classify_outcome, harness_error_record, managed_workbook, qualified_answer_position,
     run_task, select_tasks, summarize, tool_error_summary,
 )
-from workbook_diff import authorized_ranges, unauthorized_edits, compare_answer_workbooks
+from workbook_diff import EXCEL_MAX_ROWS, authorized_ranges, unauthorized_edits
+from vendor import harbor_evaluate as grader
 
 
 def same_value(a, b):
@@ -82,18 +83,35 @@ class WorkbookDiffTest(unittest.TestCase):
         for position in ["Sheet1'!A1,'Sheet2'!B2", "'Sheet1!'A1,'Sheet2!'B2'", "'Sheet1'!'A1,Sheet2!B2"]:
             self.assertEqual(authorized_ranges(position, "First"), {"Sheet1": [(1, 1, 1, 1)], "Sheet2": [(2, 2, 2, 2)]})
 
-    def test_quoted_sheet_names_reach_both_comparison_and_preservation(self):
-        name = "Bob's, Q1!"
-        before = self.save("a.xlsx", {(name, "A1"): 1}, sheets=(name,))
-        after = self.save("b.xlsx", {(name, "A1"): 2}, sheets=(name,))
-        position = "'Bob''s, Q1!'!$A$1"
-        self.assertEqual(authorized_ranges(position, "Other"), {name: [(1, 1, 1, 1)]})
+    def test_comma_in_a_quoted_sheet_name_reaches_grading_and_preservation(self):
+        # Task 130-9: the official grader split this name on its commas and crashed.
+        name = "b2b, sez, de"
+        position = "'b2b, sez, de'!A5:B6"
+        before = self.save("a.xlsx", {(name, "A5"): 1, (name, "C9"): 1}, sheets=(name,))
+        after = self.save("b.xlsx", {(name, "A5"): 2, (name, "C9"): 1}, sheets=(name,))
+        self.assertEqual(authorized_ranges(position, "Other"), {name: [(5, 1, 6, 2)]})
         self.assertEqual(unauthorized_edits(before, after, position, same_value)["unauthorized_cells"], 0)
-        def compare(a, b, sheet, cells):
-            self.assertEqual((sheet, cells), (name, "A1"))
-            return a[sheet][cells].value == b[sheet][cells].value, "different"
-        self.assertFalse(compare_answer_workbooks(before, after, "Cell", position, cell_compare=compare)[0])
-        self.assertTrue(compare_answer_workbooks(before, before, "Cell", position, cell_compare=compare)[0])
+        self.assertFalse(grader.compare_workbooks(before, after, position)[0])
+        self.assertTrue(grader.compare_workbooks(before, before, position)[0])
+
+    def test_column_only_ranges_cover_every_row(self):
+        # Task 283-32: "A:G" crashed the official grader; Harbor grades it to the last used row.
+        position = "Sheet3'!A:B"
+        self.assertEqual(authorized_ranges(position, "First"), {"Sheet3": [(1, 1, EXCEL_MAX_ROWS, 2)]})
+        before = self.save("a.xlsx", {("Sheet3", "B40"): 1}, sheets=("Sheet3",))
+        after = self.save("b.xlsx", {("Sheet3", "B40"): 2}, sheets=("Sheet3",))
+        self.assertEqual(unauthorized_edits(before, after, position, same_value)["unauthorized_cells"], 0)
+        self.assertFalse(grader.compare_workbooks(before, after, position)[0])
+
+    def test_unqualified_parts_use_the_given_sheet_for_preservation(self):
+        # Task 13-1 points the prompt at LISTS; edits there are authorized even though
+        # the grader, like the benchmark's, reads an unqualified range on the first sheet.
+        before = self.save("a.xlsx", {("LISTS", "A3"): 1}, sheets=("RANGES", "LISTS"))
+        after = self.save("b.xlsx", {("LISTS", "A3"): 2}, sheets=("RANGES", "LISTS"))
+        self.assertEqual(
+            unauthorized_edits(before, after, "A3:D32", same_value, default_sheet="LISTS")["unauthorized_cells"], 0
+        )
+        self.assertEqual(unauthorized_edits(before, after, "A3:D32", same_value)["unauthorized_cells"], 1)
 
 
 class SelectionTest(unittest.TestCase):

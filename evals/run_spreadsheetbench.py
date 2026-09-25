@@ -2,8 +2,10 @@
 
 For each task: copy the initial workbook into its own folder (fresh agent
 session), tag it so the task pane auto-opens, open it in Excel, inject the
-prompt through the daemon's /eval/run endpoint, save, grade with the official
-SpreadsheetBench comparison, and count edits outside the authorized range.
+prompt through the daemon's /eval/run endpoint, save, grade with Harbor's
+SpreadsheetBench Verified grader (evals/vendor/harbor_evaluate.py: the
+benchmark's comparison rules with its parsing crashes fixed), and count edits
+outside the authorized range.
 
 Each run directory is pinned to one configuration (manifest.json); resuming
 with a different commit, model mapping, prompt or task set is refused.
@@ -28,7 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from embed_taskpane import embed_taskpane, read_manifest
-from workbook_diff import unauthorized_edits, parse_answer_position, compare_answer_workbooks
+from workbook_diff import unauthorized_edits
+from vendor import harbor_evaluate as grader
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DAEMON = "http://127.0.0.1:47834"
@@ -78,20 +81,26 @@ INFRA_STATUSES = {"no_pane", "busy", "bad_request"}
 XL_MAXIMIZED = -4137
 
 
-def qualified_answer_position(task: dict, sheet_names: list[str] | None = None) -> str:
+def answer_sheet(task: dict, sheet_names: list[str] | None = None) -> str | None:
+    """The sheet an unqualified answer_position refers to in the prompt."""
     position = task["answer_position"]
     sheet = task.get("answer_sheet")
-    ranges = parse_answer_position(position)
+    ranges = grader.parse_answer_position(position)
     if sheet and sheet_names and sheet not in sheet_names and any(name is None for name, _ in ranges):
         # Some records list all involved sheets here. Unqualified addresses
-        # follow the official grader and refer to the workbook's first sheet.
+        # follow the grader and refer to the workbook's first sheet.
         if all(name.strip() in sheet_names for name in sheet.split(",")):
-            sheet = sheet_names[0]
-        else:
-            raise ValueError(f"answer_sheet does not exist in workbook: {sheet}")
+            return sheet_names[0]
+        raise ValueError(f"answer_sheet does not exist in workbook: {sheet}")
+    return sheet or None
+
+
+def qualified_answer_position(task: dict, sheet_names: list[str] | None = None) -> str:
+    """answer_position with a sheet on every part, in Excel's quoting, for the prompt."""
+    sheet = answer_sheet(task, sheet_names)
     return ",".join(
         "'" + (name or sheet).replace("'", "''") + "'!" + cells if name or sheet else cells
-        for name, cells in ranges
+        for name, cells in grader.parse_answer_position(task["answer_position"])
     )
 
 
@@ -157,6 +166,7 @@ def build_manifest(args, selected: list[dict], info: dict) -> dict:
             "uncommittedDiffSha256": hashlib.sha256(dirty_diff.encode("utf-8")).hexdigest() if dirty_diff else None,
             "vendorSha256": sha256_file(PROJECT_ROOT / "taskpane/shared/vendor/office-agents-excel-api.js"),
             "datasetSha256": sha256_file(args.dataset / "dataset.json"),
+            "graderSha256": sha256_file(Path(grader.__file__)),
             "taskIds": [str(t["id"]) for t in selected],
             "tier": args.model,
             "timeoutSeconds": args.timeout,
@@ -298,6 +308,7 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
     source_workbook = openpyxl.load_workbook(init_file, read_only=True)
     try:
         answer_position = qualified_answer_position(task, source_workbook.sheetnames)
+        default_sheet = answer_sheet(task, source_workbook.sheetnames)
     finally:
         source_workbook.close()
     prompt = PROMPT.format(
@@ -354,7 +365,9 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
     started = time.perf_counter()
     record["stage"] = "grade"
     try:
-        passed, _ = compare(str(golden_file), str(workbook_path), task["instruction_type"], answer_position)
+        # Graded exactly as Harbor grades: the dataset's own answer_position,
+        # unqualified parts on the first sheet.
+        passed, _ = compare(str(golden_file), str(workbook_path), task["answer_position"])
     except Exception as exc:
         passed = False
         record["grade_error"] = f"{type(exc).__name__}: {exc}"
@@ -363,10 +376,15 @@ def run_task(task: dict, dataset: Path, run_dir: Path, args, token: str, addin: 
     started = time.perf_counter()
     record["stage"] = "preservation"
     try:
-        preservation = unauthorized_edits(init_file, workbook_path, answer_position, args.compare_values)
+        # The cells the prompt pointed the agent at are the ones it may change.
+        preservation = unauthorized_edits(
+            init_file, workbook_path, task["answer_position"], args.compare_values, default_sheet=default_sheet
+        )
         # When the reference solution itself edits outside answer_position (e.g. the
         # instruction also asks to sort a source column), the check can't judge the task.
-        gold = unauthorized_edits(init_file, golden_file, answer_position, args.compare_values, limit=0)
+        gold = unauthorized_edits(
+            init_file, golden_file, task["answer_position"], args.compare_values, limit=0, default_sheet=default_sheet
+        )
         preservation["gold_unauthorized_cells"] = gold["unauthorized_cells"]
         preservation["gold_sheets_removed"] = gold["sheets_removed"]
         preservation["gold_sheets_added"] = gold["sheets_added"]
@@ -517,8 +535,6 @@ def keep_awake() -> int | None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dataset", type=Path, required=True, help="spreadsheetbench_verified_400 directory")
-    parser.add_argument("--spreadsheetbench", type=Path, default=PROJECT_ROOT.parent / "_sdks" / "spreadsheetbench",
-                        help="SpreadsheetBench repo checkout (for evaluation/evaluation.py)")
     parser.add_argument("--run", required=True, help="run name; one directory per configuration")
     parser.add_argument("--model", default="sonnet", choices=["haiku", "sonnet", "opus"], help="model tier")
     parser.add_argument("--ids", nargs="*", help="run exactly these task ids")
@@ -533,13 +549,8 @@ def main() -> None:
     if previous_power_state is not None:
         print(f"Windows keep-awake request accepted; previous execution state=0x{previous_power_state:08x}", flush=True)
 
-    sys.path.insert(0, str(args.spreadsheetbench / "evaluation"))
-    from evaluation import compare_cell_value, cell_level_compare
-
-    def compare_workbooks(*args):
-        return compare_answer_workbooks(*args, cell_compare=cell_level_compare)
-
-    args.compare_values = compare_cell_value
+    compare_workbooks = grader.compare_workbooks
+    args.compare_values = grader.compare_cell_value
     tasks = json.loads((args.dataset / "dataset.json").read_text(encoding="utf-8"))
     selected = select_tasks(tasks, args)
     token = TOKEN_FILE.read_text(encoding="utf-8").strip()

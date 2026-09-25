@@ -151,7 +151,7 @@ Excel 助手由各部分做得最好的现有项目组合而成；本仓库做�
 
 ## 评测
 
-`evals/run_spreadsheetbench.py` 在真实 Excel 中运行 [SpreadsheetBench](https://github.com/RUCKBReasoning/SpreadsheetBench) Verified-400 题目，用基准的比对代码评分。题目提示词使用官方版本，只加一行说明改为操作打开着的工作簿。评测框架固定每次运行的配置，分别记录执行及判分异常、答案不符，并统计答案区域之外的改动；这些结果标签不等于已经查明失败根因。
+`evals/run_spreadsheetbench.py` 在真实 Excel 中运行 [SpreadsheetBench](https://github.com/RUCKBReasoning/SpreadsheetBench) Verified-400 题目，用 [Harbor](https://github.com/harbor-framework/harbor) 版本的基准判分器评分：保留原版的单元格比对规则，修正了原版在整列地址、表名含逗号等答案位置上崩溃的问题。在全部 400 题上，凡原版能运行的题，两者判定一致。题目提示词使用官方版本，只加一行说明改为操作打开着的工作簿。评测框架固定每次运行的配置，分别记录执行及判分异常、答案不符，并统计答案区域之外的改动；这些结果标签不等于已经查明失败根因。
 
 | 运行                                                  | 模型          | 题数 | 通过 |
 | ----------------------------------------------------- | ------------- | ---: | ---: |

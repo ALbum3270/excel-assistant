@@ -11,82 +11,31 @@ from pathlib import Path
 import openpyxl
 from openpyxl.utils.cell import column_index_from_string, coordinate_from_string, get_column_letter
 
-
-def _parse_range(cell_range: str) -> tuple[int, int, int, int]:
-    start, _, end = cell_range.partition(":")
-    end = end or start
-    (c1, r1), (c2, r2) = coordinate_from_string(start), coordinate_from_string(end)
-    return r1, column_index_from_string(c1), r2, column_index_from_string(c2)
+from vendor.harbor_evaluate import parse_answer_position, parse_cell_range
 
 
-def parse_answer_position(answer_position: str) -> list[tuple[str | None, str]]:
-    """Split ranges outside quoted worksheet names, including escaped apostrophes."""
-    parts = []
-    start = 0
-    quoted = False
-    index = 0
-    while index < len(answer_position):
-        char = answer_position[index]
-        if char == "'":
-            if quoted and index + 1 < len(answer_position) and answer_position[index + 1] == "'":
-                index += 2
-                continue
-            if quoted:
-                quoted = False
-            elif not answer_position[start:index].strip():
-                quoted = True
-        elif char == "," and not quoted:
-            parts.append(answer_position[start:index])
-            start = index + 1
-        index += 1
-    if quoted:
-        raise ValueError("Unclosed worksheet-name quote in answer_position")
-    parts.append(answer_position[start:])
-    ranges = []
-    for part in parts:
-        if "!" in part:
-            sheet, _, cells = part.strip().rpartition("!")
-            if sheet.startswith("'") and sheet.endswith("'"):
-                sheet = sheet[1:-1].replace("''", "'")
-            else:
-                # Preserve the official wrapper's tolerance of a stray quote
-                # (e.g. Sheet1'!A1 or 'Sheet1!'A1 in the source dataset).
-                sheet = sheet.strip("'")
-        else:
-            sheet, cells = None, part
-        ranges.append((sheet, cells.strip().strip("'").replace("$", "")))
-    return ranges
+EXCEL_MAX_ROWS = 1_048_576
 
 
-def authorized_ranges(answer_position: str, first_sheet: str) -> dict[str, list[tuple[int, int, int, int]]]:
-    """Map sheet name -> (min_row, min_col, max_row, max_col) boxes, like the official grader."""
+def _box(cells: str) -> tuple[int, int, int, int]:
+    """(min_row, min_col, max_row, max_col) for a cell or range, using Harbor's parser.
+
+    Column-only ranges such as A:G cover every row, as Harbor's grader reads them.
+    """
+    if ":" not in cells:
+        column, row = coordinate_from_string(cells)
+        col = column_index_from_string(column)
+        return row, col, row, col
+    (c1, r1), (c2, r2) = parse_cell_range(cells)
+    return r1 or 1, c1, r2 or EXCEL_MAX_ROWS, c2
+
+
+def authorized_ranges(answer_position: str, default_sheet: str) -> dict[str, list[tuple[int, int, int, int]]]:
+    """Map sheet name -> boxes. Unqualified parts belong to `default_sheet`."""
     boxes: dict[str, list[tuple[int, int, int, int]]] = {}
     for sheet, cells in parse_answer_position(answer_position):
-        boxes.setdefault(sheet or first_sheet, []).append(_parse_range(cells))
+        boxes.setdefault(sheet or default_sheet, []).append(_box(cells))
     return boxes
-
-
-def compare_answer_workbooks(gt_file, proc_file, instruction_type, answer_position, *, cell_compare):
-    """Use the official cell comparator with the same address parser as preservation.
-
-    SpreadsheetBench's workbook wrapper splits on every comma / exclamation mark;
-    its cell comparator preserves the official value and formula grading rules.
-    """
-    if not Path(proc_file).exists():
-        return False, "File not exist"
-    before = openpyxl.load_workbook(gt_file, data_only=True)
-    try:
-        after = openpyxl.load_workbook(proc_file, data_only=True)
-        try:
-            for sheet, cells in parse_answer_position(answer_position):
-                passed, message = cell_compare(before, after, sheet or before.sheetnames[0], cells)
-                if not passed:
-                    return False, message
-            return True, ""
-        finally:
-            after.close()
-    finally:
-        before.close()
 
 
 def _normalized(value):
@@ -106,11 +55,18 @@ def _same(before, after, compare_values) -> bool:
     return a == b if kind_a == "formula" else compare_values(a, b)
 
 
-def unauthorized_edits(initial: Path, output: Path, answer_position: str, compare_values, limit: int = 20) -> dict:
+def unauthorized_edits(
+    initial: Path,
+    output: Path,
+    answer_position: str,
+    compare_values,
+    limit: int = 20,
+    default_sheet: str | None = None,
+) -> dict:
     before = openpyxl.load_workbook(initial)
     after = openpyxl.load_workbook(output)
     try:
-        boxes = authorized_ranges(answer_position, before.sheetnames[0])
+        boxes = authorized_ranges(answer_position, default_sheet or before.sheetnames[0])
 
         def allowed(sheet: str, row: int, col: int) -> bool:
             return any(r1 <= row <= r2 and c1 <= col <= c2 for r1, c1, r2, c2 in boxes.get(sheet, []))

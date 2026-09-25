@@ -151,7 +151,7 @@ What this repository adds on top: overwrite protection and a commit receipt from
 
 ## Evaluation
 
-`evals/run_spreadsheetbench.py` runs [SpreadsheetBench](https://github.com/RUCKBReasoning/SpreadsheetBench) Verified-400 tasks in live Excel and grades them with the benchmark's comparison code. The task prompt is the official one, plus one line adapting it to a live workbook. The harness pins each run's configuration, records execution and grading failures separately from answer mismatches, and counts edits outside the answer range. These outcome labels do not establish the root cause of a failed task.
+`evals/run_spreadsheetbench.py` runs [SpreadsheetBench](https://github.com/RUCKBReasoning/SpreadsheetBench) Verified-400 tasks in live Excel and grades them with [Harbor](https://github.com/harbor-framework/harbor)'s version of the benchmark's grader, which keeps its cell comparison rules and fixes the places where the original crashes on an answer position (whole-column ranges, commas in sheet names). On all 400 tasks it gives the original's verdict wherever the original runs. The task prompt is the official one, plus one line adapting it to a live workbook. The harness pins each run's configuration, records execution and grading failures separately from answer mismatches, and counts edits outside the answer range. These outcome labels do not establish the root cause of a failed task.
 
 | Run                                                                    | Model         | Tasks | Passed |
 | ---------------------------------------------------------------------- | ------------- | ----: | -----: |
