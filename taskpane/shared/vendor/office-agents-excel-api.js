@@ -641,6 +641,16 @@ async function setCellRange(sheetId, rangeAddr, cells, options = {}) {
     }
     if (hasDataWrites && !hasStyleOnlyCells) {
       range.formulas = writeMatrix;
+      if (cells.length === 1 && cells[0].length === 1) {
+        try {
+          await context.sync();
+        } catch (error) {
+          if (error && typeof error === "object") {
+            error.commitStatus = "not_committed";
+          }
+          throw error;
+        }
+      }
     } else if (hasDataWrites) {
       for (let r = 0; r < cells.length; r++) {
         let c = 0;

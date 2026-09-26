@@ -331,6 +331,32 @@ function excelColorToHex(
     }`,
   );
 
+  // A single cell is written by one assignment. Syncing it on its own makes a
+  // rejection (an invalid formula) a certain "nothing was written": in live
+  // Excel a rejected one-cell write, and a fill whose pattern cell is rejected,
+  // leave the target empty. A larger block does not get this: Excel writes its
+  // valid cells before reporting the error, so its failures stay unknown.
+  source = replaceOnce(
+    source,
+    "a rejected single-cell write is not committed",
+    `    if (hasDataWrites && !hasStyleOnlyCells) {
+      range.formulas = writeMatrix;
+    } else if (hasDataWrites) {`,
+    `    if (hasDataWrites && !hasStyleOnlyCells) {
+      range.formulas = writeMatrix;
+      if (cells.length === 1 && cells[0].length === 1) {
+        try {
+          await context.sync();
+        } catch (error) {
+          if (error && typeof error === "object") {
+            (error as { commitStatus?: string }).commitStatus = "not_committed";
+          }
+          throw error;
+        }
+      }
+    } else if (hasDataWrites) {`,
+  );
+
   source = replaceOnce(
     source,
     "reuse checked copy destination",

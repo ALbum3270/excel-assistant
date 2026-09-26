@@ -483,3 +483,54 @@ test("a copy is checked against the range it expands to, not the one it was give
   await api.copyTo(1, "A1:B2", "D1", true);
   assert.equal(expanded.state.copies, 1);
 });
+
+// Excel rejects an invalid formula when the batch that assigns it is synced.
+function rejectFormulasOn(excel, target) {
+  excel.context.sync = async () => {
+    if (target.state.formulaAssignments > 0) {
+      throw Object.assign(new Error("invalid argument"), { code: "InvalidArgument" });
+    }
+  };
+}
+
+test("a rejected single-cell formula is reported as not committed", async () => {
+  // Live Excel leaves the cell empty; "unknown" made the next writes wait for a reread.
+  const target = range("B3", [[""]]);
+  rejectFormulasOn(installExcel({ B3: target }), target);
+  const error = await api
+    .setCellRange(1, "B3", [[{ formula: "=COLUMN($A)" }]], { allowOverwrite: true })
+    .catch((e) => e);
+  assert.equal(error.code, "InvalidArgument");
+  assert.equal(error.commitStatus, "not_committed");
+});
+
+test("a fill whose pattern cell is rejected copies nothing and is not committed", async () => {
+  // excel_fill_formula writes the top-left cell, then copies it (eval task 57989).
+  const pattern = range("B25", [[""]]);
+  const destination = range(
+    "B25:B43",
+    Array.from({ length: 19 }, () => [""]),
+  );
+  rejectFormulasOn(installExcel({ B25: pattern, "B25:B43": destination }), pattern);
+  const error = await api
+    .setCellRange(1, "B25", [[{ formula: "=COLUMN($A)" }]], {
+      copyToRange: "B25:B43",
+      allowOverwrite: true,
+    })
+    .catch((e) => e);
+  assert.equal(error.commitStatus, "not_committed");
+  assert.equal(destination.state.copies, 0);
+});
+
+test("a rejected multi-cell block stays unknown, since Excel can write part of it", async () => {
+  // Live Excel wrote A8 and B8 before rejecting C8's formula.
+  const target = range("A8:C8", [["", "", ""]]);
+  rejectFormulasOn(installExcel({ "A8:C8": target }), target);
+  const error = await api
+    .setCellRange(1, "A8:C8", [[{ value: "x" }, { formula: "=1+1" }, { formula: "=COLUMN($A)" }]], {
+      allowOverwrite: true,
+    })
+    .catch((e) => e);
+  assert.equal(error.code, "InvalidArgument");
+  assert.equal(error.commitStatus, undefined);
+});
