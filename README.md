@@ -153,12 +153,13 @@ What this repository adds on top: overwrite protection and a commit receipt from
 
 `evals/run_spreadsheetbench.py` runs [SpreadsheetBench](https://github.com/RUCKBReasoning/SpreadsheetBench) Verified-400 tasks in live Excel and grades them with [Harbor](https://github.com/harbor-framework/harbor)'s version of the benchmark's grader, which keeps its cell comparison rules and fixes the places where the original crashes on an answer position (whole-column ranges, commas in sheet names). On all 400 tasks it gives the original's verdict wherever the original runs. The task prompt is the official one, plus one line adapting it to a live workbook. The harness pins each run's configuration, records execution and grading failures separately from answer mismatches, and counts edits outside the answer range. These outcome labels do not establish the root cause of a failed task.
 
-| Run                                                                    | Model         | Tasks | Passed |
-| ---------------------------------------------------------------------- | ------------- | ----: | -----: |
-| 2026-09-24, stratified sample (seed 20260924), before the latest fixes | qwen3.7-flash |   100 |     52 |
-| 2026-09-25, after the fixes, **only the 48 tasks that failed above**   | qwen3.7-flash |    48 |     13 |
+| Run                                                  | Model         | Tasks | Passed |
+| ---------------------------------------------------- | ------------- | ----: | -----: |
+| 2026-09-26, stratified random sample (seed 20260925) | qwen3.7-flash |   100 | **62** |
 
-The second row includes the three tasks completed after an interrupted run. Its other outcomes were 28 answer mismatches, 5 execution or grading failures, and 2 unfinished agent runs. The 52 tasks that passed in the first row were **not** rerun after the fixes. Adding 52 and 13 shows that 65 distinct tasks passed at least once across two code versions; **it is not a measured 65% pass rate for the current version**. No current-version 100-task run or full 400-task run has been completed, and these local results are not an official leaderboard submission. The benchmark grades the answer range; three of the 13 passing reruns also had detected changes outside that range, which need separate review. See [the post-analysis fixes and limits](docs/product-fixes-2026-09-25.md).
+Cell-level tasks 42/69, sheet-level 20/31. With 100 tasks the 95% confidence interval is about 52%–71%, so small differences between runs are noise. The benchmark grades only the answer range; three of the passing tasks also changed cells outside it. This is a local run, not an official leaderboard submission.
+
+To reproduce: `uv run --project evals python evals/run_spreadsheetbench.py --dataset <spreadsheetbench_verified_400> --run <name> --model haiku --sample 100 --seed 20260925` (the `haiku` tier is mapped to qwen3.7-flash in `.env`).
 
 ## Development
 
