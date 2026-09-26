@@ -2,19 +2,29 @@
 
 目标：公开开源的 Excel 智能体里别人做得更好的部分，我们都借鉴或移植过来，至少达到同一水准。不靠反复刷题修补。以下事实均来自源码或官方数据，仓库都已 clone 到 `../_sdks`。
 
-## 一、榜单（SpreadsheetBench 官方，2026-09-13 更新）
+## 一、成绩对比（SpreadsheetBench V1 Verified-400）
 
-数据来源：`spreadsheetbench/spreadsheetbench.github.io` 仓库的 `data/leaderboard-*.json`，由基准团队独立评测。
+外部数字均来自原始出处，2026-09-26 重新核对：官方榜单取自 `spreadsheetbench/spreadsheetbench.github.io` 的 `data/leaderboard-v1-verified.json`（最近更新 2026-09-13），其余取自各项目自己公布的结果文件。
 
-- **V1 Verified-400**（与本项目评测同一题集）：共 17 个条目，82.5%–99.25%，几乎全是商业产品：ByteDance、Kingsoft WPS、GPT for Excel、GRID、Shortcut 等。
-  - 唯一开源：**fabric-rlm**（MiniMax M3，开源权重），82.5%，仓库 `pawarbi/fabric-rlm-core`（MIT）。
-  - 同一数字也写在该项目自己的 `docs/usage-guide.md` 中：单次作答，用官方 `evaluation.py` 判分，每题约 0.0065 美元。
-- 参照：DealGlass 公开了结果仓库 `arthursolwayne/spreadsheet-agents`，但引擎 Tetra 闭源。
-  - Opus 4.6 仅用三行提示词：80.2%；
-  - Opus 4.6 接入 Tetra：95.2%；
-  - GPT-5.4 加严格提示：78.2%。
-- 高分方案的共同做法：基于文件和 Python（openpyxl/pandas），先算出结果，写入后重新载入核对。
-- 本项目：用 qwen3.7-flash 在同一组 10 题上先后得 40% 和 50%，其中 7 题结果翻转，波动大于两轮差值。样本量和模型都不同，不能与上述数字直接比较。
+| 方案                                                                                              | 模型              | 执行方式                                        | 题量 × 次数                                | 通过率                          | 出处                                              |
+| ------------------------------------------------------------------------------------------------- | ----------------- | ----------------------------------------------- | ------------------------------------------ | ------------------------------- | ------------------------------------------------- |
+| 官方榜单全部 17 个条目（除 fabric-rlm 外均为商业产品，如 ByteDance、Kingsoft WPS、GPT for Excel） | 各自              | 各自                                            | 400 × 1                                    | 82.5%–99.25%                    | 官方榜单                                          |
+| DealGlass Tetra                                                                                   | Claude Opus 4.6   | 基于文件，另加闭源推理引擎                      | 400 × 1                                    | 95.2%（381/400）                | `arthursolwayne/spreadsheet-agents`               |
+| fabric-rlm（唯一上榜的开源方案）                                                                  | MiniMax M3        | 基于文件（Python 工作区）                       | 400 × 1                                    | 82.5%（330/400）                | 官方榜单；`pawarbi/fabric-rlm-core` 文档          |
+| Claude Opus 4.6，三行提示词                                                                       | Claude Opus 4.6   | 基于文件（openpyxl）                            | 400 × 1                                    | 80.2%（321/400）                | `arthursolwayne/spreadsheet-agents`               |
+| GPT-5.4，严格提示                                                                                 | GPT-5.4           | 基于文件（openpyxl）                            | 400 × 1                                    | 78.2%（313/400）                | `arthursolwayne/spreadsheet-agents`               |
+| Claude Code 2.1.80                                                                                | Claude Haiku 4.5  | 基于文件（Docker + openpyxl，LibreOffice 重算） | 400 × 3                                    | 68.8% ± 0.8%                    | Harbor 适配器 `parity_experiment.json`            |
+| **本项目**                                                                                        | **qwen3.7-flash** | **真实 Excel，Office.js 工具**                  | **100 × 1**（分层随机抽样，seed 20260925） | **62%**（95% 置信区间 52%–71%） | `evals/runs/sample100-flash-b577d61-seed20260925` |
+
+本项目这一轮：单元格级 42/69，工作表级 20/31；100 题基础设施全部正常；中位耗时 102 秒/题；3 道通过的题改动了答案区域外的单元格。判分用 Harbor 版判分器，在全部 400 题上与官方 `evaluation.py` 凡能运行处判定一致。
+
+怎么读这张表：
+
+- **最接近的参照是 Claude Code + Haiku 4.5**：同为通用智能体加小模型。62% 的置信区间覆盖 68.8%，统计上分不出高低。但模型不同，执行方式也不同，只能说在同一量级。
+- **和榜单头部差 20～37 个百分点**，至少有两个来源，这一轮无法把它们分开：一是模型，头部多用前沿大模型，我们用的是 qwen 最便宜的 flash 档；二是执行方式，表中公开了做法的外部方案都直接改 .xlsx 文件，用 Python 先算出结果再写入、重新载入核对（榜单上的商业产品没有公开做法），而我们在打开着的 Excel 里逐步读写。
+- **执行方式的取舍**：基于文件便于批量计算和核对；真实 Excel 是用户实际使用的环境，保留公式、格式和逐步撤销，但每一步都要经过 Office.js，也更慢。
+- **样本量**：100 题一次运行的波动约 ±10 个百分点；同一代码、同一题重跑也可能翻转（本仓库评测记录中有实例）。几个百分点的差异不能说明高低。
+- **下一步要回答"差距来自模型还是来自系统"**：同一批 100 题、同一份代码，只换模型（qwen3.7-max，或与 Harbor 同款的 Claude Haiku 4.5）再跑一次。换模型后若接近外部数字，瓶颈在模型；若仍明显落后，就要看执行方式和工具。
 
 ## 二、对比对象（源码已核实）
 
