@@ -163,11 +163,13 @@ To reproduce: `uv run --project evals python evals/run_spreadsheetbench.py --dat
 
 For reference, published results from two comparable agents:
 
-| System                                                                                                                                                                     | Model                            | How it works                                     | Tasks                            | Score |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- | ------------------------------------------------ | -------------------------------- | ----: |
-| Excel Assistant (this run)                                                                                                                                                 | qwen3.7-flash                    | In live Excel, through Office.js tools           | 100-task sample of Verified-400  |   62% |
-| [Claude Code 2.1.80](https://github.com/harbor-framework/harbor/blob/main/adapters/spreadsheetbench-verified/parity_experiment.json)                                       | Claude Haiku 4.5                 | Edits the .xlsx files with Python in a container | Verified-400, 3 runs             | 68.8% |
-| [Microsoft Excel Agent Mode](https://www.microsoft.com/en-us/microsoft-365/blog/2025/09/29/vibe-working-introducing-agent-mode-and-office-agent-in-microsoft-365-copilot/) | Copilot's OpenAI reasoning model | In Excel, through Excel's JavaScript APIs        | Full SpreadsheetBench, 912 tasks | 57.2% |
+| System                                                                                                                                                                     | Model                            | How it works                                                         | Tasks                            | Score |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- | -------------------------------------------------------------------- | -------------------------------- | ----: |
+| Excel Assistant (this run)                                                                                                                                                 | qwen3.7-flash                    | In live Excel, through Office.js tools                               | 100-task sample of Verified-400  |   62% |
+| [Claude Code 2.1.80](https://github.com/harbor-framework/harbor/blob/main/adapters/spreadsheetbench-verified/parity_experiment.json)                                       | Claude Haiku 4.5                 | Edits the .xlsx files with Python in a container (an easier setting) | Verified-400, 3 runs             | 68.8% |
+| [Microsoft Excel Agent Mode](https://www.microsoft.com/en-us/microsoft-365/blog/2025/09/29/vibe-working-introducing-agent-mode-and-office-agent-in-microsoft-365-copilot/) | Copilot's OpenAI reasoning model | In Excel, through Excel's JavaScript APIs                            | Full SpreadsheetBench, 912 tasks | 57.2% |
+
+Working in live Excel, the harder setting, Excel Assistant is at the same level as Claude Code with Claude Haiku 4.5: the gap is within the sampling error of a 100-task run.
 
 ## Development
 
