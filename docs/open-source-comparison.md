@@ -12,7 +12,7 @@
 | Claude Code 2.1.80    | Claude Haiku 4.5           | 在容器里用 Python 直接修改 .xlsx 文件       | Verified-400 全部 400 题，跑 3 次                 | 68.8% ± 0.8% | [Harbor 适配器记录](https://github.com/harbor-framework/harbor/blob/main/adapters/spreadsheetbench-verified/parity_experiment.json)                                |
 | 微软 Excel Agent Mode | Copilot 的 OpenAI 推理模型 | 在 Excel 中，通过 Excel JavaScript 接口操作 | 完整版 SpreadsheetBench 912 题，每题 3 个用例     |        57.2% | [Microsoft 365 博客](https://www.microsoft.com/en-us/microsoft-365/blog/2025/09/29/vibe-working-introducing-agent-mode-and-office-agent-in-microsoft-365-copilot/) |
 
-在难度更高的真实 Excel 环境中，Excel 助手的成绩与 Claude Code + Claude Haiku 4.5 处于同一水准：差距在 100 题抽样的误差范围之内。
+Excel 助手的成绩在难度更高的真实 Excel 环境中，与 Claude Code + Claude Haiku 4.5 处于同一水准：差距在 100 题抽样的误差范围之内。
 
 本项目这一轮：单元格级 42/69，工作表级 20/31；100 题基础设施全部正常；判分用 Harbor 版判分器。微软的成绩为厂商自报。
 
