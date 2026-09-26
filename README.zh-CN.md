@@ -163,11 +163,11 @@ Excel 助手由各部分做得最好的现有项目组合而成；本仓库做�
 
 参考：两个可比系统公布的成绩。
 
-| 系统                                                                                                                                                                  | 模型                       | 工作方式                                          | 题目                            |  成绩 |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | ------------------------------------------------- | ------------------------------- | ----: |
-| Excel 助手（本次）                                                                                                                                                    | qwen3.7-flash              | 在真实 Excel 中，通过 Office.js 工具操作          | Verified-400 抽样 100 题        |   62% |
-| [Claude Code 2.1.80](https://github.com/harbor-framework/harbor/blob/main/adapters/spreadsheetbench-verified/parity_experiment.json)                                  | Claude Haiku 4.5           | 在容器里用 Python 直接修改 .xlsx 文件（难度更低） | Verified-400，跑 3 次           | 68.8% |
-| [微软 Excel Agent Mode](https://www.microsoft.com/en-us/microsoft-365/blog/2025/09/29/vibe-working-introducing-agent-mode-and-office-agent-in-microsoft-365-copilot/) | Copilot 的 OpenAI 推理模型 | 在 Excel 中，通过 Excel JavaScript 接口操作       | 完整版 SpreadsheetBench，912 题 | 57.2% |
+| 系统                                                                                                                                                                  | 模型                       | 工作方式                                    | 题目                            |  成绩 |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | ------------------------------------------- | ------------------------------- | ----: |
+| Excel 助手（本次）                                                                                                                                                    | qwen3.7-flash              | 在真实 Excel 中，通过 Office.js 工具操作    | Verified-400 抽样 100 题        |   62% |
+| [Claude Code 2.1.80](https://github.com/harbor-framework/harbor/blob/main/adapters/spreadsheetbench-verified/parity_experiment.json)                                  | Claude Haiku 4.5           | 在容器里用 Python 直接修改 .xlsx 文件       | Verified-400，跑 3 次           | 68.8% |
+| [微软 Excel Agent Mode](https://www.microsoft.com/en-us/microsoft-365/blog/2025/09/29/vibe-working-introducing-agent-mode-and-office-agent-in-microsoft-365-copilot/) | Copilot 的 OpenAI 推理模型 | 在 Excel 中，通过 Excel JavaScript 接口操作 | 完整版 SpreadsheetBench，912 题 | 57.2% |
 
 在难度更高的真实 Excel 环境中，Excel 助手的成绩与 Claude Code + Claude Haiku 4.5 处于同一水准：差距在 100 题抽样的误差范围之内。
 
